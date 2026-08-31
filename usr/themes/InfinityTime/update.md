@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.4.5
+
+- 修复：插件被 Typecho 判定为「即插即用」导致无菜单/无法停用——`Plugin` 类补 `implements Typecho\Plugin\PluginInterface` 并实现 `personalConfig()`，使 Typecho 正确识别「启用/停用」并调用 `activate()`。
+
 ## 1.4.4
 
 - 修复：主机 PHP 禁用 `exec` / `shell_exec` / `proc_open` 时插件无法激活（菜单/建表不执行）——`MediaProcessor` 改为 `function_exists` 判断，禁用时优雅跳过并提示缺转换工具，仅 HEIC 处理受限；JPG/PNG/WebP 正常。

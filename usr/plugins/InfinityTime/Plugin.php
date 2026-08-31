@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.4
+ * @version 1.4.5
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -12,6 +12,7 @@ namespace TypechoPlugin\InfinityTime;
 
 use Typecho\Db;
 use Utils\Helper;
+use Typecho\Plugin\PluginInterface;
 use Typecho\Widget\Helper\Form;
 use Typecho\Widget\Helper\Form\Element\Number;
 use Typecho\Widget\Helper\Form\Element\Radio;
@@ -22,9 +23,9 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 /**
  * 插件主体。
  */
-class Plugin
+class Plugin implements PluginInterface
 {
-    public const VERSION = '1.4.4';
+    public const VERSION = '1.4.5';
     public const MENU_NAME = 'InfinityTime';
 
     /**
@@ -97,6 +98,13 @@ class Plugin
             _t('自定义后台发布页的顶部说明文本。')
         );
         $form->addInput($submit);
+    }
+
+    /**
+     * 个人用户配置面板（本插件无独立个人配置，留空以满足接口）。
+     */
+    public static function personalConfig(Form $form): void
+    {
     }
 
     /**
