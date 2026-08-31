@@ -319,6 +319,9 @@ class MediaProcessor
      */
     private static function runCmd(string $cmd, int $timeout = 60): int
     {
+        if (!function_exists('proc_open')) {
+            throw new \RuntimeException('proc_open 被禁用，无法执行外部命令');
+        }
         $proc = @proc_open($cmd, [
             0 => ['file', '/dev/null', 'r'],
             1 => ['pipe', 'w'],
@@ -412,11 +415,23 @@ class MediaProcessor
             return $cache[$bin];
         }
         $cache[$bin] = false;
+        // 主机常为安全禁用 exec/shell_exec/proc_open；被禁用时视为“无此工具”，不要 fatal
+        if (!function_exists('exec') && !function_exists('shell_exec')) {
+            return $cache[$bin];
+        }
         $modes = [PHP_OS_FAMILY === 'Windows' ? 'where' : 'command -v'];
         $out = [];
-        @exec($modes[0] . ' ' . escapeshellarg($bin) . ' 2>/dev/null', $out, $code);
-        if ($code === 0 && !empty($out)) {
-            $cache[$bin] = trim($out[0]);
+        $code = -1;
+        if (function_exists('exec')) {
+            @exec($modes[0] . ' ' . escapeshellarg($bin) . ' 2>/dev/null', $out, $code);
+            if ($code === 0 && !empty($out)) {
+                $cache[$bin] = trim($out[0]);
+            }
+        } elseif (function_exists('shell_exec')) {
+            $res = @shell_exec($modes[0] . ' ' . escapeshellarg($bin) . ' 2>/dev/null');
+            if ($res !== null && trim((string)$res) !== '') {
+                $cache[$bin] = trim(explode("\n", (string)$res)[0]);
+            }
         }
         return $cache[$bin];
     }
