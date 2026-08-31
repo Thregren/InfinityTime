@@ -129,6 +129,22 @@ InfinityTime-release/
 - **改了 WebP 设置但旧图没变？** 去「维护」点「重建缩略图/全图」。
 - **图标不显示？** 已内嵌本地字体，正常情况下无需联网；若旧浏览器不支持 woof/ttf，可忽略（链接仍可用）。
 
+## 发版（自动）
+
+推送 `vX.Y.Z` 标签即可自动发版（GitHub Actions）：
+
+```bash
+# 1. 确认版本号一致（主题 @version / 插件 VERSION / releases.json）
+# 2. 打标签并推送
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+工作流 `.github/workflows/release.yml` 会自动：
+1. 校验 `tag` 与三处版本号是否一致（不一致则失败）；
+2. 打包 `usr/themes/InfinityTime` → `infinitytime-theme.zip`、`usr/plugins/InfinityTime` → `infinitytime-plugin.zip`；
+3. 创建对应 `vX.Y.Z` 的 Release 并上传这两个 zip（自动生成更新日志）。
+
 ## 许可与致谢
 
 MIT。主题由 [TimePlus](https://github.com/zhheo/TimePlus)（原作者 zhheo）二次开发而来；特此致谢。

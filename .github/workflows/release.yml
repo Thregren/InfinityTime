@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify version consistency
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          THEME_V=$(sed -n 's/.*@version \([0-9][0-9.]*\).*/\1/p' usr/themes/InfinityTime/index.php | head -1)
+          PLUGIN_V=$(sed -n "s/.*const VERSION = '\([0-9][0-9.]*\)'.*/\1/p" usr/plugins/InfinityTime/Plugin.php | head -1)
+          REL_V=$(sed -n 's/.*"tag_name": "\([0-9][0-9.]*\)".*/\1/p' usr/themes/InfinityTime/releases.json | head -1)
+          echo "tag=$TAG  theme=$THEME_V  plugin=$PLUGIN_V  releases=$REL_V"
+          if [ "$TAG" != "$THEME_V" ] || [ "$TAG" != "$PLUGIN_V" ] || [ "$TAG" != "$REL_V" ]; then
+            echo "::error::版本不一致：tag=$TAG theme=$THEME_V plugin=$PLUGIN_V releases=$REL_V"
+            exit 1
+          fi
+
+      - name: Build archives
+        run: |
+          mkdir -p dist
+          ( cd usr/themes && zip -qr "$GITHUB_WORKSPACE/dist/infinitytime-theme.zip" InfinityTime -x '*/.DS_Store' )
+          ( cd usr/plugins && zip -qr "$GITHUB_WORKSPACE/dist/infinitytime-plugin.zip" InfinityTime -x 'InfinityTime/data/*' '*/.DS_Store' )
+          ls -la dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "InfinityTime ${{ github.ref_name }}"
+          files: |
+            dist/infinitytime-theme.zip
+            dist/infinitytime-plugin.zip
+          generate_release_notes: true
