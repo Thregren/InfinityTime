@@ -96,7 +96,10 @@ function pp_read_json(string $file): array
 
 function pp_write_json(string $file, array $data): void
 {
-    @file_put_contents($file, json_encode($data, JSON_UNESCAPED_UNICODE));
+    $tmp = $file . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, json_encode($data, JSON_UNESCAPED_UNICODE)) !== false) {
+        @rename($tmp, $file);
+    }
 }
 
 /** 清理 original/full/thumb 下因删除文件而空出的目录（自底向上）。 */
@@ -165,16 +168,24 @@ if (!empty($_GET['ajax'])) {
                 }
             }
             pp_write_json($listFile, $list);
-            pp_write_json($jobFile, ['job' => 'rebuild', 'total' => count($list), 'done' => 0, 'current' => '']);
+            pp_write_json($jobFile, ['job' => 'rebuild', 'total' => count($list), 'done' => 0, 'current' => '', 'failed' => 0]);
         }
         $list = pp_read_json($listFile);
         $state = pp_read_json($jobFile);
         $idx = (int)($state['done'] ?? 0);
+        $failed = (int)($state['failed'] ?? 0);
         $batch = 3;
         $quality = (int)Plugin::opt('infinitytimeQuality', 82);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
         $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 0);
-        for ($i = 0; $i < $batch && $idx < count($list); $i++) {
+        $started = microtime(true);
+        $budget = 25; // 单次 AJAX 最多秒数，避免重建拖着后台页面
+        $total = count($list);
+        for ($i = 0; $i < $batch && $idx < $total; $i++) {
+            // 预算不足时立即返回，让下一轮 poll 继续，保证每轮请求都在短时间内完成
+            if ((microtime(true) - $started) > $budget) {
+                break;
+            }
             $item = $list[$idx];
             $src = ImageRepository::toAbs($item[1]);
             if (is_file($src)) {
@@ -182,18 +193,20 @@ if (!empty($_GET['ajax'])) {
                     MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $maxWidth);
                 } catch (\Throwable $e) {
                     Plugin::log('rebuild ajax: id=' . $item[0] . ' ' . $e->getMessage());
+                    $failed++;
                 }
+                $state['current'] = basename($src);
             }
-            $state['current'] = basename($src);
             $idx++;
         }
         $state['done'] = $idx;
-        $state['finished'] = $idx >= count($list);
+        $state['failed'] = $failed;
+        $state['finished'] = $idx >= $total;
         if ($state['finished']) {
-            $state = ['job' => 'rebuild', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true];
+            $state = ['job' => 'rebuild', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true, 'failed' => $failed];
         }
         pp_write_json($jobFile, $state);
-        $result = ['finished' => $idx >= count($list), 'total' => count($list), 'done' => $idx, 'current' => $state['current']];
+        $result = ['finished' => $idx >= $total, 'total' => $total, 'done' => $idx, 'current' => $state['current'], 'failed' => $failed];
     } elseif ($job === 'cleanup') {
         $listFile = pp_data_file() . '/cleanup_list.json';
         $jobFile = pp_data_file() . '/job.json';
@@ -281,6 +294,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
 
         $count = count($_FILES['files']['name']);
+        // 逐图标题/描述（与 files[] 同序，后端据此写入每张图的 title/desc）
+        $postTitles = (array)($_POST['img_titles'] ?? []);
+        $postDescs = (array)($_POST['img_descs'] ?? []);
         $uploadErr = 0;
         for ($i = 0; $i < $count; $i++) {
             $fe = (int)($_FILES['files']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
@@ -301,9 +317,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fail++;
                 continue;
             }
-            ImageRepository::insertRow($cid, $meta, $index);
+            $rowId = ImageRepository::insertRow($cid, $meta, $index);
+            $imgTitle = isset($postTitles[$i]) ? trim((string)$postTitles[$i]) : '';
+            $imgDesc = isset($postDescs[$i]) ? trim((string)$postDescs[$i]) : '';
+            if ($imgTitle !== '' || $imgDesc !== '') {
+                ImageRepository::setImageMeta($rowId, $imgTitle, $imgDesc, (string)$address);
+            }
             $imgs[] = $meta['full']; $thumbs[] = $meta['thumb']; $exifs[] = $meta['exif']; $addrs[] = $address;
-            $titles[] = ''; $descs[] = '';
+            $titles[] = $imgTitle; $descs[] = $imgDesc;
             if ($firstExif === null) {
                 $firstExif = $meta['exif'];
             }
@@ -569,6 +590,17 @@ include $adminDir . '/menu.php';
       .pp-icon-pop .icn{width:100%;height:34px;border:1px solid transparent;background:#F6F6F3;border-radius:3px;cursor:pointer;color:#444;font-size:15px;display:flex;align-items:center;justify-content:center}
       .pp-icon-pop .icn:hover{border-color:#467B96;background:#edf1f4}
       .pp-icon-pop .icn.active{border-color:#467B96;background:#e3eaf0;color:#467B96}
+      /* 上传预览：已选文件卡片（大图预览 + 逐图标题/描述） */
+      #pp-upload-previews{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
+      .pp-up-item{position:relative;width:230px;background:#fff;border:1px solid #E3E3E0;border-radius:6px;overflow:hidden;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+      .pp-up-thumb{width:100%;height:170px;object-fit:contain;border-radius:4px;background:#F6F6F3}
+      .pp-up-remove{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:15px;line-height:22px;text-align:center;cursor:pointer;z-index:2}
+      .pp-up-remove:hover{background:#d33}
+      .pp-up-name{font-size:12px;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .pp-up-tit,.pp-up-desc{width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #D9D9D6;border-radius:3px;font-size:13px;font-family:inherit}
+      .pp-up-tit{height:30px}
+      .pp-up-desc{min-height:56px;resize:vertical;line-height:1.5}
+      .pp-up-item.touched .pp-up-tit,.pp-up-item.touched .pp-up-desc{border-color:#467B96}
     </style>
 
     <div class="pp-wrap">
@@ -576,7 +608,7 @@ include $adminDir . '/menu.php';
       <!-- 上传发布 -->
       <div class="pp-card">
         <h2>上传并发布图集</h2>
-        <form method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+        <form id="pp-upload-form" method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
           <input type="hidden" name="action" value="create_album">
           <div class="pp-grid">
             <div>
@@ -587,13 +619,120 @@ include $adminDir . '/menu.php';
             </div>
             <div>
               <div class="pp-row"><label>选择图片</label>
-                <input type="file" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required>
-                <span class="pp-meta">多选即可；每张自动转 WebP 全图 + 缩略图，并按设置保留原图。</span>
+                <input type="file" id="pp-files-input" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required>
+                <span class="pp-meta">多选即可；每张自动转 WebP 全图 + 缩略图，并按设置保留原图。选择后可逐张填写标题/描述。</span>
               </div>
+              <div id="pp-upload-previews"></div>
             </div>
           </div>
           <button class="pp-btn" style="margin-top:10px" type="submit">发布图集</button>
         </form>
+        <script>
+        (function () {
+          var form = document.getElementById('pp-upload-form');
+          var input = document.getElementById('pp-files-input');
+          var wrap = document.getElementById('pp-upload-previews');
+          if (!form || !input || !wrap) return;
+
+          // 用 JS 数组持有已选文件与逐图标题/描述，保证移除后与 files[] 严格对齐
+          var sel = [];
+          var submitBtn = form.querySelector('button[type=submit]');
+
+          function render() {
+            wrap.innerHTML = '';
+            sel.forEach(function (item, idx) {
+              var card = document.createElement('div');
+              card.className = 'pp-up-item';
+
+              var thumb = document.createElement('img');
+              thumb.className = 'pp-up-thumb';
+              thumb.alt = item.file.name;
+              thumb.src = URL.createObjectURL(item.file);
+
+              var rm = document.createElement('button');
+              rm.type = 'button';
+              rm.className = 'pp-up-remove';
+              rm.textContent = '×';
+              rm.title = '移除这张图片';
+              rm.addEventListener('click', function () {
+                sel.splice(idx, 1);
+                render();
+              });
+
+              var name = document.createElement('div');
+              name.className = 'pp-up-name';
+              name.textContent = item.file.name;
+
+              var tit = document.createElement('input');
+              tit.type = 'text';
+              tit.className = 'pp-up-tit';
+              tit.placeholder = '图片标题（可选）';
+              tit.value = item.title;
+              tit.addEventListener('input', function () {
+                item.title = tit.value;
+                card.classList.add('touched');
+              });
+
+              var desc = document.createElement('textarea');
+              desc.rows = 2;
+              desc.className = 'pp-up-desc';
+              desc.placeholder = '图片描述（可选）';
+              desc.value = item.desc;
+              desc.addEventListener('input', function () {
+                item.desc = desc.value;
+                card.classList.add('touched');
+              });
+
+              card.appendChild(thumb);
+              card.appendChild(rm);
+              card.appendChild(name);
+              card.appendChild(tit);
+              card.appendChild(desc);
+              wrap.appendChild(card);
+            });
+          }
+
+          input.addEventListener('change', function () {
+            sel = Array.prototype.map.call(input.files, function (f) {
+              return { file: f, title: '', desc: '' };
+            });
+            render();
+          });
+
+          form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            if (!sel.length) {
+              alert('请至少选择一张图片');
+              return;
+            }
+            var fd = new FormData(form);
+            fd.delete('files[]'); // 移除原生 file 输入，改用受控的 sel，保证与标题/描述对齐
+            sel.forEach(function (item) {
+              fd.append('files[]', item.file, item.file.name);
+              fd.append('img_titles[]', item.title);
+              fd.append('img_descs[]', item.desc);
+            });
+            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '发布中…'; }
+
+            fetch(form.action, { method: 'POST', body: fd, credentials: 'same-origin' })
+              .then(function (res) {
+                if (res.redirected) {
+                  // 后端 pp_reply 302 -> 跳回面板并带 notice，随 fetch 重定向到目标 URL
+                  window.location.href = res.url;
+                  return;
+                }
+                return res.text().then(function () {
+                  alert('发布失败，请检查服务器配置与上传限制。');
+                  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
+                });
+              })
+              .catch(function () {
+                alert('发布失败，请重试。');
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
+              });
+          });
+        })();
+        </script>
       </div>
       <!-- 站点信息 / 关于 -->
       <div class="pp-card">
@@ -780,6 +919,9 @@ function runJob(job) {
         if (bar) bar.style.width = pct + '%';
         if (d.total > 0) {
           if (msg) msg.textContent = d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
+          if (d.failed > 0) {
+            if (msg) msg.textContent += '（失败 ' + d.failed + '）';
+          }
         } else {
           if (msg) msg.textContent = job === 'cleanup' ? '没有需要清理的孤儿文件' : '没有需要重建的图片';
         }
@@ -787,7 +929,11 @@ function runJob(job) {
           setTimeout(tick, 300);
         }
         else {
-          if (msg) msg.textContent += ' ✓ 完成';
+          if (d.failed > 0) {
+            if (msg) msg.textContent += ' ✓ 完成（' + d.failed + ' 张失败，请查看日志）';
+          } else {
+            if (msg) msg.textContent += ' ✓ 完成';
+          }
           if (btn) btn.disabled = false;
           setTimeout(function(){ location.reload(); }, 800);
         }

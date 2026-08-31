@@ -220,17 +220,17 @@ class MediaProcessor
         $done = false;
 
         if ($tools['magick']) {
-            exec(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), $o, $code);
+            $code = self::runCmd(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), 30);
             $done = $code === 0 && is_file($jpeg) && filesize($jpeg) > 0;
         }
         if (!$done && $tools['convert']) {
-            exec(escapeshellarg($tools['convert']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), $o, $code);
+            $code = self::runCmd(escapeshellarg($tools['convert']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), 30);
             $done = $code === 0 && is_file($jpeg) && filesize($jpeg) > 0;
         }
         if (!$done && $tools['heif']) {
             $bin = is_string($tools['heif']) ? $tools['heif'] : 'heif-convert';
             // heif-convert 要求输出名带 .jpg；多图时会在扩展名前加 -N（base.jpg -> base-1.jpg）
-            exec(escapeshellarg($bin) . ' ' . escapeshellarg($srcPath) . ' ' . escapeshellarg($jpeg . '.jpg'), $o, $code);
+            $code = self::runCmd(escapeshellarg($bin) . ' ' . escapeshellarg($srcPath) . ' ' . escapeshellarg($jpeg . '.jpg'), 30);
             $found = self::findProducedJpeg($jpeg);
             $done = $code === 0 && $found !== null;
             if ($done) {
@@ -294,7 +294,7 @@ class MediaProcessor
 
         $jpeg = tempnam(sys_get_temp_dir(), 'pp_avif_');
         if ($tools['magick']) {
-            exec(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -quality 92 ' . escapeshellarg($jpeg), $o, $code);
+            $code = self::runCmd(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -quality 92 ' . escapeshellarg($jpeg), 30);
             if ($code === 0 && is_file($jpeg) && filesize($jpeg) > 0) {
                 $img = imagecreatefromjpeg($jpeg);
                 @unlink($jpeg);
@@ -303,6 +303,64 @@ class MediaProcessor
         }
         @unlink($jpeg);
         throw new \RuntimeException('AVIF 需要 ImageMagick（安装 libavif）支持');
+    }
+
+    /**
+     * 以带超时的方式运行外部命令。
+     *
+     * PHP 的 exec() 会无限期阻塞在外部子进程上（max_execution_time 并不覆盖系统调用等待），
+     * 一旦 magick/heif-convert 卡死会拖住整个 PHP 工作进程。这里改用 proc_open 并强制超时，
+     * 超时即 kill，避免后端“网页卡死”。
+     *
+     * @param string $cmd     拼接好的命令行（参数已 escapeshellarg）
+     * @param int    $timeout 超时秒数
+     * @return int 退出码
+     * @throws \RuntimeException 进程无法启动或超时
+     */
+    private static function runCmd(string $cmd, int $timeout = 60): int
+    {
+        $proc = @proc_open($cmd, [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ], $pipes);
+        if (!is_resource($proc)) {
+            throw new \RuntimeException('无法启动外部命令: ' . $cmd);
+        }
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $start = microtime(true);
+        $status = proc_get_status($proc);
+        while ($status['running']) {
+            // 尽量抽空子进程输出，避免管道填满导致子进程阻塞
+            @stream_get_contents($pipes[1]);
+            @stream_get_contents($pipes[2]);
+
+            if ((microtime(true) - $start) > $timeout) {
+                proc_terminate($proc, 9);
+                usleep(300000);
+                if (proc_get_status($proc)['running']) {
+                    proc_terminate($proc, 9);
+                    usleep(100000);
+                }
+                @fclose($pipes[1]);
+                @fclose($pipes[2]);
+                proc_close($proc);
+                throw new \RuntimeException('外部命令超时（' . $timeout . 's）: ' . $cmd);
+            }
+            usleep(50000);
+            $status = proc_get_status($proc);
+        }
+
+        $exit = isset($status['exitcode']) ? (int)$status['exitcode'] : -1;
+        @fclose($pipes[1]);
+        @fclose($pipes[2]);
+        $closed = proc_close($proc);
+        if ($closed !== -1) {
+            $exit = $closed;
+        }
+        return $exit;
     }
 
     /** 依据 EXIF Orientation（1-8）对位图做旋转/镜像修正（GD 不会自动处理）。 */

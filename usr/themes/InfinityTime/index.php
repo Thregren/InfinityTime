@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.1.0
+ * @version 1.2.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -393,7 +393,8 @@
             return st.display !== 'none' && st.visibility !== 'hidden' && p.getBoundingClientRect().width > 0;
           }) || null;
         }
-        // 定位并显示侧栏：灯箱开着就显示，放到主图外侧
+        // 定位并显示侧栏：灯箱开着就显示，放到主图外侧。
+        // 当主图太宽、左右都放不下侧栏时，收缩主图宽度，保证 EXIF 面板不遮挡照片。
         function positionDockExif(popupArg) {
           const dock = getExifDock();
           const overlay = document.querySelector('.poptrox-overlay');
@@ -405,14 +406,31 @@
           dock.classList.add('show');
           const popup = popupArg || currentPopupExif();
           if (!popup) return;
-          const rect = popup.getBoundingClientRect();
-          if (rect.width < 10) return;
           const vw = window.innerWidth;
           if (vw <= 900) return;
+          const img = popup.querySelector('.pic img');
           const dw = dock.offsetWidth || 250;
-          let left = rect.right + 16;
-          if (left + dw > vw - 12) left = rect.left - dw - 16;
-          if (left < 12) left = vw - dw - 12;
+          const gap = 16;
+          const edge = 12;
+          const need = dw + gap;
+          let rect = popup.getBoundingClientRect();
+          if (rect.width < 10) return;
+          let left = rect.right + gap;
+          // 右侧放不下再试左侧；两侧都放不下则收缩主图，为侧栏腾出空间
+          if (left + dw > vw - edge) {
+            const spaceLeft = rect.left - edge;
+            if (spaceLeft >= need) {
+              left = rect.left - dw - gap;
+            } else {
+              const available = Math.max(320, vw - 2 * (need + edge));
+              if (img && img.style.maxWidth !== available + 'px') img.style.maxWidth = available + 'px';
+              void (img && img.offsetWidth); // 强制回流，让居中重新计算
+              rect = popup.getBoundingClientRect();
+              left = rect.right + gap;
+              if (left + dw > vw - edge) left = Math.max(edge, vw - dw - edge);
+            }
+          }
+          if (left < edge) left = Math.max(edge, vw - dw - edge);
           dock.style.left = left + 'px';
           dock.style.top = Math.max(12, rect.top) + 'px';
         }
