@@ -2707,7 +2707,7 @@ span.tag-list a:hover {
   font-size: 12px;
   color: rgba(255, 255, 255, .8);
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 4px;
 }
 
@@ -2795,7 +2795,7 @@ span.tag-list a:hover {
   font-size: 13px;
   color: rgba(255, 255, 255, .85);
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 6px;
 }
 @media (max-width: 900px) {
@@ -2807,4 +2807,64 @@ span.tag-list a:hover {
     width: auto;
     max-height: 38vh;
   }
+}
+
+/* ==== 首页瀑布流（多列 + 自然高度 + 原生懒加载） ==== */
+#main > #waterfall {
+  -webkit-column-count: 4;
+  column-count: 4;
+  -webkit-column-gap: 14px;
+  column-gap: 14px;
+  width: 100%;
+  padding: 14px 14px 0;
+}
+#main > #waterfall .thumb {
+  width: 100%;
+  height: auto;
+  min-height: 120px;
+  overflow: hidden;
+  border-radius: 10px;
+  margin: 0 0 14px;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+}
+#main > #waterfall .thumb > .image {
+  position: static;
+  display: block;
+  width: 100%;
+  height: auto;
+  background: none;
+  border: 0;
+}
+#main > #waterfall .thumb > .image img.zmki_px {
+  position: static;
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  object-fit: initial;
+}
+/* 卡片内只保留图片 + 标题浮层；分类/描述等不占流式高度 */
+#main > #waterfall .thumb .tag-info,
+#main > #waterfall .thumb .content-wrapper,
+#main > #waterfall .thumb .exif-panel {
+  display: none !important;
+}
+@media screen and (max-width: 1299px) {
+  #main > #waterfall { -webkit-column-count: 3; column-count: 3; }
+}
+@media screen and (max-width: 899px) {
+  #main > #waterfall { -webkit-column-count: 2; column-count: 2; }
+}
+@media screen and (max-width: 599px) {
+  #main > #waterfall { -webkit-column-count: 2; column-count: 2; }
+}
+/* 修正：main 改回块级，避免 flex 干扰瀑布流多列宽度（第二列边距异常） */
+#main {
+  display: block;
+}
+/* 底部固定 header 栏高度压缩 1/3（80px -> 54px） */
+#header {
+  height: 54px;
+  top: calc(100vh - 54px);
 }

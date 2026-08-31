@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.3.2
+ * @version 1.4.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -56,6 +56,7 @@
     <!-- Main -->
     <div id="main">
 
+      <div id="waterfall">
       <?php while ($this->next()): ?>
         <article class="thumb img-area">
           <?php
@@ -87,6 +88,8 @@
              data-titles='<?php echo json_encode($imgTitles, JSON_UNESCAPED_UNICODE); ?>'
              data-descs='<?php echo json_encode($imgDescs, JSON_UNESCAPED_UNICODE); ?>'>
             <img class="zmki_px my-photo"
+              src="<?php echo $firstThumb; ?>"
+              loading="lazy" decoding="async"
               onerror="this.src='<?php $this->options->themeUrl('assets/img/loading.gif'); ?>';this.onerror=null"
               data-src="<?php echo $firstThumb; ?>" />
           </a>
@@ -136,6 +139,7 @@
           </div>
         </article>
       <?php endwhile; ?>
+      </div>
       
       <!-- 分页导航 -->
       <?php
