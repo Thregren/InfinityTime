@@ -55,7 +55,7 @@
 | 交互 | 原生 JS + jQuery 3.4 |
 | 灯箱 | [poptrox](https://github.com/ajlkn/jquery.poptrox) 二次封装 |
 | 同步 | `MutationObserver` + 轻量轮询（EXIF 侧栏开箱才轮询） |
-| 懒加载 | `data-src` + 滚动检测 |
+| 懒加载 | 原生 `loading="lazy"`（滚动到视口附近自动加载） |
 | 图标 | 本地内嵌 `iconfont`（`woff`/`ttf`），不依赖 CDN |
 | 字段 | 自定义字段：`img/thumb/exif/titles/descs/addresses/device/location` |
 
@@ -124,6 +124,7 @@ InfinityTime-release/
 - **HEIC 不转码？** 在插件设置确认「转换工具」状态；不可用则安装 `imagemagick+libheif` 或 `heif-convert`，或在「heif-convert 路径」填服务端绝对路径。
 - **改了 WebP 设置但旧图没变？** 去「维护」点「重建缩略图/全图」。
 - **某些照片没有镜头数据？** 部分手机（如 iPhone）与个别相机不写入镜头型号，此时前台不显示「镜头」行（不推测）；拍到带镜头信息的照片会自动显示，兼容 `UndefinedTag:0xA434`。
+- **HEIC 的 HDR 能保留吗？** WebP/缩略图仅支持 8-bit SDR，无法保留 HEIC 的 10-bit / HDR gain map；转码时依赖 libheif/ImageMagick 的色调映射尽量保观感，**原始 HEIC 会保留在 `original/`** 以备后续重处理。
 - **图标不显示？** 已内嵌本地字体，无需联网；旧浏览器不支持 `woff`/`ttf` 时忽略即可（链接仍可用）。
 
 ## 发版（自动）

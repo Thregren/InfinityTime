@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.2
+ * @version 1.4.3
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -41,7 +41,7 @@
       <ul class="nav_links">
 
 
-        <li><a type="button" id="fullscreen" class="btn btn-default visible-lg visible-md" alt="切换全屏">
+        <li><a type="button" id="fullscreen" class="btn btn-default visible-lg visible-md" aria-label="切换全屏" title="切换全屏">
           <i class="iconfont icon-quanping"></i>
               <use xlink:href="#icon-zmki-ziyuan-copy"></use>
             </svg></a></li>
@@ -80,13 +80,14 @@
           $exif0 = $exifList[0] ?? [];
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
           ?>
-          <a class="image my-photo" alt="loading" href="<?php echo $firstImage; ?>"
+          <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo $firstImage; ?>"
              data-images='<?php echo json_encode($images, JSON_UNESCAPED_UNICODE); ?>'
              data-exif='<?php echo json_encode($exifList, JSON_UNESCAPED_UNICODE); ?>'
              data-addresses='<?php echo json_encode($addrList, JSON_UNESCAPED_UNICODE); ?>'
              data-titles='<?php echo json_encode($imgTitles, JSON_UNESCAPED_UNICODE); ?>'
              data-descs='<?php echo json_encode($imgDescs, JSON_UNESCAPED_UNICODE); ?>'>
             <img class="zmki_px my-photo"
+              alt="<?php echo htmlspecialchars($this->title()); ?>"
               src="<?php echo $firstThumb; ?>"
               loading="lazy" decoding="async"
               onerror="this.src='<?php $this->options->themeUrl('assets/img/loading.gif'); ?>';this.onerror=null"
@@ -297,6 +298,33 @@
           clearTimeout(rt);
           rt = setTimeout(build, 120);
         });
+      })();
+      </script>
+      <script>
+      // 为灯箱控制按钮补无障碍 aria-label / title（poptrox 生成的弹窗）
+      (function () {
+        var map = { '.closer': '关闭', '.nav-previous': '上一张', '.nav-next': '下一张' };
+        function labelPopup(popup) {
+          Object.keys(map).forEach(function (sel) {
+            var el = popup.querySelector(sel);
+            if (el) {
+              if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', map[sel]);
+              if (!el.getAttribute('title')) el.setAttribute('title', map[sel]);
+            }
+          });
+        }
+        document.querySelectorAll('.poptrox-popup').forEach(labelPopup);
+        var obs = new MutationObserver(function (muts) {
+          muts.forEach(function (m) {
+            m.addedNodes.forEach(function (n) {
+              if (n.nodeType !== 1) return;
+              if (n.classList && n.classList.contains('poptrox-popup')) labelPopup(n);
+              var p = n.querySelector && n.querySelector('.poptrox-popup');
+              if (p) labelPopup(p);
+            });
+          });
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
       })();
       </script>
       <script>
