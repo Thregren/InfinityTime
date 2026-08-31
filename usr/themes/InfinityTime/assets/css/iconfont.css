@@ -1,0 +1,22 @@
+/* 本地内嵌 iconfont（由主题自带，避免依赖 CDN） */
+@font-face {
+  font-family: "iconfont";
+  src: url("../fonts/iconfont.woff") format("woff"),
+       url("../fonts/iconfont.ttf") format("truetype");
+  font-display: swap;
+}
+.iconfont {
+  font-family: "iconfont" !important;
+  font-size: 16px;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.icon-gengduo:before { content: "\e002"; }
+.icon-quanping:before { content: "\e003"; }
+.icon-shouye:before { content: "\e00b"; }
+.icon-github:before { content: "\e00c"; }
+.icon-weibo:before { content: "\e00d"; }
+.icon-map-pin-2-line:before { content: "\e00e"; }
+.icon-time-line:before { content: "\e00f"; }
+.icon-camera-lens-line:before { content: "\e010"; }
