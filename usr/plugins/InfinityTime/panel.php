@@ -139,8 +139,8 @@ function pp_exif_summary(array $exif): string
     if (!empty($exif['exposure'])) {
         $parts[] = $exif['exposure'];
     }
-    if (!empty($exif['focal'])) {
-        $parts[] = $exif['focal'] . 'mm';
+    if (!empty($exif['focal']) || !empty($exif['focal35'])) {
+        $parts[] = ($exif['focal35'] ?? $exif['focal']) . 'mm';
     }
     return implode(' · ', $parts);
 }

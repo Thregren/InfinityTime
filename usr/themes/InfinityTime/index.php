@@ -288,7 +288,10 @@
           if (exif.iso) html += '<div class="exif-item"><span>ISO</span><b>' + esc(exif.iso) + '</b></div>';
           if (exif.fnumber) html += '<div class="exif-item"><span>光圈</span><b>f/' + esc(exif.fnumber) + '</b></div>';
           if (exif.exposure) html += '<div class="exif-item"><span>快门</span><b>' + esc(exif.exposure) + '</b></div>';
-          if (exif.focal) html += '<div class="exif-item"><span>焦距</span><b>' + esc(exif.focal) + 'mm</b></div>';
+          if (exif.focal || exif.focal35) {
+            var fl = exif.focal35 || exif.focal;
+            html += '<div class="exif-item"><span>焦距</span><b>' + esc(fl) + 'mm</b></div>';
+          }
           if (exif.datetime) html += '<div class="exif-item"><span>时间</span><b>' + esc(cnDate(exif.datetime)) + '</b></div>';
           return html;
         }

@@ -43,11 +43,70 @@ class ExifReader
         $out['exposure']    = self::formatExposure($exif['ExposureTime'] ?? null);
         $out['focal']       = self::rational($exif['FocalLength'] ?? null);
         $out['focal35']     = self::rational($exif['FocalLengthIn35mmFilm'] ?? null);
+        if ($out['focal'] !== null && $out['focal35'] === null) {
+            $out['focal35'] = self::equivFocal($out['focal'], $exif, $out['make'], $out['model']);
+        }
         $out['datetime']    = self::norm($ifd0['DateTimeOriginal'] ?? $ifd0['DateTime'] ?? null);
         $out['orientation'] = intval($ifd0['Orientation'] ?? 1);
         $out['gps']         = self::readGps($gps);
 
         return $out;
+    }
+
+    /** 推算 35mm 等效焦距：优先传感器尺寸法，其次机型裁切系数；无法判定则返回 null。 */
+    private static function equivFocal(float $focal, array $exif, ?string $make, ?string $model): ?float
+    {
+        $crop = self::cropFromSensor($exif);
+        if ($crop === null) {
+            $crop = self::cropFromModel($make, $model);
+        }
+        if ($crop === null || $crop <= 0) {
+            return null;
+        }
+        return round($focal * $crop, 1);
+    }
+
+    /** 由焦平面分辨率与像素宽算出传感器宽度，得到 35mm 裁切系数。 */
+    private static function cropFromSensor(array $exif): ?float
+    {
+        $unit = (int)($exif['FocalPlaneResolutionUnit'] ?? 0);
+        $xres = self::rational($exif['FocalPlaneXResolution'] ?? null);
+        $w = (int)($exif['ExifImageWidth'] ?? 0);
+        if (!$unit || !$xres || !$w) {
+            return null;
+        }
+        $mmPerUnit = ($unit === 2) ? 25.4 : (($unit === 3) ? 10.0 : (($unit === 4) ? 1.0 : (($unit === 5) ? 0.001 : null)));
+        if ($mmPerUnit === null) {
+            return null;
+        }
+        $sensorW = ($w / $xres) * $mmPerUnit; // mm
+        if ($sensorW <= 0) {
+            return null;
+        }
+        return round(36.0 / $sensorW, 2);
+    }
+
+    /** 依据品牌/型号给出常见的裁切系数（回退方案）。 */
+    private static function cropFromModel(?string $make, ?string $model): ?float
+    {
+        $s = strtolower(trim(($make ?? '') . ' ' . ($model ?? '')));
+        // Micro Four Thirds：Olympus / OM System / Panasonic G/GF/DMC
+        if (preg_match('/olympus|om system|panasonic|dmc-|\\bg\\d|\\bgh\\d|\\bgf\\d|\\bgx\\d/', $s)) {
+            return 2.0;
+        }
+        // 1 英寸传感器常见机型
+        if (preg_match('/rx100|zv-1|g7x|g9x|g5x|sx70|hx99|dsc-.*hx/', $s)) {
+            return 2.7;
+        }
+        // Canon APS-C
+        if (preg_match('/^canon .*\\b(eos\\s?(7d|60d|70d|80d|90d|\\d{2,3}d)|eos\\s?r7|eos\\s?r10|eos\\s?r50|eos\\s?m\\d?|kiss)/', $s)) {
+            return 1.6;
+        }
+        // Nikon / Sony / Fujifilm / Pentax APS-C
+        if (preg_match('/nikon\\s?d\\d{3,4}|nikon\\s?z(50|fc|f)\\b|sony.*\\b(a\\d{3}|a\\d{4}|a7c)\\b|fujifilm\\s?x|pentax\\s?\\*?k/', $s)) {
+            return 1.5;
+        }
+        return null;
     }
 
     /** 归一化字符串（去除尾部 \0、多余空白）。 */
