@@ -2732,6 +2732,16 @@ span.tag-list a:hover {
   opacity: 1;
   pointer-events: auto;
 }
+/* 灯箱主图：桌面端为 EXIF 停靠栏预留宽度（在渲染时就限宽，避免切图时先闪原尺寸再收缩） */
+:root {
+  --exif-dock-reserve: calc((218px + 16px + 12px) * 2);
+}
+@media (min-width: 901px) {
+  body.exif-dock-open .poptrox-popup .pic img,
+  body.exif-dock-open .poptrox-popup .pic-swipe-slide img {
+    max-width: calc(100vw - var(--exif-dock-reserve)) !important;
+  }
+}
 .poptrox-exif-dock .exif-title {
   font-size: 13px;
   letter-spacing: .08em;

@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.3.1
+ * @version 1.3.2
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -288,20 +288,10 @@
       document.addEventListener('DOMContentLoaded', function() {
 
         // 把 EXIF 生成成 HTML（按字段）
-        // 镜头标签：优先真实镜头名；手机照无 LensModel 时按等效焦距推断镜头位
+        // 镜头标签：直接使用 EXIF 读取到的镜头描述；无则不显示（不做推测）
         function lensLabel(exif) {
           if (exif.lens) return exif.lens;
-          var make = String(exif.make || '').toLowerCase();
-          var model = String(exif.model || '').toLowerCase();
-          var isPhone = /iphone|apple|\bpixel\b|huawei|xiaomi|poco|oppo|vivo|oneplus|galaxy\s?s\d|mi\s?\d|redmi/.test(make + ' ' + model);
-          if (!isPhone) return '';
-          var f = parseFloat(exif.focal35 || exif.focal || 0);
-          if (!f) return '';
-          if (f < 18) return '超广角';
-          if (f < 34) return '主摄';
-          if (f < 52) return '标准';
-          if (f < 90) return '中长焦';
-          return '长焦';
+          return '';
         }
         function exifItemHtml(exif) {
           let html = '';
@@ -425,9 +415,11 @@
           if (!overlay || getComputedStyle(overlay).display === 'none'
               || overlay.style.display === 'none' || overlay.style.visibility === 'hidden') {
             dock.classList.remove('show');
+            document.body.classList.remove('exif-dock-open');
             return;
           }
           dock.classList.add('show');
+          document.body.classList.add('exif-dock-open');
           const popup = popupArg || currentPopupExif();
           if (!popup) return;
           const vw = window.innerWidth;
@@ -493,6 +485,7 @@
             && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden');
         }
         function applyExifState(vis) {
+          document.body.classList.toggle('exif-dock-open', vis);
           if (vis) {
             if (document.body.style.overflow !== 'hidden') document.body.style.overflow = 'hidden';
           } else {
@@ -532,6 +525,8 @@
           if (a) {
             activeArticle = a.closest('.thumb');
             ensureExifObserver();
+            // 打开瞬间就标记“需要预留 EXIF 侧栏宽度”，避免首图闪一下原尺寸再收缩
+            document.body.classList.add('exif-dock-open');
             syncDockExif();
           }
         }, true);

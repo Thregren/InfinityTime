@@ -24,36 +24,10 @@ function pp_date_cn($s)
     return (string)$s;
 }
 
-/**
- * 镜头标签：优先真实镜头名；手机照无 LensModel 时按 35mm 等效焦距推断镜头位。
- */
+/** 镜头标签：直接使用 EXIF 读取到的镜头描述；无则不显示（不做推测）。 */
 function pp_exif_lens(array $exif): string
 {
-    if (!empty($exif['lens'])) {
-        return (string)$exif['lens'];
-    }
-    $make = strtolower((string)($exif['make'] ?? ''));
-    $model = strtolower((string)($exif['model'] ?? ''));
-    if (!preg_match('/iphone|apple|\bpixel\b|huawei|xiaomi|poco|oppo|vivo|oneplus|galaxy\s?s\d|mi\s?\d|redmi/', $make . ' ' . $model)) {
-        return '';
-    }
-    $f = (float)($exif['focal35'] ?? $exif['focal'] ?? 0);
-    if ($f <= 0) {
-        return '';
-    }
-    if ($f < 18) {
-        return '超广角';
-    }
-    if ($f < 34) {
-        return '主摄';
-    }
-    if ($f < 52) {
-        return '标准';
-    }
-    if ($f < 90) {
-        return '中长焦';
-    }
-    return '长焦';
+    return !empty($exif['lens']) ? (string)$exif['lens'] : '';
 }
 
 function themeConfig($form)
