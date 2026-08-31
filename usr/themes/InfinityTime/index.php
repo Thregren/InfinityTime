@@ -346,6 +346,8 @@
           if (g) g.innerHTML = exifItemHtml(exif);
           const t = dock.querySelector('.exif-addr-text');
           if (t) t.textContent = addr;
+          const ar = dock.querySelector('.exif-addr');
+          if (ar) ar.style.display = addr ? '' : 'none';
         }
 
         // 根据当前弹窗显示的主图 src，匹配到该相册里的图片下标
