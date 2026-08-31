@@ -18,7 +18,7 @@ class ExifReader
         $out = [
             'make' => null, 'model' => null, 'lens' => null, 'iso' => null,
             'fnumber' => null, 'exposure' => null, 'focal' => null, 'focal35' => null,
-            'datetime' => null, 'orientation' => 1,
+            'flash' => null, 'datetime' => null, 'orientation' => 1,
             'gps' => null, // ['lat'=>x,'lng'=>y,'latRef'=>..,'lngRef'=>..]
         ];
 
@@ -46,11 +46,25 @@ class ExifReader
         if ($out['focal'] !== null && $out['focal35'] === null) {
             $out['focal35'] = self::equivFocal($out['focal'], $exif, $out['make'], $out['model']);
         }
+        $out['flash']       = self::flashFired($exif['Flash'] ?? null);
         $out['datetime']    = self::norm($ifd0['DateTimeOriginal'] ?? $ifd0['DateTime'] ?? null);
         $out['orientation'] = intval($ifd0['Orientation'] ?? 1);
         $out['gps']         = self::readGps($gps);
 
         return $out;
+    }
+
+    /** EXIF Flash 是否触发（位 0）。未记录则返回 null，展示时据此隐藏该行。 */
+    private static function flashFired($v): ?bool
+    {
+        if ($v === null || $v === '') {
+            return null;
+        }
+        $n = is_numeric($v) ? (int)$v : null;
+        if ($n === null) {
+            return null;
+        }
+        return ($n & 1) === 1;
     }
 
     /** 推算 35mm 等效焦距：优先传感器尺寸法，其次机型裁切系数；无法判定则返回 null。 */

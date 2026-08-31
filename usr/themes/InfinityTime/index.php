@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.2.0
+ * @version 1.3.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -120,11 +120,16 @@
               <?php if(!empty($exif0['make']) || !empty($exif0['model'])): ?>
                 <div class="exif-item"><span>相机</span><b><?php echo htmlspecialchars(trim(($exif0['make'] ?? '') . ' ' . ($exif0['model'] ?? ''))); ?></b></div>
               <?php endif; ?>
+              <?php if(!empty($exif0['lens'])): ?>
+                <div class="exif-item"><span>镜头</span><b><?php echo htmlspecialchars($exif0['lens']); ?></b></div>
+              <?php endif; ?>
               <?php if(!empty($exif0['iso'])): ?><div class="exif-item"><span>ISO</span><b><?php echo (int)$exif0['iso']; ?></b></div><?php endif; ?>
               <?php if(!empty($exif0['fnumber'])): ?><div class="exif-item"><span>光圈</span><b>f/<?php echo $exif0['fnumber']; ?></b></div><?php endif; ?>
               <?php if(!empty($exif0['exposure'])): ?><div class="exif-item"><span>快门</span><b><?php echo htmlspecialchars($exif0['exposure']); ?></b></div><?php endif; ?>
-              <?php if(!empty($exif0['focal'])): ?><div class="exif-item"><span>焦距</span><b><?php echo $exif0['focal']; ?>mm</b></div><?php endif; ?>
-              <?php if(!empty($exif0['datetime'])): ?><div class="exif-item"><span>时间</span><b><?php echo htmlspecialchars($exif0['datetime']); ?></b></div><?php endif; ?>
+              <?php $focalShow = $exif0['focal35'] ?? $exif0['focal'] ?? ''; ?>
+              <?php if(!empty($focalShow)): ?><div class="exif-item"><span>焦距</span><b><?php echo $focalShow; ?>mm</b></div><?php endif; ?>
+              <?php if(!empty($exif0['flash'])): ?><div class="exif-item"><span>闪光</span><b>是</b></div><?php endif; ?>
+              <?php if(!empty($exif0['datetime'])): ?><div class="exif-item"><span>时间</span><b><?php echo htmlspecialchars(pp_date_cn((string)$exif0['datetime'])); ?></b></div><?php endif; ?>
             </div>
             <div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"><?php echo htmlspecialchars($addr0 ?: ''); ?></span></div>
           </div>
@@ -285,6 +290,7 @@
         function exifItemHtml(exif) {
           let html = '';
           if (exif.make || exif.model) html += '<div class="exif-item"><span>相机</span><b>' + esc((exif.make||'') + ' ' + (exif.model||'')) + '</b></div>';
+          if (exif.lens) html += '<div class="exif-item"><span>镜头</span><b>' + esc(exif.lens) + '</b></div>';
           if (exif.iso) html += '<div class="exif-item"><span>ISO</span><b>' + esc(exif.iso) + '</b></div>';
           if (exif.fnumber) html += '<div class="exif-item"><span>光圈</span><b>f/' + esc(exif.fnumber) + '</b></div>';
           if (exif.exposure) html += '<div class="exif-item"><span>快门</span><b>' + esc(exif.exposure) + '</b></div>';
@@ -292,6 +298,7 @@
             var fl = exif.focal35 || exif.focal;
             html += '<div class="exif-item"><span>焦距</span><b>' + esc(fl) + 'mm</b></div>';
           }
+          if (exif.flash) html += '<div class="exif-item"><span>闪光</span><b>是</b></div>';
           if (exif.datetime) html += '<div class="exif-item"><span>时间</span><b>' + esc(cnDate(exif.datetime)) + '</b></div>';
           return html;
         }
@@ -459,24 +466,58 @@
             renderExif(popup, idx);
           }
         }
-        // 记录点击的相册
-        document.addEventListener('click', function(e) {
-          const a = e.target.closest ? e.target.closest('a.image.my-photo') : null;
-          if (a) { activeArticle = a.closest('.thumb'); syncDockExif(); }
-        }, true);
-        // 轮询：灯箱开着时刷新侧栏并锁定背景滚动；关闭时恢复
-        setInterval(function() {
+        // EXIF 侧栏：只在灯箱打开时运行轮询，关闭时停止，避免后台空转
+        let exifTimer = null;
+        let exifObserver = null;
+        let exifObservedEl = null;
+        function overlayVisible() {
           const overlay = document.querySelector('.poptrox-overlay');
-          const vis = overlay && getComputedStyle(overlay).display !== 'none'
-            && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden';
+          return !!(overlay && getComputedStyle(overlay).display !== 'none'
+            && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden');
+        }
+        function applyExifState(vis) {
           if (vis) {
             if (document.body.style.overflow !== 'hidden') document.body.style.overflow = 'hidden';
-            syncDockExif();
           } else {
             if (document.body.style.overflow !== '') document.body.style.overflow = '';
             if (exifDock) exifDock.classList.remove('show');
           }
-        }, 120);
+        }
+        function startExifPoll() {
+          if (exifTimer) return;
+          exifTimer = setInterval(function() {
+            const vis = overlayVisible();
+            applyExifState(vis);
+            if (vis) syncDockExif();
+          }, 120);
+        }
+        function stopExifPoll() {
+          if (exifTimer) { clearInterval(exifTimer); exifTimer = null; }
+        }
+        // 监听灯箱 overlay 显隐（poptrox 会改写它的 style），按需开/停轮询
+        function ensureExifObserver() {
+          const overlay = document.querySelector('.poptrox-overlay');
+          if (!overlay) return;
+          if (exifObservedEl === overlay) return;
+          if (exifObserver) exifObserver.disconnect();
+          exifObservedEl = overlay;
+          exifObserver = new MutationObserver(function() {
+            const vis = overlayVisible();
+            if (vis) { applyExifState(true); startExifPoll(); }
+            else { applyExifState(false); stopExifPoll(); }
+          });
+          exifObserver.observe(overlay, { attributes: true, attributeFilter: ['style', 'class'] });
+          if (overlayVisible()) startExifPoll();
+        }
+        // 记录点击的相册
+        document.addEventListener('click', function(e) {
+          const a = e.target.closest ? e.target.closest('a.image.my-photo') : null;
+          if (a) {
+            activeArticle = a.closest('.thumb');
+            ensureExifObserver();
+            syncDockExif();
+          }
+        }, true);
 
       });
       </script>
