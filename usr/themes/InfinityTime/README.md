@@ -1,26 +1,32 @@
-# 无限时光（Infinity Time）
+# InfinityTime（无限时光）主题
 
-一款用于 Typecho 的纯图片分享主题。搭配官方配套插件 **InfinityTime** 即可：
+Typecho 纯图片分享前端主题，需搭配配套插件 **InfinityTime** 使用。
 
-- 上传图片自动转 WebP 全图 + 缩略图，并按设置保留原图；
-- 读取并展示 EXIF（相机/ISO/光圈/快门/焦距/拍摄时间，中文日期）；
-- 每张图片支持可选标题、描述、拍摄地址；
-- 图集发布、站点信息、联系方式（可视化选图标）都在后台可视化配置；
-- 无需改动 Typecho 原生文件，安装主题 + 插件即可使用。
+## 特性
 
-## 安装
+- 响应式图片网格 + 懒加载；
+- 灯箱大图（上一张/下一张、键盘、滚轮、移动端横滑）；
+- 主图外侧 **EXIF 侧栏**：标题、描述、拍摄参数、地址，随图片加载/切换自动显示与隐藏；
+- 卡片显示**拍摄时间**（中文日期）；
+- 左下角网站标签点击打开「关于」，页脚联系方式可后台配置；
+- 本地内嵌 `iconfont` 图标，不依赖 CDN。
 
-1. 将 `InfinityTime` 主题目录放到 `usr/themes/`，在后台「外观 → 主题」启用。
-2. 将配套 `InfinityTime` 插件放到 `usr/plugins/`，在后台「设置 → 插件」启用。
-3. 进入「InfinityTime」菜单，上传图片发布图集；前台即为图片网格 + 灯箱（EXIF 侧栏）。
+## 技术栈
 
-> 详见仓库根目录的 `部署与可移植性说明.md`。
+- PHP ≥ 7.4 + Typecho 1.3；
+- 原生 HTML/CSS/JS + jQuery + poptrox 灯箱；
+- `MutationObserver` + `ResizeObserver` + 轮询同步 EXIF 侧栏；
+- 自定义字段：`img/thumb/exif/titles/descs/addresses/device/location`。
 
 ## 环境要求
 
-- PHP ≥ 7.4（推荐 8.x），启用 `php-gd`（WebP/缩略图）、`php-exif`；
-- HEIC/HEIF 可选：安装 ImageMagick + libheif 或 `heif-convert`（非标准路径可在插件设置里指定）。
+- PHP ≥ 7.4，`php-gd`、`php-exif`；
+- HEIC 可选：ImageMagick + libheif 或 `heif-convert`。
 
-## 版权与致谢
+## 完整说明
 
-本主题由 [TimePlus](https://github.com/zhheo/TimePlus)（原作者 zhheo）二次开发而来，保留其原始 MIT 许可。
+安装与体验详见仓库 [README.md](https://github.com/Thregren/InfinityTime) 与 [`部署与可移植性说明.md`](../../部署与可移植性说明.md)。
+
+## 许可
+
+MIT。由 [TimePlus](https://github.com/zhheo/TimePlus)（zhheo）二次开发而来。
