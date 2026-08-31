@@ -2809,14 +2809,21 @@ span.tag-list a:hover {
   }
 }
 
-/* ==== 首页瀑布流（多列 + 自然高度 + 原生懒加载） ==== */
+/* ==== 首页瀑布流（JS 弹性列 + 自然高度，保证首行顶对齐） ==== */
 #main > #waterfall {
-  -webkit-column-count: 4;
-  column-count: 4;
-  -webkit-column-gap: 14px;
-  column-gap: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
   width: 100%;
   padding: 14px 14px 0;
+}
+#main > #waterfall .wf-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: stretch;
 }
 #main > #waterfall .thumb {
   width: 100%;
@@ -2824,9 +2831,7 @@ span.tag-list a:hover {
   min-height: 120px;
   overflow: hidden;
   border-radius: 10px;
-  margin: 0 0 14px;
-  break-inside: avoid;
-  -webkit-column-break-inside: avoid;
+  margin: 0;
 }
 #main > #waterfall .thumb > .image {
   position: static;
@@ -2849,15 +2854,6 @@ span.tag-list a:hover {
 #main > #waterfall .thumb .content-wrapper,
 #main > #waterfall .thumb .exif-panel {
   display: none !important;
-}
-@media screen and (max-width: 1299px) {
-  #main > #waterfall { -webkit-column-count: 3; column-count: 3; }
-}
-@media screen and (max-width: 899px) {
-  #main > #waterfall { -webkit-column-count: 2; column-count: 2; }
-}
-@media screen and (max-width: 599px) {
-  #main > #waterfall { -webkit-column-count: 2; column-count: 2; }
 }
 /* 修正：main 改回块级，避免 flex 干扰瀑布流多列宽度（第二列边距异常） */
 #main {

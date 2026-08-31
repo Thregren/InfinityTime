@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.1
+ * @version 1.4.2
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -236,56 +236,68 @@
       <script type="text/javascript">
         function isInSight(el) {
           const bound = el.getBoundingClientRect();
-          const clientHeight = window.innerHeight;
-          //如果只考虑向下滚动加载
-          //const clientWidth=window.innerWeight;
-          return bound.top <= clientHeight + 100;
+          return bound.top <= window.innerHeight + 100;
         }
-
-        let index = 0;
-        function checkImgs() {
-          const imgs = document.querySelectorAll('.my-photo');
-          for (let i = index; i < imgs.length; i++) {
-            if (isInSight(imgs[i])) {
-              loadImg(imgs[i]);
-              index = i;
-            }
-          }
-          // Array.from(imgs).forEach(el => {
-          //   if (isInSight(el)) {
-          //     loadImg(el);
-          //   }
-          // })
-        }
-
         function loadImg(el) {
-          if (!el.src) {
-            const source = el.dataset.src;
-            el.src = source;
+          if (!el.src && el.dataset.src) {
+            el.src = el.dataset.src;
           }
         }
-
-        function throttle(fn, mustRun = 10) {
-          const timer = null;
-          let previous = null;
+        function checkImgs() {
+          // 每次全量检查：已加载的图片（有 src）会被 loadImg 跳过，避免 index 跳过导致的漏加载
+          document.querySelectorAll('.my-photo').forEach(function (el) {
+            if (isInSight(el)) loadImg(el);
+          });
+        }
+        function throttle(fn, mustRun = 16) {
+          var last = 0;
           return function () {
-            const now = new Date();
-            const context = this;
-            const args = arguments;
-            if (!previous) {
-              previous = now;
+            var now = Date.now();
+            if (now - last >= mustRun) {
+              last = now;
+              fn.apply(this, arguments);
             }
-            const remaining = now - previous;
-            if (mustRun && remaining >= mustRun) {
-              fn.apply(context, args);
-              previous = now;
-            }
-          }
+          };
         }
       </script>
       <script>
-        window.onload = checkImgs;
-        window.onscroll = throttle(checkImgs);
+        window.addEventListener('load', checkImgs);
+        window.addEventListener('scroll', throttle(checkImgs), { passive: true });
+      </script>
+      <script>
+      // 瀑布流：按响应式列数把卡片分配到弹性列，保证首行完全顶对齐
+      (function () {
+        var wf = document.getElementById('waterfall');
+        if (!wf) return;
+        function colCount() {
+          var w = window.innerWidth;
+          if (w >= 1300) return 4;
+          if (w >= 900) return 3;
+          return 2;
+        }
+        function build() {
+          var cards = Array.prototype.slice.call(wf.querySelectorAll('.thumb'));
+          wf.querySelectorAll('.wf-col').forEach(function (c) { c.remove(); });
+          if (!cards.length) return; // 无卡片则不创建空列
+          var N = Math.max(1, colCount());
+          var cols = [];
+          for (var i = 0; i < N; i++) {
+            var col = document.createElement('div');
+            col.className = 'wf-col';
+            wf.appendChild(col);
+            cols.push(col);
+          }
+          var idx = 0;
+          cards.forEach(function (card) { cols[idx++ % N].appendChild(card); });
+        }
+        build();
+        if (typeof checkImgs === 'function') checkImgs(); // 重建后立即加载首屏可见图片
+        var rt;
+        window.addEventListener('resize', function () {
+          clearTimeout(rt);
+          rt = setTimeout(build, 120);
+        });
+      })();
       </script>
       <script>
       document.addEventListener('DOMContentLoaded', function() {
