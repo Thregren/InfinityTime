@@ -13,7 +13,6 @@ namespace TypechoPlugin\InfinityTime;
 use Typecho\Db;
 use Utils\Helper;
 use Typecho\Widget\Helper\Form;
-use Typecho\Widget\Helper\Form\Element\Checkbox;
 use Typecho\Widget\Helper\Form\Element\Number;
 use Typecho\Widget\Helper\Form\Element\Radio;
 use Typecho\Widget\Helper\Form\Element\Text;

@@ -32,6 +32,10 @@ class MediaProcessor
      */
     public static function detectTools(): array
     {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
         $tools = [
             'imagick'  => class_exists('\\Imagick'),
             'magick'   => self::which('magick'),
@@ -71,7 +75,8 @@ class MediaProcessor
             }
         }
 
-        return $tools;
+        $cached = $tools;
+        return $cached;
     }
 
     /** 返回数组里第一个可执行文件路径，否则 null。 */

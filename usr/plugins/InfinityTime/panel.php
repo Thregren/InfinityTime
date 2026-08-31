@@ -407,15 +407,32 @@ function pp_albums(string $prefix): array
     $db = Db::get();
     $rows = $db->fetchAll($db->select('cid', 'title')->from($prefix . 'contents')
         ->where('type = ?', 'post')->where('status = ?', 'publish')->order('created', Db::SORT_DESC));
+    if (!$rows) {
+        return [];
+    }
+
+    // 一次性取回所有图集的 img/device/tags/location 字段，避免 N+1 查询
+    $cids = array_map(fn($r) => (int)$r['cid'], $rows);
+    $markers = implode(',', array_fill(0, count($cids), '?'));
+    $all = $db->fetchAll(
+        $db->select('cid', 'name', 'str_value')->from($prefix . 'fields')
+            ->where('cid IN (' . $markers . ')', ...$cids)
+            ->where("name IN ('img','device','tags','location')")
+    );
+    $byCid = [];
+    foreach ($all as $f) {
+        $byCid[(int)$f['cid']][$f['name']] = $f['str_value'];
+    }
+
     $out = [];
     foreach ($rows as $r) {
-        $field = $db->fetchRow($db->select('str_value')->from($prefix . 'fields')
-            ->where('cid = ?', $r['cid'])->where('name = ?', 'img')->limit(1));
-        if (!empty($field['str_value'])) {
-            $r['img_count'] = count(array_filter(explode("\n", $field['str_value'])));
-            $r['device'] = pp_field($r['cid'], 'device');
-            $r['tags'] = pp_field($r['cid'], 'tags');
-            $r['location'] = pp_field($r['cid'], 'location');
+        $cid = (int)$r['cid'];
+        $img = $byCid[$cid]['img'] ?? '';
+        if ($img !== '') {
+            $r['img_count'] = count(array_filter(explode("\n", $img)));
+            $r['device'] = $byCid[$cid]['device'] ?? '';
+            $r['tags'] = $byCid[$cid]['tags'] ?? '';
+            $r['location'] = $byCid[$cid]['location'] ?? '';
             $out[] = $r;
         }
     }
