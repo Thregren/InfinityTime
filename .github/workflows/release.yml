@@ -34,6 +34,19 @@ jobs:
           ( cd usr/plugins && zip -qr "$GITHUB_WORKSPACE/dist/infinitytime-plugin.zip" InfinityTime -x 'InfinityTime/data/*' '*/.DS_Store' )
           ls -la dist/
 
+      - name: Build release notes (changelog)
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v sec="## $TAG" '
+            $0 == sec { f=1; next }
+            f && /^## / { exit }
+            f { print }
+          ' usr/themes/InfinityTime/update.md > dist/RELEASE_NOTES.md
+          # 若未能抽取到当前版本小节，回退为整个 changelog
+          if [ ! -s dist/RELEASE_NOTES.md ]; then cp usr/themes/InfinityTime/update.md dist/RELEASE_NOTES.md; fi
+          echo '--- release notes ---'
+          cat dist/RELEASE_NOTES.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -41,4 +54,4 @@ jobs:
           files: |
             dist/infinitytime-theme.zip
             dist/infinitytime-plugin.zip
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
