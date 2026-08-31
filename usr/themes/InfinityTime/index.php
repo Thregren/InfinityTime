@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.0
+ * @version 1.4.1
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -45,7 +45,6 @@
           <i class="iconfont icon-quanping"></i>
               <use xlink:href="#icon-zmki-ziyuan-copy"></use>
             </svg></a></li>
-        <li><a href="#footer">关于</a></li>
       </ul>
     </nav>
   </header>
