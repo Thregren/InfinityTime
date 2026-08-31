@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.4.6
+
+- 修复：Linux 服务器上 `activate()` 报 `Class ...\Lib\MediaProcessor not found`——插件 `lib/` 目录与命名空间 `Lib`（大写）大小写不一致，Typecho 自动加载器按大小写拼路径；将目录重命名为 `Lib/`。
+
 ## 1.4.5
 
 - 修复：插件被 Typecho 判定为「即插即用」导致无菜单/无法停用——`Plugin` 类补 `implements Typecho\Plugin\PluginInterface` 并实现 `personalConfig()`，使 Typecho 正确识别「启用/停用」并调用 `activate()`。

@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.5
+ * @version 1.4.6
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -25,7 +25,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
  */
 class Plugin implements PluginInterface
 {
-    public const VERSION = '1.4.5';
+    public const VERSION = '1.4.6';
     public const MENU_NAME = 'InfinityTime';
 
     /**
