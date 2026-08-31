@@ -591,8 +591,8 @@ include $adminDir . '/menu.php';
       .pp-icon-pop .icn:hover{border-color:#467B96;background:#edf1f4}
       .pp-icon-pop .icn.active{border-color:#467B96;background:#e3eaf0;color:#467B96}
       /* 上传预览：已选文件卡片（大图预览 + 逐图标题/描述） */
-      #pp-upload-previews{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px}
-      .pp-up-item{position:relative;width:230px;background:#fff;border:1px solid #E3E3E0;border-radius:6px;overflow:hidden;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+      #pp-upload-previews{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
+      .pp-up-item{position:relative;background:#fff;border:1px solid #E3E3E0;border-radius:6px;overflow:hidden;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
       .pp-up-thumb{width:100%;height:170px;object-fit:contain;border-radius:4px;background:#F6F6F3}
       .pp-up-remove{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:15px;line-height:22px;text-align:center;cursor:pointer;z-index:2}
       .pp-up-remove:hover{background:#d33}
@@ -618,13 +618,15 @@ include $adminDir . '/menu.php';
               <div class="pp-row"><label>标签</label><input type="text" name="tags" placeholder="如 城市,夜景"></div>
             </div>
             <div>
-              <div class="pp-row"><label>选择图片</label>
-                <input type="file" id="pp-files-input" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required>
-                <span class="pp-meta">多选即可；每张自动转 WebP 全图 + 缩略图，并按设置保留原图。选择后可逐张填写标题/描述。</span>
+              <div class="pp-row" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px">
+                <label style="flex:0 0 auto;min-width:0">选择图片</label>
+                <input type="file" id="pp-files-input" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required style="flex:0 1 auto">
+                <span class="pp-meta" style="flex-basis:100%">多选即可；每张自动转 WebP 全图 + 缩略图，并按设置保留原图。选择后可逐张填写标题/描述。</span>
               </div>
-              <div id="pp-upload-previews"></div>
             </div>
           </div>
+          <!-- 已选图片预览：整行自适应网格，避免把两列表单撑得高低不平 -->
+          <div id="pp-upload-previews"></div>
           <button class="pp-btn" style="margin-top:10px" type="submit">发布图集</button>
         </form>
         <script>
@@ -692,9 +694,18 @@ include $adminDir . '/menu.php';
             });
           }
 
+          function fileKey(f) {
+            return f.name + '|' + f.size + '|' + (f.lastModified || 0);
+          }
           input.addEventListener('change', function () {
-            sel = Array.prototype.map.call(input.files, function (f) {
-              return { file: f, title: '', desc: '' };
+            // 追加而非替换：后续选择应加进序列，而不是清空前序；同名同尺寸去重
+            var existing = {};
+            sel.forEach(function (item) { existing[fileKey(item.file)] = true; });
+            Array.prototype.forEach.call(input.files, function (f) {
+              var k = fileKey(f);
+              if (existing[k]) return;
+              existing[k] = true;
+              sel.push({ file: f, title: '', desc: '' });
             });
             render();
           });

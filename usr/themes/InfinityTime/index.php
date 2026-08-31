@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.3.0
+ * @version 1.3.1
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -120,8 +120,9 @@
               <?php if(!empty($exif0['make']) || !empty($exif0['model'])): ?>
                 <div class="exif-item"><span>相机</span><b><?php echo htmlspecialchars(trim(($exif0['make'] ?? '') . ' ' . ($exif0['model'] ?? ''))); ?></b></div>
               <?php endif; ?>
-              <?php if(!empty($exif0['lens'])): ?>
-                <div class="exif-item"><span>镜头</span><b><?php echo htmlspecialchars($exif0['lens']); ?></b></div>
+              <?php $exifLens = pp_exif_lens($exif0); ?>
+              <?php if($exifLens !== ''): ?>
+                <div class="exif-item"><span>镜头</span><b><?php echo htmlspecialchars($exifLens); ?></b></div>
               <?php endif; ?>
               <?php if(!empty($exif0['iso'])): ?><div class="exif-item"><span>ISO</span><b><?php echo (int)$exif0['iso']; ?></b></div><?php endif; ?>
               <?php if(!empty($exif0['fnumber'])): ?><div class="exif-item"><span>光圈</span><b>f/<?php echo $exif0['fnumber']; ?></b></div><?php endif; ?>
@@ -287,10 +288,26 @@
       document.addEventListener('DOMContentLoaded', function() {
 
         // 把 EXIF 生成成 HTML（按字段）
+        // 镜头标签：优先真实镜头名；手机照无 LensModel 时按等效焦距推断镜头位
+        function lensLabel(exif) {
+          if (exif.lens) return exif.lens;
+          var make = String(exif.make || '').toLowerCase();
+          var model = String(exif.model || '').toLowerCase();
+          var isPhone = /iphone|apple|\bpixel\b|huawei|xiaomi|poco|oppo|vivo|oneplus|galaxy\s?s\d|mi\s?\d|redmi/.test(make + ' ' + model);
+          if (!isPhone) return '';
+          var f = parseFloat(exif.focal35 || exif.focal || 0);
+          if (!f) return '';
+          if (f < 18) return '超广角';
+          if (f < 34) return '主摄';
+          if (f < 52) return '标准';
+          if (f < 90) return '中长焦';
+          return '长焦';
+        }
         function exifItemHtml(exif) {
           let html = '';
           if (exif.make || exif.model) html += '<div class="exif-item"><span>相机</span><b>' + esc((exif.make||'') + ' ' + (exif.model||'')) + '</b></div>';
-          if (exif.lens) html += '<div class="exif-item"><span>镜头</span><b>' + esc(exif.lens) + '</b></div>';
+          var lens = lensLabel(exif);
+          if (lens) html += '<div class="exif-item"><span>镜头</span><b>' + esc(lens) + '</b></div>';
           if (exif.iso) html += '<div class="exif-item"><span>ISO</span><b>' + esc(exif.iso) + '</b></div>';
           if (exif.fnumber) html += '<div class="exif-item"><span>光圈</span><b>f/' + esc(exif.fnumber) + '</b></div>';
           if (exif.exposure) html += '<div class="exif-item"><span>快门</span><b>' + esc(exif.exposure) + '</b></div>';

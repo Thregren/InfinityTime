@@ -37,7 +37,11 @@ class ExifReader
 
         $out['make']        = self::norm($ifd0['Make'] ?? null);
         $out['model']       = self::norm($ifd0['Model'] ?? null);
-        $out['lens']        = self::norm($exif['LensModel'] ?? $exif['LensSpecification'] ?? null);
+        // lens 字段在不同 PHP/exif 版本下可能被命名为 LensModel/UndefinedTag:0xA434 等，兼容读取
+        $lensModel = $exif['LensModel'] ?? $exif['UndefinedTag:0xA434'] ?? null;
+        $lensSpec  = $exif['LensSpecification'] ?? $exif['UndefinedTag:0xA432'] ?? null;
+        $lensMake  = $exif['LensMake'] ?? $exif['UndefinedTag:0xA433'] ?? null;
+        $out['lens']        = self::normLens($lensModel, $lensSpec, $lensMake);
         $out['iso']         = isset($exif['ISOSpeedRatings']) ? intval($exif['ISOSpeedRatings']) : null;
         $out['fnumber']     = self::rational($exif['FNumber'] ?? null);
         $out['exposure']    = self::formatExposure($exif['ExposureTime'] ?? null);
@@ -52,6 +56,27 @@ class ExifReader
         $out['gps']         = self::readGps($gps);
 
         return $out;
+    }
+
+    /** 解析镜头字段：优先真实型号；忽略 '----'/'Unknown' 等占位符；无型号时用规格字符串兜底。 */
+    private static function normLens($model, $spec, $make): ?string
+    {
+        $m = self::norm($model);
+        if ($m !== null
+            && !in_array(strtolower($m), ['----', '--', 'n/a', 'unknown', 'none'], true)
+            && stripos($m, 'unknown') === false) {
+            $mk = self::norm($make);
+            return ($mk && stripos($m, $mk) === false) ? $mk . ' ' . $m : $m;
+        }
+        if (is_array($spec) && count($spec) >= 2) {
+            $a = self::rational($spec[0] ?? null);
+            $b = self::rational($spec[1] ?? null);
+            if ($a !== null && $b !== null) {
+                return $a == $b ? rtrim(rtrim(sprintf('%g', $a), '0'), '.') . 'mm'
+                                : rtrim(rtrim(sprintf('%g', $a), '0'), '.') . '-' . rtrim(rtrim(sprintf('%g', $b), '0'), '.') . 'mm';
+            }
+        }
+        return null;
     }
 
     /** EXIF Flash 是否触发（位 0）。未记录则返回 null，展示时据此隐藏该行。 */
