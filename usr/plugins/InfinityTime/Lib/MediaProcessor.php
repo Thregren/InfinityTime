@@ -61,16 +61,16 @@ class MediaProcessor
 
         // 兼容部分环境 libheif 工具在 PATH 之外
         if (!$tools['heif'] && defined('INFINITYTIME_HEIF_CONVERT')) {
-            $tools['heif'] = is_executable(INFINITYTIME_HEIF_CONVERT) ? INFINITYTIME_HEIF_CONVERT : false;
+            $tools['heif'] = @is_executable(INFINITYTIME_HEIF_CONVERT) ? INFINITYTIME_HEIF_CONVERT : false;
         }
         if (!$tools['heif'] && defined('INFINITYTIME_HEIF_CONVERT_DEFAULT')
-            && is_executable(INFINITYTIME_HEIF_CONVERT_DEFAULT)) {
+            && @is_executable(INFINITYTIME_HEIF_CONVERT_DEFAULT)) {
             $tools['heif'] = INFINITYTIME_HEIF_CONVERT_DEFAULT;
         }
         // 管理员可在插件设置里手动指定 heif-convert 路径（无需修改代码）
         if (!$tools['heif'] && class_exists(\TypechoPlugin\InfinityTime\Plugin::class)) {
             $custom = \TypechoPlugin\InfinityTime\Plugin::opt('infinitytimeHeif', '');
-            if ($custom && is_executable($custom)) {
+            if ($custom && @is_executable($custom)) {
                 $tools['heif'] = $custom;
             }
         }
@@ -83,7 +83,7 @@ class MediaProcessor
     private static function firstExecutable(array $paths): ?string
     {
         foreach ($paths as $path) {
-            if (is_executable($path)) {
+            if (@is_executable($path)) {
                 return $path;
             }
         }

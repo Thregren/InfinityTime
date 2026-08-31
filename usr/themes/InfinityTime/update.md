@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.4.7
+
+- 细微：`MediaProcessor` 探测工具时对 `is_executable` 加 `@`，避免 `open_basedir` / 路径不存在产生噪音警告。
+
 ## 1.4.6
 
 - 修复：Linux 服务器上 `activate()` 报 `Class ...\Lib\MediaProcessor not found`——插件 `lib/` 目录与命名空间 `Lib`（大写）大小写不一致，Typecho 自动加载器按大小写拼路径；将目录重命名为 `Lib/`。
