@@ -46,6 +46,28 @@ function pp_field(int $cid, string $name): string
     return (string)($r['str_value'] ?? '');
 }
 
+/** 把上传错误码转成可读文案。 */
+function pp_upload_error(int $code): string
+{
+    switch ($code) {
+        case UPLOAD_ERR_INI_SIZE:
+        case UPLOAD_ERR_FORM_SIZE:
+            return _t('图片过大，超过服务器上传限制（upload_max_filesize / post_max_size）');
+        case UPLOAD_ERR_PARTIAL:
+            return _t('图片只上传了一部分，请重试');
+        case UPLOAD_ERR_NO_FILE:
+            return _t('没有收到图片文件');
+        case UPLOAD_ERR_NO_TMP_DIR:
+            return _t('服务器缺少临时目录，无法上传');
+        case UPLOAD_ERR_CANT_WRITE:
+            return _t('服务器无法写入临时文件，无法上传');
+        case UPLOAD_ERR_EXTENSION:
+            return _t('服务器扩展阻止了上传');
+        default:
+            return _t('上传失败（错误码 ' . $code . '）');
+    }
+}
+
 function pp_set_field(int $cid, string $name, string $value): void
 {
     $db = Db::get();
@@ -259,8 +281,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
 
         $count = count($_FILES['files']['name']);
+        $uploadErr = 0;
         for ($i = 0; $i < $count; $i++) {
-            if (($_FILES['files']['error'][$i] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $fe = (int)($_FILES['files']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
+            if ($fe !== UPLOAD_ERR_OK) {
+                if ($uploadErr === 0) {
+                    $uploadErr = $fe;
+                }
                 $fail++;
                 continue;
             }
@@ -286,7 +313,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($imgs)) {
             ImageRepository::removeFor($cid);
             $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
-            pp_reply(_t('没有图片成功入库（可能格式不支持或缺少转换工具）'), 'error');
+            $msg = $uploadErr !== 0
+                ? pp_upload_error($uploadErr)
+                : _t('没有图片成功入库（可能格式不支持或缺少转换工具）');
+            pp_reply($msg, 'error');
         }
 
         foreach ([
