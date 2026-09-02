@@ -1,8 +1,9 @@
-# InfinityTime For Typecho
+# InfinityTime For Typecho · v1.4.15
 
 A photo-sharing theme for Typecho, powered by the companion **InfinityTime** plugin.
 
 - Auto-convert uploads to WebP full image + thumbnail;
+- Uploading uses the browser-native form submit (most compatible), with image preview, removal and per-image title/description;
 - Show EXIF (camera / ISO / aperture / shutter / focal / shoot time, Chinese date);
 - Optional per-image title, description and address;
 - WebP settings, site info and contact icons are all configurable in the admin.

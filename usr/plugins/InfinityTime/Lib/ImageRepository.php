@@ -17,6 +17,9 @@ class ImageRepository
     public const T_FULL     = 'full';
     public const T_THUMB    = 'thumb';
 
+    /** 最近一次入库失败的可读原因（供面板展示）。 */
+    public static ?string $lastError = null;
+
     /** 插件数据表全名（带前缀）。 */
     public static function table(): string
     {
@@ -29,11 +32,24 @@ class ImageRepository
         return rtrim((defined('__TYPECHO_UPLOAD_ROOT_DIR__') ? __TYPECHO_UPLOAD_ROOT_DIR__ : __TYPECHO_ROOT_DIR__ . '/usr/uploads'), '/');
     }
 
+    /** 上传目录对应的站点 URL 路径（如 /usr/uploads）。 */
+    public static function uploadWebRoot(): string
+    {
+        $dir = defined('__TYPECHO_UPLOAD_DIR__')
+            ? __TYPECHO_UPLOAD_DIR__
+            : (\Utils\Helper::options()->uploadDir ?? '/usr/uploads');
+        return '/' . trim((string)$dir, '/');
+    }
+
     /** 根据绝对路径得到站点根相对的 web URL（如 /usr/uploads/...）。 */
     public static function toWeb(string $abs): string
     {
-        $root = rtrim(__TYPECHO_ROOT_DIR__, '/');
         $abs = str_replace('\\', '/', $abs);
+        $uploadRoot = self::uploadRoot();
+        if (strpos($abs, $uploadRoot . '/') === 0) {
+            return self::uploadWebRoot() . substr($abs, strlen($uploadRoot));
+        }
+        $root = rtrim(__TYPECHO_ROOT_DIR__, '/');
         if (strpos($abs, $root . '/') === 0) {
             return substr($abs, strlen($root));
         }
@@ -43,8 +59,12 @@ class ImageRepository
     /** 根据 web 相对路径得到文件系统绝对路径。 */
     public static function toAbs(string $web): string
     {
+        $web = '/' . ltrim(str_replace('\\', '/', $web), '/');
+        $uploadWebRoot = self::uploadWebRoot();
+        if ($web === $uploadWebRoot || strpos($web, $uploadWebRoot . '/') === 0) {
+            return self::uploadRoot() . substr($web, strlen($uploadWebRoot));
+        }
         $root = rtrim(__TYPECHO_ROOT_DIR__, '/');
-        $web = '/' . ltrim($web, '/');
         return $root . $web;
     }
 
@@ -57,6 +77,8 @@ class ImageRepository
      */
     public static function ingest(array $file, array $opts = []): ?array
     {
+        self::$lastError = null;
+
         $opts = array_merge([
             'quality' => 82,
             'thumb_max' => 1280,
@@ -67,16 +89,19 @@ class ImageRepository
 
         if (empty($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) {
             if (empty($file['tmp_name'])) {
+                self::$lastError = '没有收到图片文件（tmp_name 为空）';
                 return null;
             }
         }
         $src = $file['tmp_name'];
         if (!is_file($src)) {
+            self::$lastError = '找不到已上传的临时文件：' . $src;
             return null;
         }
 
         $ext = strtolower(pathinfo($file['name'] ?? '', PATHINFO_EXTENSION));
         if (!in_array($ext, MediaProcessor::supportedExtensions(), true)) {
+            self::$lastError = '不支持的图片格式：' . $file['name'] ?? '';
             return null;
         }
 
@@ -102,6 +127,7 @@ class ImageRepository
                 self::ensureDir($origAbsDir);
                 $origPath = $origAbsDir . '/' . $base . '.' . $ext;
                 if (!@copy($src, $origPath)) {
+                    self::$lastError = '无法把原图写入 ' . $origAbsDir . '（请检查该目录写权限）';
                     return null;
                 }
                 $origRel = $origWebDir . '/' . $base . '.' . $ext;
@@ -133,6 +159,7 @@ class ImageRepository
             ];
         } catch (\Throwable $e) {
             Plugin::log('ingest failed: ' . $e->getMessage());
+            self::$lastError = $e->getMessage();
             return null;
         }
     }
@@ -140,8 +167,7 @@ class ImageRepository
     /** 默认目录配置（web 相对路径）。 */
     public static function defaultDirs(): array
     {
-        $root = \Utils\Helper::options()->uploadDir ?? '/usr/uploads';
-        $root = '/' . trim($root, '/');
+        $root = self::uploadWebRoot();
         return [
             self::T_ORIGINAL => $root . '/original',
             self::T_FULL     => $root . '/full',
@@ -347,7 +373,18 @@ class ImageRepository
     private static function ensureDir(string $dir): void
     {
         if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
-            throw new \RuntimeException('无法创建目录: ' . $dir);
+            throw new \RuntimeException('无法创建目录（请检查 PHP 运行用户对该路径的写权限）: ' . $dir);
+        }
+        if (!is_writable($dir)) {
+            // 目录属于当前用户但权限过严时，尝试放宽；仍失败则给出可执行的修复命令。
+            @chmod($dir, 0775);
+            if (!is_writable($dir)) {
+                throw new \RuntimeException(
+                    '目录不可写: ' . $dir
+                    . '。请给 PHP 运行用户赋写权限，例如执行：chmod -R 775 ' . $dir
+                    . ' （仍失败则先 chown -R <运行用户>:<组> ' . dirname($dir, 3) . '）'
+                );
+            }
         }
     }
 

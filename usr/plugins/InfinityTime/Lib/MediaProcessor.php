@@ -110,6 +110,9 @@ class MediaProcessor
         int $quality = 82,
         int $maxWidth = 0
     ): array {
+        // 大图（如手机高像素照片）解码需要的内存可能超过默认 128M，这里放宽到 256M（PHP 允许运行时提高）。
+        @ini_set('memory_limit', '256M');
+
         if (!is_file($srcPath)) {
             throw new \RuntimeException('未找到源文件: ' . $srcPath);
         }
@@ -140,7 +143,7 @@ class MediaProcessor
         self::ensureDir(dirname($thumbPath));
 
         if (!imagewebp($img, $fullPath, $quality)) {
-            throw new \RuntimeException('全图 WebP 写入失败');
+            throw new \RuntimeException('全图 WebP 写入失败（最常见是目录不可写）: ' . $fullPath);
         }
 
         // 缩略图
@@ -158,7 +161,7 @@ class MediaProcessor
                 $thumb = $img;
             }
             if (!imagewebp($thumb, $thumbPath, max(60, $quality - 7))) {
-                throw new \RuntimeException('缩略图 WebP 写入失败');
+                throw new \RuntimeException('缩略图 WebP 写入失败（最常见是目录不可写）: ' . $thumbPath);
             }
         }
 
@@ -173,8 +176,10 @@ class MediaProcessor
 
     /**
      * 解码为 GD 图像。非 GD 支持格式（HEIC/AVIF）先经外部工具转成 JPEG 再交给 GD。
+     * 返回 PHP 7.4 的 GD resource 或 PHP 8+ 的 GdImage 对象；不声明 GdImage 类型，
+     * 以保持 PHP 7.4 主机兼容。
      */
-    private static function decodeToGd(string $srcPath): \GdImage
+    private static function decodeToGd(string $srcPath)
     {
         $mime = self::mime($srcPath);
 
@@ -201,19 +206,24 @@ class MediaProcessor
     }
 
     /** 使用外部工具解码 HEIC/HEIF 为 JPEG，再加载进 GD。 */
-    private static function decodeHeic(string $srcPath): \GdImage
+    /** @return mixed GD image resource (PHP 7.4) or GdImage object (PHP 8+). */
+    private static function decodeHeic(string $srcPath)
     {
         $tools = self::detectTools();
 
         // PHP Imagick 优先（Linux 生产推荐）
         if ($tools['imagick']) {
-            $im = new \Imagick($srcPath);
-            $im->setImageFormat('jpeg');
-            $im->setImageColorspace(\Imagick::COLORSPACE_SRGB);
-            $im->setIteratorIndex(0);
-            $data = $im->getImageBlob();
-            $im->destroy();
-            return imagecreatefromstring($data);
+            try {
+                $im = new \Imagick($srcPath);
+                $im->setImageFormat('jpeg');
+                $im->setImageColorspace(\Imagick::COLORSPACE_SRGB);
+                $im->setIteratorIndex(0);
+                $data = $im->getImageBlob();
+                $im->destroy();
+                return imagecreatefromstring($data);
+            } catch (\Throwable $e) {
+                Plugin::log('Imagick 解码 HEIC/HEIF 失败，尝试外部工具：' . $e->getMessage());
+            }
         }
 
         $jpeg = tempnam(sys_get_temp_dir(), 'pp_heic_');
@@ -240,7 +250,10 @@ class MediaProcessor
 
         if (!$done || !$jpeg || !is_file($jpeg) || filesize($jpeg) === 0) {
             @unlink($jpeg);
-            throw new \RuntimeException('当前环境缺少可用的 HEIC 转换工具（需安装 ImageMagick+libheif 或 heif-convert）');
+            throw new \RuntimeException(
+                'HEIC 解码失败：Imagick 无法读取该文件，且没有可用的 heif-convert/ImageMagick（或服务器 PHP 禁用了 exec/shell_exec）。'
+                . ' 请改传 JPG/PNG/WebP；若必须用 HEIC，请在插件设置填入 heif-convert 路径并确保 PHP 未禁用 exec。'
+            );
         }
 
         $img = imagecreatefromjpeg($jpeg);
@@ -280,7 +293,8 @@ class MediaProcessor
     }
 
     /** AVIF 解码（ImageMagick 或 fallback）。 */
-    private static function decodeAvif(string $srcPath): \GdImage
+    /** @return mixed GD image resource (PHP 7.4) or GdImage object (PHP 8+). */
+    private static function decodeAvif(string $srcPath)
     {
         $tools = self::detectTools();
         if ($tools['imagick']) {
@@ -367,7 +381,8 @@ class MediaProcessor
     }
 
     /** 依据 EXIF Orientation（1-8）对位图做旋转/镜像修正（GD 不会自动处理）。 */
-    private static function applyOrientation(\GdImage $img, int $orientation): \GdImage
+    /** @param mixed $img GD image resource (PHP 7.4) or GdImage object (PHP 8+). */
+    private static function applyOrientation($img, int $orientation)
     {
         switch ($orientation) {
             case 2:  // 水平翻转
@@ -439,7 +454,17 @@ class MediaProcessor
     private static function ensureDir(string $dir): void
     {
         if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
-            throw new \RuntimeException('无法创建目录: ' . $dir);
+            throw new \RuntimeException('无法创建目录（请检查 PHP 运行用户对该路径的写权限）: ' . $dir);
+        }
+        if (!is_writable($dir)) {
+            @chmod($dir, 0775);
+            if (!is_writable($dir)) {
+                throw new \RuntimeException(
+                    '目录不可写: ' . $dir
+                    . '。请给 PHP 运行用户赋写权限，例如执行：chmod -R 775 ' . $dir
+                    . ' （仍失败则先 chown -R <运行用户>:<组> ' . dirname($dir, 3) . '）'
+                );
+            }
         }
     }
 }

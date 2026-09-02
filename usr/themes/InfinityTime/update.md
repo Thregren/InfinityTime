@@ -1,5 +1,45 @@
 # 更新日志
 
+## 1.4.15
+
+- 修复：**前端上传改用原生表单提交**（替换不稳定的 JS `fetch` 提交），Chrome / Safari / Edge 等各浏览器下上传可靠成功；保留选图预览、逐张删除、每图标题/描述（`DataTransfer` 同步文件选区 + 隐藏字段对齐）。
+- 修复：上传目录子目录属主与 PHP 运行用户不一致导致 `imagewebp` 写入被拒 —— 写入前校验目录可写并**自动 `chmod` 自愈**；仍不可写时给出**具体目录与修复命令**。
+- 改进：入库失败原因（含具体目录 / 错误信息）**直接显示在后台面板**，不再只报笼统“没有图片成功入库”。
+- 改进：启用插件时**自检上传/数据目录可写**，提前暴露权限问题。
+- 改进：图片处理前把 `memory_limit` 放宽到 256M，降低高像素手机照片因内存不足失败的概率。
+- 改进：HEIC 解码 **Imagick 失败自动回退 `heif-convert`**；PHP 禁用了 `exec`/`proc_open` 的服务器给出**明确的 HEIC 提示**（JPG/PNG/WebP 不受影响）。
+
+## 1.4.14
+
+- 兼容：适配旧版 Typecho 的下划线表单类，并将激活阶段异常转换为后台可见错误，避免只显示空白 `Server Error`。
+
+## 1.4.13
+
+- 修复：恢复实现 Typecho 传统接口别名 `Typecho_Plugin_Interface`，让旧版/新版 Typecho 都把插件识别为可启用、可停用插件，并正确持久化上传钩子。
+
+## 1.4.12
+
+- 兼容：移除插件配置方法对命名空间 `Form` 类的强类型依赖，旧版 Typecho 可正常加载插件入口和配置。
+
+## 1.4.11
+
+- 兼容：移除对 `Typecho\\Plugin\\PluginInterface` 的强制实现，避免旧版 Typecho 只有传统接口名时启用插件直接 `Server Error`；仍保留 `activate/deactivate/config/personalConfig` 生命周期方法。
+
+## 1.4.10
+
+- 修复：Linux/Typecho 使用独立 `__TYPECHO_UPLOAD_ROOT_DIR__` 时，图片产物错误写入站点根目录；现按上传 URL 根目录正确映射真实文件系统路径。
+
+## 1.4.9
+
+- 修复：重复启用/升级后后台可能出现多个 InfinityTime 菜单；启用时自动去重并停用时清理残留。
+- 改进：上传请求因 `post_max_size` 超限导致 `$_FILES` 为空时，后台显示明确提示。
+
+## 1.4.8
+
+- 修复：MySQL 建表时自增 `id` 缺少主键，导致 Linux/MySQL 环境插件激活失败。
+- 修复：PostgreSQL 建表使用不兼容的 `AUTOINCREMENT`。
+- 兼容：移除 PHP 7.4 不存在的 `GdImage` 强类型声明，避免图片上传时类型错误。
+
 ## 1.4.7
 
 - 细微：`MediaProcessor` 探测工具时对 `is_executable` 加 `@`，避免 `open_basedir` / 路径不存在产生噪音警告。

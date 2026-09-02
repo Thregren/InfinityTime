@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.7
+ * @version 1.4.15
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -12,8 +12,6 @@ namespace TypechoPlugin\InfinityTime;
 
 use Typecho\Db;
 use Utils\Helper;
-use Typecho\Plugin\PluginInterface;
-use Typecho\Widget\Helper\Form;
 use Typecho\Widget\Helper\Form\Element\Number;
 use Typecho\Widget\Helper\Form\Element\Radio;
 use Typecho\Widget\Helper\Form\Element\Text;
@@ -23,9 +21,12 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 /**
  * 插件主体。
  */
-class Plugin implements PluginInterface
+// Typecho defines this legacy alias for both old and new plugin interfaces.
+// Using it keeps the plugin in explicit activate/deactivate mode across
+// Typecho versions instead of being misclassified as an instant plugin.
+class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.4.7';
+    public const VERSION = '1.4.15';
     public const MENU_NAME = 'InfinityTime';
 
     /**
@@ -33,22 +34,48 @@ class Plugin implements PluginInterface
      */
     public static function activate(): string
     {
-        self::createTables();
+        try {
+            self::createTables();
+            self::assertWritable();
 
-        $data = json_encode(MediaProcessor::detectTools(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        self::setOption('infinitytimeTools', $data);
+            $data = json_encode(MediaProcessor::detectTools(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            self::setOption('infinitytimeTools', $data);
 
-        $index = Helper::addMenu(self::MENU_NAME);
-        Helper::addPanel(
-            $index,
-            'InfinityTime/panel.php',
-            _t('照片与图集'),
-            _t('上传、整理图片并发布图集'),
-            'contributor',
-            false
-        );
+            self::registerAdminMenu();
+        } catch (\Throwable $e) {
+            self::log('activate failed: ' . get_class($e) . ': ' . $e->getMessage());
+            throw new \Typecho\Plugin\Exception('InfinityTime 启用失败：' . $e->getMessage(), 500, $e);
+        }
 
         return _t('InfinityTime 已启用。上传图片将自动转换成 WebP 并生成缩略图（需服务器 php-gd，HEIC 需 imagemagick/libheif 或 heif-convert）。');
+    }
+
+    /** 激活时校验图片/数据目录可写，提前把权限问题暴露出来，避免 “即装即用” 时踩坑。 */
+    private static function assertWritable(): void
+    {
+        $root = \TypechoPlugin\InfinityTime\Lib\ImageRepository::uploadRoot();
+        $dirs = [
+            $root,
+            $root . '/original',
+            $root . '/full',
+            $root . '/thumb',
+            __DIR__ . '/data',
+        ];
+        foreach ($dirs as $dir) {
+            if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+                throw new \Typecho\Plugin\Exception('InfinityTime 无法创建目录 ' . $dir . '，请确认 PHP 运行用户对其父目录有写权限。');
+            }
+            if (!is_writable($dir)) {
+                @chmod($dir, 0775);
+                if (!is_writable($dir)) {
+                    throw new \Typecho\Plugin\Exception(
+                        'InfinityTime 目录不可写：' . $dir
+                        . '。请给 PHP 运行用户赋写权限，例如执行 chmod -R 775 ' . $root
+                        . '（仍失败则先执行 chown -R <运行用户>:<组> ' . $root . '）后重新启用插件。'
+                    );
+                }
+            }
+        }
     }
 
     /**
@@ -56,15 +83,85 @@ class Plugin implements PluginInterface
      */
     public static function deactivate(): string
     {
-        Helper::removeMenu(self::MENU_NAME);
+        // Helper::removeMenu() 只移除一个条目；旧版本重复激活可能写入多个，
+        // 这里循环清理，避免停用后仍残留同名菜单。
+        $options = Helper::options();
+        for ($i = 0; $i < 32; $i++) {
+            $raw = $options->panelTable;
+            $table = is_array($raw) ? $raw : (is_object($raw) ? (json_decode(json_encode($raw), true) ?: []) : []);
+            if (!array_intersect((array)($table['parent'] ?? []), [self::MENU_NAME, self::MENU_NAME . ' 图片'])) {
+                break;
+            }
+            Helper::removeMenu(self::MENU_NAME);
+            if (in_array(self::MENU_NAME . ' 图片', (array)($table['parent'] ?? []), true)) {
+                Helper::removeMenu(self::MENU_NAME . ' 图片');
+            }
+        }
         return _t('InfinityTime 已停用（数据表与文件保留）。');
+    }
+
+    /** 注册后台菜单/面板（幂等，并清理历史重复项）。 */
+    private static function registerAdminMenu(): void
+    {
+        $options = Helper::options();
+        $raw = $options->panelTable;
+        $table = is_array($raw) ? $raw : (is_object($raw) ? (json_decode(json_encode($raw), true) ?: []) : []);
+        $parents = is_array($table['parent'] ?? null) ? $table['parent'] : [];
+
+        // 去重但保留第一次出现的位置，保证已有菜单排序不跳动。
+        $normalized = [];
+        $menuPos = null;
+        foreach ($parents as $parent) {
+            if ($parent === self::MENU_NAME || $parent === self::MENU_NAME . ' 图片') {
+                if ($menuPos === null) {
+                    $menuPos = count($normalized);
+                    $normalized[] = self::MENU_NAME;
+                }
+                continue;
+            }
+            $normalized[] = $parent;
+        }
+        if ($menuPos === null) {
+            $menuPos = count($normalized);
+            $normalized[] = self::MENU_NAME;
+        }
+        $table['parent'] = $normalized;
+        $table['child'] = is_array($table['child'] ?? null) ? $table['child'] : [];
+
+        $index = $menuPos + 10;
+        $file = urlencode('InfinityTime/panel.php');
+        $entry = [_t('照片与图集'), _t('上传、整理图片并发布图集'), 'extending.php?panel=' . $file, 'contributor', false, ''];
+        $children = is_array($table['child'][$index] ?? null) ? $table['child'][$index] : [];
+        $filtered = [];
+        $found = false;
+        foreach ($children as $child) {
+            if (is_array($child) && (($child[2] ?? '') === $entry[2])) {
+                if ($found) {
+                    continue;
+                }
+                $found = true;
+            }
+            $filtered[] = $child;
+        }
+        if (!$found) {
+            $filtered[] = $entry;
+        }
+        $table['child'][$index] = array_values($filtered);
+        $table['file'] = is_array($table['file'] ?? null) ? $table['file'] : [];
+        $table['file'][] = $file;
+        $table['file'] = array_values(array_unique($table['file']));
+
+        // Use the plugin's own option writer for compatibility with older
+        // Typecho releases where Helper::setOption() may not exist.
+        self::setOption('panelTable', $table);
     }
 
     /**
      * 插件设置项。
      */
-    public static function config(Form $form)
+    public static function config($form)
     {
+        self::ensureFormClasses();
         $quality = new Number('infinitytimeQuality', _t('WebP 质量（0-100）'), self::opt('infinitytimeQuality', 82));
         $quality->input->setAttribute('min', '1')->setAttribute('max', '100');
         $form->addInput($quality->addRule('range', _t('质量需在 1-100 之间'), [1, 100]));
@@ -103,8 +200,26 @@ class Plugin implements PluginInterface
     /**
      * 个人用户配置面板（本插件无独立个人配置，留空以满足接口）。
      */
-    public static function personalConfig(Form $form): void
+    public static function personalConfig($form): void
     {
+    }
+
+    /**
+     * Typecho 1.2 and earlier use underscore-named form element classes.
+     * Alias them to the namespaced names used below when running on such hosts.
+     */
+    private static function ensureFormClasses(): void
+    {
+        $aliases = [
+            'Typecho\\Widget\\Helper\\Form\\Element\\Number' => 'Typecho_Widget_Helper_Form_Element_Number',
+            'Typecho\\Widget\\Helper\\Form\\Element\\Radio' => 'Typecho_Widget_Helper_Form_Element_Radio',
+            'Typecho\\Widget\\Helper\\Form\\Element\\Text' => 'Typecho_Widget_Helper_Form_Element_Text',
+        ];
+        foreach ($aliases as $modern => $legacy) {
+            if (!class_exists($modern) && class_exists($legacy)) {
+                @class_alias($legacy, $modern);
+            }
+        }
     }
 
     /**
@@ -213,9 +328,16 @@ class Plugin implements PluginInterface
         $real = $db->getAdapterName();
 
         $isMysql = stripos($real, 'mysql') !== false;
-        $pk = $isMysql
-            ? '`id` int unsigned NOT NULL AUTO_INCREMENT'
-            : '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT';
+        $isPgsql = stripos($real, 'pgsql') !== false || stripos($real, 'postgres') !== false;
+        // MySQL requires AUTO_INCREMENT to be indexed; PostgreSQL has no
+        // AUTOINCREMENT keyword. Keep the DDL valid on all Typecho drivers.
+        if ($isMysql) {
+            $pk = '`id` int unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY';
+        } elseif ($isPgsql) {
+            $pk = '"id" serial NOT NULL PRIMARY KEY';
+        } else {
+            $pk = '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT';
+        }
         $q = $isMysql ? '`' : '"';
 
         $sql = "CREATE TABLE IF NOT EXISTS {$q}{$table}{$q} (

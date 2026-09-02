@@ -274,7 +274,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($title === '') {
             pp_reply(_t('请填写图集标题'), 'error');
         }
-        if (empty($_FILES['files']['name'][0])) {
+        // When post_max_size is exceeded PHP drops the entire $_FILES array.
+        // Report that explicitly instead of silently returning to the panel.
+        if (empty($_FILES['files']) && !empty($_SERVER['CONTENT_LENGTH'])) {
+            pp_reply(_t('上传内容超过服务器 post_max_size 限制，请调大 post_max_size 后重试'), 'error');
+        }
+        if (empty($_FILES['files']['name'][0]) || !is_array($_FILES['files']['name'])) {
             pp_reply(_t('请至少选择一张图片'), 'error');
         }
 
@@ -334,9 +339,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($imgs)) {
             ImageRepository::removeFor($cid);
             $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+            $reason = trim((string)(ImageRepository::$lastError ?? ''));
             $msg = $uploadErr !== 0
                 ? pp_upload_error($uploadErr)
-                : _t('没有图片成功入库（可能格式不支持或缺少转换工具）');
+                : ($reason !== '' ? $reason : _t('没有图片成功入库（可能格式不支持或缺少转换工具）'));
             pp_reply($msg, 'error');
         }
 
@@ -658,6 +664,7 @@ include $adminDir . '/menu.php';
               rm.title = '移除这张图片';
               rm.addEventListener('click', function () {
                 sel.splice(idx, 1);
+                syncInput();
                 render();
               });
 
@@ -697,6 +704,14 @@ include $adminDir . '/menu.php';
           function fileKey(f) {
             return f.name + '|' + f.size + '|' + (f.lastModified || 0);
           }
+          // 把受控的 sel 同步回文件输入，使原生提交发送的就是当前选区（支持删除后仍对齐）。
+          function syncInput() {
+            try {
+              var dt = new DataTransfer();
+              sel.forEach(function (item) { dt.items.add(item.file); });
+              input.files = dt.files;
+            } catch (e) { /* 不支持 DataTransfer 时保持原选择（完整上传） */ }
+          }
           input.addEventListener('change', function () {
             // 追加而非替换：后续选择应加进序列，而不是清空前序；同名同尺寸去重
             var existing = {};
@@ -707,40 +722,25 @@ include $adminDir . '/menu.php';
               existing[k] = true;
               sel.push({ file: f, title: '', desc: '' });
             });
+            syncInput();
             render();
           });
 
           form.addEventListener('submit', function (e) {
-            e.preventDefault();
-            if (!sel.length) {
-              alert('请至少选择一张图片');
-              return;
-            }
-            var fd = new FormData(form);
-            fd.delete('files[]'); // 移除原生 file 输入，改用受控的 sel，保证与标题/描述对齐
+            // 不拦截默认提交：让浏览器走原生 multipart POST，后端 302 后由浏览器自然跳回面板并显示 notice。
+            var olds = form.querySelectorAll('input[name="img_titles[]"], textarea[name="img_descs[]"]');
+            for (var i = 0; i < olds.length; i++) { olds[i].parentNode.removeChild(olds[i]); }
             sel.forEach(function (item) {
-              fd.append('files[]', item.file, item.file.name);
-              fd.append('img_titles[]', item.title);
-              fd.append('img_descs[]', item.desc);
+              var t = document.createElement('input');
+              t.type = 'hidden'; t.name = 'img_titles[]'; t.value = item.title || '';
+              form.appendChild(t);
+              var d = document.createElement('textarea');
+              d.name = 'img_descs[]'; d.value = item.desc || ''; d.style.display = 'none';
+              form.appendChild(d);
             });
+            syncInput();
             if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '发布中…'; }
-
-            fetch(form.action, { method: 'POST', body: fd, credentials: 'same-origin' })
-              .then(function (res) {
-                if (res.redirected) {
-                  // 后端 pp_reply 302 -> 跳回面板并带 notice，随 fetch 重定向到目标 URL
-                  window.location.href = res.url;
-                  return;
-                }
-                return res.text().then(function () {
-                  alert('发布失败，请检查服务器配置与上传限制。');
-                  if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
-                });
-              })
-              .catch(function () {
-                alert('发布失败，请重试。');
-                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
-              });
+            // 原生提交：无需手动跳转，浏览器会跟随 302 回到带 notice 的面板。
           });
         })();
         </script>
