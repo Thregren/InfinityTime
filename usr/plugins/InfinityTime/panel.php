@@ -38,6 +38,14 @@ function pp_reply(string $msg = '', string $type = 'success'): void
     exit;
 }
 
+/** 供 AJAX 使用的 JSON 响应。 */
+function pp_reply_json(bool $ok, string $msg): void
+{
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => $ok, 'msg' => $msg], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 function pp_field(int $cid, string $name): string
 {
     $db = Db::get();
@@ -298,19 +306,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string)($_POST['action'] ?? '');
 
     if ($action === 'create_album') {
+        $ajax = !empty($_POST['ajax']);
         $title = trim((string)($_POST['title'] ?? ''));
         $address = trim((string)($_POST['address'] ?? ''));
         $device = trim((string)($_POST['device'] ?? ''));
         $tags = trim((string)($_POST['tags'] ?? ''));
         if ($title === '') {
+            if ($ajax) { pp_reply_json(false, _t('请填写图集标题')); }
             pp_reply(_t('请填写图集标题'), 'error');
         }
         // When post_max_size is exceeded PHP drops the entire $_FILES array.
         // Report that explicitly instead of silently returning to the panel.
         if (empty($_FILES['files']) && !empty($_SERVER['CONTENT_LENGTH'])) {
+            if ($ajax) { pp_reply_json(false, _t('上传内容超过服务器 post_max_size 限制，请调大 post_max_size 后重试')); }
             pp_reply(_t('上传内容超过服务器 post_max_size 限制，请调大 post_max_size 后重试'), 'error');
         }
         if (empty($_FILES['files']['name'][0]) || !is_array($_FILES['files']['name'])) {
+            if ($ajax) { pp_reply_json(false, _t('请至少选择一张图片')); }
             pp_reply(_t('请至少选择一张图片'), 'error');
         }
 
@@ -375,6 +387,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $msg = $uploadErr !== 0
                 ? pp_upload_error($uploadErr)
                 : ($reason !== '' ? $reason : _t('没有图片成功入库（可能格式不支持或缺少转换工具）'));
+            if ($ajax) { pp_reply_json(false, $msg); }
             pp_reply($msg, 'error');
         }
 
@@ -393,7 +406,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($tags !== '') {
             pp_set_field($cid, 'tags', $tags);
         }
-        pp_reply(sprintf(_t('已发布图集「%s」，共 %d 张图片'), $title, count($imgs)));
+        $msg = sprintf(_t('已发布图集「%s」，共 %d 张图片'), $title, count($imgs));
+        if ($ajax) { pp_reply_json(true, $msg); }
+        pp_reply($msg);
     }
 
     if ($action === 'update_album') {
@@ -714,6 +729,32 @@ include $adminDir . '/menu.php';
           <button class="pp-btn" style="margin-top:10px" type="submit">发布图集</button>
         </form>
         <script>
+        // —— AJAX 上传用到的两个小工具（全局）——
+        function ppShowNotice(msg, type) {
+          var container = document.querySelector('.container.typecho-page-main');
+          if (!container) return;
+          var old = container.querySelector(':scope > .notice');
+          if (old) old.parentNode.removeChild(old);
+          var n = document.createElement('div');
+          n.className = 'notice ' + (type === 'error' ? 'error' : 'success');
+          n.textContent = msg;
+          n.style.margin = '12px 0';
+          container.insertBefore(n, container.firstElementChild);
+          try { n.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+        }
+        function ppRefreshAlbums(url) {
+          fetch(url, { credentials: 'same-origin' })
+            .then(function (r) { return r.text(); })
+            .then(function (html) {
+              try {
+                var doc = new DOMParser().parseFromString(html, 'text/html');
+                var fresh = doc.querySelector('#pp-albums-card');
+                var cur = document.querySelector('#pp-albums-card');
+                if (fresh && cur) cur.outerHTML = fresh.outerHTML;
+              } catch (e) {}
+            })
+            .catch(function () {});
+        }
         (function () {
           var form = document.getElementById('pp-upload-form');
           var input = document.getElementById('pp-files-input');
@@ -805,7 +846,8 @@ include $adminDir . '/menu.php';
           });
 
           form.addEventListener('submit', function (e) {
-            // 不拦截默认提交：让浏览器走原生 multipart POST，后端 302 后由浏览器自然跳回面板并显示 notice。
+            // AJAX 提交：不整页刷新；成功后用后台重新渲染的图集列表局部替换。
+            e.preventDefault();
             var olds = form.querySelectorAll('input[name="img_titles[]"], textarea[name="img_descs[]"]');
             for (var i = 0; i < olds.length; i++) { olds[i].parentNode.removeChild(olds[i]); }
             sel.forEach(function (item) {
@@ -818,7 +860,28 @@ include $adminDir . '/menu.php';
             });
             syncInput();
             if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '发布中…'; }
-            // 原生提交：无需手动跳转，浏览器会跟随 302 回到带 notice 的面板。
+            var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
+            var fd = new FormData(form);
+            fd.set('ajax', '1');
+            fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+              .then(function (r) { return r.json().catch(function () { return { ok: false, msg: '服务器返回异常' }; }); })
+              .then(function (d) {
+                if (d && d.ok) {
+                  ppRefreshAlbums(url);
+                  ppShowNotice(d.msg || '已发布图集', 'success');
+                  // 清空已选文件与表单，方便继续发布
+                  sel.length = 0;
+                  form.reset();
+                  try { input.value = ''; } catch (e) {}
+                  render();
+                } else {
+                  ppShowNotice((d && d.msg) ? d.msg : '发布失败', 'error');
+                }
+              })
+              .catch(function () { ppShowNotice('网络/上传出错，请重试', 'error'); })
+              .finally(function () {
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
+              });
           });
         })();
         </script>
@@ -913,7 +976,7 @@ include $adminDir . '/menu.php';
       </div>
 
       <!-- 图集列表 -->
-      <div class="pp-card">
+      <div class="pp-card" id="pp-albums-card">
         <h2>已发布图集</h2>
         <?php if (!$albums): ?>
           <div class="pp-meta">暂无图集。</div>
@@ -1046,42 +1109,42 @@ document.querySelectorAll('[data-run]').forEach(function(b){
   b.addEventListener('click', function(){ runJob(this.getAttribute('data-run')); });
 });
 
-// 删除图集：AJAX 局部删除，整页不跳转
-document.querySelectorAll('form.pp-delete-album').forEach(function (form) {
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!confirm('删除整组图集及其文件？')) return;
-    var btn = form.querySelector('button[type="submit"]');
-    if (btn) { btn.disabled = true; if (btn.dataset.loading) btn.textContent = btn.dataset.loading; }
-    var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
-    var fd = new FormData(form);
-    fd.set('ajax', '1');
-    fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d && d.ok) {
-          var card = form.closest('.pp-card');
-          var details = form.closest('details.pp-album');
-          if (details && details.parentNode) details.parentNode.removeChild(details);
-          // 若已无图集，补一个空态提示
-          if (card && !card.querySelector('details.pp-album') && card.textContent.indexOf('暂无图集') === -1) {
-            var empty = document.createElement('div');
-            empty.className = 'pp-meta';
-            empty.textContent = '暂无图集。';
-            var h2 = card.querySelector('h2');
-            if (h2 && h2.nextSibling) card.insertBefore(empty, h2.nextSibling);
-            else card.appendChild(empty);
-          }
-        } else {
-          if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
-          alert((d && d.msg) ? d.msg : '删除失败');
+// 删除图集：AJAX 局部删除，整页不跳转（事件委托，卡片局部刷新后仍生效）
+document.addEventListener('submit', function (e) {
+  var form = e.target && e.target.closest ? e.target.closest('form.pp-delete-album') : null;
+  if (!form) return;
+  e.preventDefault();
+  if (!confirm('删除整组图集及其文件？')) return;
+  var btn = form.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; if (btn.dataset.loading) btn.textContent = btn.dataset.loading; }
+  var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
+  var fd = new FormData(form);
+  fd.set('ajax', '1');
+  fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d && d.ok) {
+        var card = form.closest('.pp-card');
+        var details = form.closest('details.pp-album');
+        if (details && details.parentNode) details.parentNode.removeChild(details);
+        // 若已无图集，补一个空态提示
+        if (card && !card.querySelector('details.pp-album') && card.textContent.indexOf('暂无图集') === -1) {
+          var empty = document.createElement('div');
+          empty.className = 'pp-meta';
+          empty.textContent = '暂无图集。';
+          var h2 = card.querySelector('h2');
+          if (h2 && h2.nextSibling) card.insertBefore(empty, h2.nextSibling);
+          else card.appendChild(empty);
         }
-      })
-      .catch(function () {
+      } else {
         if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
-        alert('删除失败，请重试');
-      });
-  });
+        alert((d && d.msg) ? d.msg : '删除失败');
+      }
+    })
+    .catch(function () {
+      if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
+      alert('删除失败，请重试');
+    });
 });
 
 // 联系方式：添加 / 删除行
