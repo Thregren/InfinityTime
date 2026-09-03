@@ -2,7 +2,7 @@
 
 A photo-sharing theme for Typecho, powered by the companion **InfinityTime** plugin.
 
-- Auto-convert uploads to WebP full image + thumbnail;
+- Auto-convert uploads to WebP full image + thumbnail (full image defaults to a 2560px longest-edge cap);
 - Uploading uses the browser-native form submit (most compatible), with image preview, removal and per-image title/description;
 - Show EXIF (camera / ISO / aperture / shutter / focal / shoot time, Chinese date);
 - Optional per-image title, description and address;
