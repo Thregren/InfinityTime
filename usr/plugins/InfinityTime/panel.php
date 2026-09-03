@@ -833,7 +833,9 @@ include $adminDir . '/menu.php';
         <h2>已发布图集</h2>
         <?php if (!$albums): ?>
           <div class="pp-meta">暂无图集。</div>
-        <?php else: foreach ($albums as $al): $images = ImageRepository::rowsFor($al['cid']); ?>
+        <?php else:
+            $imagesByCid = ImageRepository::rowsForCids(array_column($albums, 'cid'));
+            foreach ($albums as $al): $images = $imagesByCid[(int)$al['cid']] ?? []; ?>
           <details class="pp-album">
             <summary class="pp-album-summary">
               <strong><?php echo htmlspecialchars($al['title']); ?>

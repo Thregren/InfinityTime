@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.4.16
+
+- 优化：后台「已发布图集」列表由 N+1 查询改为一次 `rowsForCids(cid IN ...)` 批量取数，图集多时不卡。
+- 优化：图片处理前校验单图分辨率，超过 60MP 给出「图片分辨率过大」的明确提示（避免 GD/Imagick 内存溢出）。
+- 优化：HEIC/HEIF 的 EXIF 增加 Imagick 兜底——PHP `exif` 扩展读不出时用 Imagick `getImageProperties('exif:*')` 读取。
+
 ## 1.4.15
 
 - 修复：**前端上传改用原生表单提交**（替换不稳定的 JS `fetch` 提交），Chrome / Safari / Edge 等各浏览器下上传可靠成功；保留选图预览、逐张删除、每图标题/描述（`DataTransfer` 同步文件选区 + 隐藏字段对齐）。

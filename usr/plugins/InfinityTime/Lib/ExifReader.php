@@ -27,8 +27,9 @@ class ExifReader
         }
 
         $data = @exif_read_data($path, null, true);
-        if (!is_array($data)) {
-            return $out;
+        if (!is_array($data)
+            || (empty($data['IFD0']) && empty($data['EXIF']) && empty($data['GPS']))) {
+            return self::readViaImagick($path);
         }
 
         $ifd0 = $data['IFD0'] ?? [];
@@ -224,5 +225,47 @@ class ExifReader
         $m = self::rational($dms[1] ?? 0) ?? 0;
         $s = self::rational($dms[2] ?? 0) ?? 0;
         return round($d + ($m / 60) + ($s / 3600), 6);
+    }
+
+    /**
+     * 兜底：当 PHP exif 扩展读不出 HEIC/HEIF 的 EXIF 时，改用 Imagick 的图像属性读取。
+     * @return array 与 read() 相同的归一化结构
+     */
+    private static function readViaImagick(string $path): array
+    {
+        $out = [
+            'make' => null, 'model' => null, 'lens' => null, 'iso' => null,
+            'fnumber' => null, 'exposure' => null, 'focal' => null, 'focal35' => null,
+            'flash' => null, 'datetime' => null, 'orientation' => 1, 'gps' => null,
+        ];
+        if (!class_exists('\Imagick')) {
+            return $out;
+        }
+        try {
+            $im = new \Imagick($path);
+            $p = $im->getImageProperties('exif:*');
+            $im->destroy();
+        } catch (\Throwable $e) {
+            return $out;
+        }
+        if (!$p) {
+            return $out;
+        }
+        $g = function (string $k) use ($p) {
+            return $p[$k] ?? null;
+        };
+        $out['make'] = self::norm($g('exif:Make'));
+        $out['model'] = self::norm($g('exif:Model'));
+        $out['lens'] = self::norm($g('exif:LensModel')) ?? self::norm($g('exif:UndefinedTag:0xA434'));
+        $iso = $g('exif:ISOSpeedRatings');
+        $out['iso'] = ($iso !== null && $iso !== '') ? intval($iso) : null;
+        $out['fnumber'] = self::rational($g('exif:FNumber'));
+        $out['exposure'] = self::formatExposure(self::rational($g('exif:ExposureTime')));
+        $out['focal'] = self::rational($g('exif:FocalLength'));
+        $out['focal35'] = self::rational($g('exif:FocalLengthIn35mmFilm'));
+        $out['flash'] = self::flashFired($g('exif:Flash'));
+        $out['datetime'] = self::norm($g('exif:DateTimeOriginal') ?? $g('exif:DateTime'));
+        $out['orientation'] = intval($g('exif:Orientation') ?? 1);
+        return $out;
     }
 }

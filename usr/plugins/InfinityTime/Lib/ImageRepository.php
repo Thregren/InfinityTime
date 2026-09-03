@@ -216,6 +216,30 @@ class ImageRepository
         }, $rows);
     }
 
+    /** 一次性取多个图集的图片，按 cid 分组，避免后台图集列表 N+1。 */
+    public static function rowsForCids(array $cids): array
+    {
+        self::ensureSchema();
+        $out = [];
+        $cids = array_values(array_unique(array_map('intval', $cids)));
+        if (!$cids) {
+            return $out;
+        }
+        $db = \Typecho\Db::get();
+        $ph = implode(',', array_fill(0, count($cids), '?'));
+        $rows = $db->fetchAll(
+            $db->select()->from(self::table())
+                ->where('cid IN (' . $ph . ')', ...$cids)
+                ->order('sort', \Typecho\Db::SORT_ASC)
+                ->order('id', \Typecho\Db::SORT_ASC)
+        );
+        foreach ($rows as $r) {
+            $r['exif'] = json_decode($r['exif'] ?? '{}', true);
+            $out[(int)$r['cid']][] = $r;
+        }
+        return $out;
+    }
+
     /** 运行时确保 title/desc 列存在（兼容旧库升级；每进程一次）。 */
     private static $schemaEnsured = false;
     public static function ensureSchema(): void

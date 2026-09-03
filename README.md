@@ -2,7 +2,7 @@
 
 一款面向 [Typecho](https://typecho.org) 的**纯图片分享方案**。上传一张图，自动得到 **WebP 全图 + 缩略图**并读取 **EXIF**；前台是**瀑布流图片墙 + 灯箱**，灯箱侧栏展示拍摄参数；后台可视化配置一切。
 
-> **v1.4.15** 起，上传改用**原生表单提交**，在各类浏览器（Chrome / Safari / Edge / Firefox）下可靠成功；并加入**目录可写自愈**、**失败原因明确提示**、**大图内存放宽**、**HEIC 自动回退 `heif-convert`** 等健壮性改进。
+> 从 **v1.4.15 / v1.4.16** 起：上传改用**原生表单提交**（各类浏览器可靠），并加入**目录可写自愈**、**失败原因明确提示**、**大图内存放宽**、**HEIC 自动回退 `heif-convert`**、**图集列表批量查询（N+1）**、**单图 60MP 上限保护**、**HEIC EXIF 的 Imagick 兜底**。
 
 > 主题 `InfinityTime` 负责展示，插件 `InfinityTime` 负责处理。**只需安装这两部分，无需改动任何 Typecho 原生文件。**
 
@@ -143,8 +143,8 @@ InfinityTime-release/
 ```bash
 # 1. 确认版本号一致（主题 @version / 插件 VERSION / releases.json 三处）
 # 2. 打标签并推送
-git tag v1.4.15
-git push origin v1.4.15
+git tag v1.4.16
+git push origin v1.4.16
 ```
 
 工作流 `.github/workflows/release.yml` 会自动：

@@ -1,4 +1,4 @@
-# InfinityTime For Typecho · v1.4.15
+# InfinityTime For Typecho · v1.4.16
 
 A photo-sharing theme for Typecho, powered by the companion **InfinityTime** plugin.
 

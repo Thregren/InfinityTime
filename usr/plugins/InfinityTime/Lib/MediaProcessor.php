@@ -117,6 +117,9 @@ class MediaProcessor
             throw new \RuntimeException('未找到源文件: ' . $srcPath);
         }
 
+        // 解码前先做单图尺寸上限保护，避免超大图把内存撑爆。
+        self::assertImageSize($srcPath);
+
         // 前提：先在转换成 WebP 之前读 EXIF（避免丢失）
         $exif = ExifReader::read($srcPath);
 
@@ -179,6 +182,35 @@ class MediaProcessor
      * 返回 PHP 7.4 的 GD resource 或 PHP 8+ 的 GdImage 对象；不声明 GdImage 类型，
      * 以保持 PHP 7.4 主机兼容。
      */
+    /** 单图允许的最大像素数（约 60MP），超过则解码前直接拒绝，防止 GD/Imagick 内存溢出。 */
+    private const MAX_PIXELS = 60000000;
+
+    private static function assertImageSize(string $srcPath): void
+    {
+        $w = 0;
+        $h = 0;
+        $info = @getimagesize($srcPath);
+        if (is_array($info) && ($info[0] ?? 0) > 0 && ($info[1] ?? 0) > 0) {
+            $w = (int)$info[0];
+            $h = (int)$info[1];
+        } elseif (class_exists('\Imagick')) {
+            try {
+                $im = new \Imagick($srcPath);
+                $w = (int)$im->getImageWidth();
+                $h = (int)$im->getImageHeight();
+                $im->destroy();
+            } catch (\Throwable $e) {
+                // 无法读取尺寸时交由后续解码流程处理
+            }
+        }
+        if ($w > 0 && $h > 0 && $w * $h > self::MAX_PIXELS) {
+            throw new \RuntimeException(
+                '图片分辨率过大（' . $w . '×' . $h . '，约 ' . round($w * $h / 1000000) . 'MP，上限 ' . intdiv(self::MAX_PIXELS, 1000000)
+                . 'MP），请先压缩后再上传'
+            );
+        }
+    }
+
     private static function decodeToGd(string $srcPath)
     {
         $mime = self::mime($srcPath);
