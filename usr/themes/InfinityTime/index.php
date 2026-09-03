@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.25
+ * @version 1.4.26
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -198,7 +198,7 @@
       <footer id="footer" class="panel">
             <div id="about">
               <section>
-                <h2>关于<?php echo pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options); ?></h2>
+                <h2>关于</h2>
                 <div class="about-text"><?php echo pp_opt('infinitytimeAbout', (string)$this->options->Biglogo, $this->options); ?></div>
               </section>
               <section>
@@ -235,6 +235,7 @@
                         <a href="http://beian.miit.gov.cn/" target="_blank" rel="noopener nofollow"><?php $this->options->icp(); ?></a>
                     </span>
                     <?php endif; ?>
+                    <span class="theme"><a href="https://github.com/Thregren/InfinityTime" target="_blank" rel="noopener nofollow">InfinityTime Theme</a></span>
                 </div>
       </footer>
       <script type="text/javascript">

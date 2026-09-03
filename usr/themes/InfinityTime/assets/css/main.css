@@ -1982,9 +1982,9 @@ body.content-active #main:after {
   pointer-events: auto;
   opacity: 1;
   visibility: visible;
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  background: var(--heo-maskbgdeep);
+  backdrop-filter: saturate(150%) blur(5px);
+  -webkit-backdrop-filter: saturate(150%) blur(5px);
+  background: rgba(16, 17, 18, 0.45);
 }
 
 body.is-preload #main .thumb {
@@ -2419,6 +2419,15 @@ span.tag-list a:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 关于面板：限制高度并收紧留白，避免打开时占太多竖向空间 */
+#footer.panel {
+  height: auto;
+  max-height: min(60vh, 520px);
+  padding: 2.5em 3em 1.5em 3em;
+}
+#footer.panel #about {
+  gap: 14px;
 }
 
 /* 分页按钮样式 */

@@ -68,6 +68,36 @@ function pp_upload_error(int $code): string
     }
 }
 
+/** 清理上一次由插件生成的站点头像文件（仅本插件专属目录，避免误删用户手动填写的其它图）。 */
+function pp_clear_site_avatar(string $url, ?string $keepAbs = null): void
+{
+    if ($url === '') {
+        return;
+    }
+    $path = parse_url($url, PHP_URL_PATH);
+    if (!$path) {
+        return;
+    }
+    $prefix = ImageRepository::uploadWebRoot() . '/infinitytime/';
+    if (strpos($path, $prefix) !== 0) {
+        return; // 不在本插件专属目录，跳过
+    }
+    $abs = ImageRepository::toAbs($path);
+    $candidates = [$abs];
+    // 兼容早期可能生成过的同级 thumb/original 文件
+    foreach (['/full/', '/thumb/', '/original/'] as $seg) {
+        if (strpos($abs, $seg) !== false) {
+            $candidates[] = str_replace($seg, '/thumb/', $abs);
+            $candidates[] = str_replace($seg, '/original/', $abs);
+        }
+    }
+    foreach (array_unique($candidates) as $f) {
+        if ($f && $f !== $keepAbs && is_file($f)) {
+            @unlink($f);
+        }
+    }
+}
+
 function pp_set_field(int $cid, string $name, string $value): void
 {
     $db = Db::get();
@@ -417,16 +447,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete_album') {
         $cid = (int)($_POST['cid'] ?? 0);
+        $ajax = !empty($_POST['ajax']);
         if ($cid > 0) {
             ImageRepository::removeFor($cid);
             $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
         }
+        if ($ajax) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => true, 'msg' => _t('已删除图集及其图片文件')], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
         pp_reply(_t('已删除图集及其图片文件'));
     }
 
     if ($action === 'save_site') {
-        Plugin::setOption('infinitytimeSiteLogo', trim((string)($_POST['siteLogo'] ?? '')));
+        $oldLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
+        $logo = trim((string)($_POST['siteLogo'] ?? ''));
+        $newAvatarAbs = null;
+        // 支持直接上传头像：选了文件就转成 WebP 存入独立目录（不参与「清理孤儿文件」），并自动生成链接。
+        if (!empty($_FILES['siteLogoFile']['tmp_name'])) {
+            $uploadWebRoot = ImageRepository::uploadWebRoot();
+            $meta = ImageRepository::ingest([
+                'name' => $_FILES['siteLogoFile']['name'],
+                'tmp_name' => $_FILES['siteLogoFile']['tmp_name'],
+                'size' => $_FILES['siteLogoFile']['size'] ?? 0,
+                'error' => $_FILES['siteLogoFile']['error'] ?? UPLOAD_ERR_OK,
+            ], [
+                // 头像做压缩与尺寸处理：最长边 ≤512px、WebP 质量 78；不生成用不到的缩略图。
+                'quality' => 78,
+                'thumb_max' => 0,
+                'max_width' => 512,
+                'full_quality' => 78,
+                'keep_original' => false,
+                'dirs' => [
+                    ImageRepository::T_ORIGINAL => $uploadWebRoot . '/infinitytime/original',
+                    ImageRepository::T_FULL     => $uploadWebRoot . '/infinitytime/full',
+                    ImageRepository::T_THUMB    => $uploadWebRoot . '/infinitytime/thumb',
+                ],
+            ]);
+            if (!$meta) {
+                pp_reply(_t('头像上传失败：') . (ImageRepository::$lastError ?: '未知错误'), 'error');
+            }
+            $logo = rtrim((string)$options->siteUrl, '/') . $meta['full'];
+            $newAvatarAbs = ImageRepository::toAbs($meta['full']);
+        }
+        // 上传新头像成功后，清理上一次由本插件生成的旧头像文件（不误删本次新文件）。
+        pp_clear_site_avatar($oldLogo, $newAvatarAbs);
+        Plugin::setOption('infinitytimeSiteLogo', $logo);
         Plugin::setOption('infinitytimeSiteName', trim((string)($_POST['siteName'] ?? '')));
         Plugin::setOption('infinitytimeSiteTagline', trim((string)($_POST['siteTagline'] ?? '')));
         Plugin::setOption('infinitytimeAbout', trim((string)($_POST['aboutText'] ?? '')));
@@ -528,6 +596,14 @@ include $adminDir . '/menu.php';
     <link rel="stylesheet" href="<?php echo htmlspecialchars(rtrim((string)$options->siteUrl, '/') . '/usr/themes/' . rawurlencode((string)$options->theme) . '/assets/css/iconfont.css'); ?>">
     <style>
       .pp-wrap{max-width:1000px}
+      /* 修复：后台 .container 是 flex 容器，.notice 会被拉成高而窄的竖条。让它占满整行变成正常提示条。 */
+      .container.typecho-page-main > .notice {
+        flex: 0 0 100%;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 2px;
+      }
       .pp-card{background:#fff;border:1px solid #F0F0EC;border-radius:2px;padding:18px 20px;margin-bottom:18px}
       .pp-card>h2{font-size:1.14286em;margin:0 0 1em;padding-bottom:.6em;border-bottom:1px solid #F0F0EC;font-weight:bold;color:#444}
       .pp-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 28px}
@@ -750,9 +826,15 @@ include $adminDir . '/menu.php';
       <!-- 站点信息 / 关于 -->
       <div class="pp-card">
         <h2>站点信息 / 关于</h2>
-        <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+        <form method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
           <input type="hidden" name="action" value="save_site">
-          <div class="pp-row"><label>头像 / 站点图标</label><input type="text" name="siteLogo" value="<?php echo htmlspecialchars($siteLogo); ?>" placeholder="图片 URL，如 https://.../avatar.webp"></div>
+          <div class="pp-row"><label>头像 / 站点图标</label>
+            <div class="pp-col">
+              <input type="text" name="siteLogo" value="<?php echo htmlspecialchars($siteLogo); ?>" placeholder="图片 URL，如 https://.../avatar.webp">
+              <span class="pp-meta">或直接上传：</span>
+              <input type="file" name="siteLogoFile" accept="image/*">
+            </div>
+          </div>
           <div class="pp-row"><label>站点名称</label><input type="text" name="siteName" value="<?php echo htmlspecialchars($siteName); ?>" placeholder="首页左下角名称 + 页脚「关于」标题"></div>
           <div class="pp-row"><label>一句话说明</label><input type="text" name="siteTagline" value="<?php echo htmlspecialchars($siteTagline); ?>" placeholder="首页名称下方的副标题 / 底栏说明"></div>
           <div class="pp-row"><label>关于介绍</label><textarea name="aboutText" rows="4" placeholder="页脚「关于」区的介绍，支持 HTML"><?php echo htmlspecialchars($aboutText); ?></textarea></div>
@@ -848,10 +930,10 @@ include $adminDir . '/menu.php';
               <span class="pp-meta">共 <?php echo count($images) ?: $al['img_count']; ?> 张</span>
               <span class="pp-album-actions">
                 <a class="pp-meta" target="_blank" href="<?php echo htmlspecialchars(Helper::url('index.php', $options->siteUrl)); ?>">前台查看</a>
-                <form method="post" style="display:inline" onsubmit="return confirm('删除整组图集及其文件？')">
+                <form method="post" style="display:inline" class="pp-delete-album">
                   <input type="hidden" name="action" value="delete_album">
                   <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
-                  <button class="pp-btn red pp-small" type="submit">删除</button>
+                  <button class="pp-btn red pp-small" type="submit" data-loading="删除中…">删除</button>
                 </form>
               </span>
             </div>
@@ -962,6 +1044,44 @@ function runJob(job) {
 }
 document.querySelectorAll('[data-run]').forEach(function(b){
   b.addEventListener('click', function(){ runJob(this.getAttribute('data-run')); });
+});
+
+// 删除图集：AJAX 局部删除，整页不跳转
+document.querySelectorAll('form.pp-delete-album').forEach(function (form) {
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!confirm('删除整组图集及其文件？')) return;
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; if (btn.dataset.loading) btn.textContent = btn.dataset.loading; }
+    var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
+    var fd = new FormData(form);
+    fd.set('ajax', '1');
+    fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          var card = form.closest('.pp-card');
+          var details = form.closest('details.pp-album');
+          if (details && details.parentNode) details.parentNode.removeChild(details);
+          // 若已无图集，补一个空态提示
+          if (card && !card.querySelector('details.pp-album') && card.textContent.indexOf('暂无图集') === -1) {
+            var empty = document.createElement('div');
+            empty.className = 'pp-meta';
+            empty.textContent = '暂无图集。';
+            var h2 = card.querySelector('h2');
+            if (h2 && h2.nextSibling) card.insertBefore(empty, h2.nextSibling);
+            else card.appendChild(empty);
+          }
+        } else {
+          if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
+          alert((d && d.msg) ? d.msg : '删除失败');
+        }
+      })
+      .catch(function () {
+        if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
+        alert('删除失败，请重试');
+      });
+  });
 });
 
 // 联系方式：添加 / 删除行
