@@ -534,7 +534,17 @@ document.addEventListener('DOMContentLoaded', function() {
         if (Math.abs(swipeDistance) < minSwipeDistance) return;
 
         const nav = popup.querySelector('.breadcrumb-nav');
-        if (!nav) return;
+        if (!nav) {
+            // 当前为「跨图集封面」模式：没有 breadcrumb-nav，滑动改为触发 poptrox 内建的 上一张/下一张。
+            const prev = popup.querySelector('.nav-previous');
+            const next = popup.querySelector('.nav-next');
+            const btn = swipeDistance > 0 ? prev : next;
+            if (!btn) return;
+            isTransitioning = true;
+            btn.click();
+            setTimeout(function() { isTransitioning = false; }, 400);
+            return;
+        }
 
         const dots = nav.querySelectorAll('.nav-dot');
         const images = JSON.parse(nav.dataset.images);
