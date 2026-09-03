@@ -107,7 +107,7 @@ class MediaProcessor
         string $fullPath,
         string $thumbPath,
         int $thumbMax = 1280,
-        int $quality = 82,
+        int $quality = 76,
         int $maxWidth = 2560
     ): array {
         // 大图（如手机高像素照片）解码需要的内存可能超过默认 128M，这里放宽到 256M（PHP 允许运行时提高）。

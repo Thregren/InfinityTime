@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.22
+ * @version 1.4.23
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.4.22';
+    public const VERSION = '1.4.23';
     public const MENU_NAME = 'InfinityTime';
 
     /**
@@ -162,7 +162,7 @@ class Plugin implements \Typecho_Plugin_Interface
     public static function config($form)
     {
         self::ensureFormClasses();
-        $quality = new Number('infinitytimeQuality', _t('WebP 质量（0-100）'), self::opt('infinitytimeQuality', 82));
+        $quality = new Number('infinitytimeQuality', _t('WebP 质量（0-100）'), self::opt('infinitytimeQuality', 76));
         $quality->input->setAttribute('min', '1')->setAttribute('max', '100');
         $form->addInput($quality->addRule('range', _t('质量需在 1-100 之间'), [1, 100]));
 
@@ -239,7 +239,7 @@ class Plugin implements \Typecho_Plugin_Interface
 
         try {
             $meta = ImageRepository::ingest($file, [
-                'quality' => (int)self::opt('infinitytimeQuality', 82),
+                'quality' => (int)self::opt('infinitytimeQuality', 76),
                 'thumb_max' => (int)self::opt('infinitytimeThumbMax', 1280),
                 'max_width' => (int)self::opt('infinitytimeMaxWidth', 2560),
                 'keep_original' => (bool)self::opt('infinitytimeKeepOriginal', '1'),

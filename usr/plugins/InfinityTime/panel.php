@@ -175,7 +175,7 @@ if (!empty($_GET['ajax'])) {
         $idx = (int)($state['done'] ?? 0);
         $failed = (int)($state['failed'] ?? 0);
         $batch = 3;
-        $quality = (int)Plugin::opt('infinitytimeQuality', 82);
+        $quality = (int)Plugin::opt('infinitytimeQuality', 76);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
         $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
         $started = microtime(true);
@@ -293,7 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $imgs = []; $thumbs = []; $exifs = []; $addrs = []; $titles = []; $descs = [];
         $firstExif = null; $index = 0; $fail = 0;
-        $quality = (int)Plugin::opt('infinitytimeQuality', 82);
+        $quality = (int)Plugin::opt('infinitytimeQuality', 76);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
         $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
         $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
@@ -406,7 +406,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_settings') {
-        Plugin::setOption('infinitytimeQuality', max(1, min(100, (int)($_POST['quality'] ?? 82))));
+        Plugin::setOption('infinitytimeQuality', max(1, min(100, (int)($_POST['quality'] ?? 76))));
         Plugin::setOption('infinitytimeThumbMax', max(200, min(4096, (int)($_POST['thumbMax'] ?? 1280))));
         Plugin::setOption('infinitytimeMaxWidth', max(0, min(20000, (int)($_POST['maxWidth'] ?? 0))));
         Plugin::setOption('infinitytimeKeepOriginal', ($_POST['keepOriginal'] ?? '1') === '1' ? '1' : '0');
@@ -499,7 +499,7 @@ function pp_albums(string $prefix): array
 $notice = $options->request->get('notice');
 $noticeType = $options->request->get('noticeType', 'success');
 $albums = pp_albums($prefix);
-$quality = (int)Plugin::opt('infinitytimeQuality', 82);
+$quality = (int)Plugin::opt('infinitytimeQuality', 76);
 $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
 $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
 $keepOriginal = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
@@ -1053,7 +1053,7 @@ if (resetBtn) {
     var f = resetBtn.closest('form');
     if (!f) return;
     var set = function (name, val) { var el = f.querySelector('[name="' + name + '"]'); if (el) el.value = val; };
-    set('quality', '82'); set('thumbMax', '1280'); set('maxWidth', '2560'); set('keepOriginal', '1');
+    set('quality', '76'); set('thumbMax', '1280'); set('maxWidth', '2560'); set('keepOriginal', '1');
     var out = document.getElementById('pp-quality-out');
     if (out) out.textContent = '82';
     f.submit();
