@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.23
+ * @version 1.4.24
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -84,6 +84,7 @@
           ?>
           <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo $firstImage; ?>"
              data-images='<?php echo json_encode($images, JSON_UNESCAPED_UNICODE); ?>'
+             data-previews='<?php echo json_encode($thumbs ?: $images ?: [], JSON_UNESCAPED_UNICODE); ?>'
              data-exif='<?php echo json_encode($exifList, JSON_UNESCAPED_UNICODE); ?>'
              data-addresses='<?php echo json_encode($addrList, JSON_UNESCAPED_UNICODE); ?>'
              data-titles='<?php echo json_encode($imgTitles, JSON_UNESCAPED_UNICODE); ?>'

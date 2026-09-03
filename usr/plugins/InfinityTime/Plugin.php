@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.23
+ * @version 1.4.24
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.4.23';
+    public const VERSION = '1.4.24';
     public const MENU_NAME = 'InfinityTime';
 
     /**
@@ -170,6 +170,10 @@ class Plugin implements \Typecho_Plugin_Interface
         $thumbMax->input->setAttribute('min', '200')->setAttribute('max', '4096');
         $form->addInput($thumbMax->addRule('range', _t('缩略图尺寸需在 200-4096 之间'), [200, 4096]));
 
+        $fullQuality = new Number('infinitytimeFullQuality', _t('灯箱全图质量（0-100）'), self::opt('infinitytimeFullQuality', 82));
+        $fullQuality->input->setAttribute('min', '1')->setAttribute('max', '100');
+        $form->addInput($fullQuality->addRule('range', _t('全图质量需在 1-100 之间'), [1, 100]));
+
         $maxWidth = new Number('infinitytimeMaxWidth', _t('全图最长边上限（px，0=不裁剪）'), self::opt('infinitytimeMaxWidth', 2560));
         $maxWidth->input->setAttribute('min', '0')->setAttribute('max', '20000');
         $form->addInput($maxWidth->addRule('range', _t('上限需在 0-20000 之间'), [0, 20000]));
@@ -242,6 +246,7 @@ class Plugin implements \Typecho_Plugin_Interface
                 'quality' => (int)self::opt('infinitytimeQuality', 76),
                 'thumb_max' => (int)self::opt('infinitytimeThumbMax', 1280),
                 'max_width' => (int)self::opt('infinitytimeMaxWidth', 2560),
+                'full_quality' => (int)self::opt('infinitytimeFullQuality', 82),
                 'keep_original' => (bool)self::opt('infinitytimeKeepOriginal', '1'),
             ]);
         } catch (\Throwable $e) {

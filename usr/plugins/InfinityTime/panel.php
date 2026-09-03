@@ -178,6 +178,7 @@ if (!empty($_GET['ajax'])) {
         $quality = (int)Plugin::opt('infinitytimeQuality', 76);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
         $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
+        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', 82);
         $started = microtime(true);
         $budget = 25; // 单次 AJAX 最多秒数，避免重建拖着后台页面
         $total = count($list);
@@ -190,7 +191,7 @@ if (!empty($_GET['ajax'])) {
             $src = ImageRepository::toAbs($item[1]);
             if (is_file($src)) {
                 try {
-                    MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $maxWidth);
+                    MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $maxWidth, $fullQuality);
                 } catch (\Throwable $e) {
                     Plugin::log('rebuild ajax: id=' . $item[0] . ' ' . $e->getMessage());
                     $failed++;
@@ -296,6 +297,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $quality = (int)Plugin::opt('infinitytimeQuality', 76);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
         $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
+        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', 82);
         $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
 
         $count = count($_FILES['files']['name']);
@@ -317,7 +319,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'tmp_name' => $_FILES['files']['tmp_name'][$i],
                 'size' => $_FILES['files']['size'][$i] ?? 0,
                 'error' => $_FILES['files']['error'][$i] ?? UPLOAD_ERR_OK,
-            ], ['quality' => $quality, 'thumb_max' => $thumbMax, 'max_width' => $maxWidth, 'keep_original' => $keep, 'address' => $address]);
+            ], ['quality' => $quality, 'thumb_max' => $thumbMax, 'max_width' => $maxWidth, 'full_quality' => $fullQuality, 'keep_original' => $keep, 'address' => $address]);
             if (!$meta) {
                 $fail++;
                 continue;
