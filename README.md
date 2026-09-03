@@ -143,8 +143,8 @@ InfinityTime-release/
 ```bash
 # 1. 确认版本号一致（主题 @version / 插件 VERSION / releases.json 三处）
 # 2. 打标签并推送
-git tag v1.4.18
-git push origin v1.4.18
+git tag v1.4.19
+git push origin v1.4.19
 ```
 
 工作流 `.github/workflows/release.yml` 会自动：

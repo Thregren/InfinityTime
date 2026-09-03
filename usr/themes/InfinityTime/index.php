@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.18
+ * @version 1.4.19
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -22,12 +22,10 @@
   <link rel="apple-touch-icon-precomposed" sizes="180x180" href="<?php $this->options->AppleIcon(); ?>">
   <link rel="icon" href="<?php echo pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css'); ?>" />
-  <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/noscript.css'); ?>" />
+  <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
   <noscript>
     <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/noscript.css'); ?>" />
   </noscript>
-  <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/main.css'); ?>" />
-  <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
 </head>
 
 <body class="is-preload">
@@ -586,7 +584,6 @@
   <script src="<?php $this->options->themeUrl('assets/js/jquery.poptrox.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/browser.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/breakpoints.min.js'); ?>"></script>
-  <script src="<?php $this->options->themeUrl('assets/js/util.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/main.js'); ?>"></script>
 </body>
 
