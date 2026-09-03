@@ -244,20 +244,9 @@ class ImageRepository
     private static $schemaEnsured = false;
     public static function ensureSchema(): void
     {
-        if (self::$schemaEnsured) {
-            return;
-        }
+        // title/desc 列已由 Plugin::activate() -> createTables()（含旧表升级）补好。
+        // 运行期无需再重复 ALTER，避免每个请求多跑 2 条 DDL。
         self::$schemaEnsured = true;
-        $db = \Typecho\Db::get();
-        $q = (stripos($db->getAdapterName(), 'mysql') !== false) ? '`' : '"';
-        $table = self::table();
-        foreach (['title', 'desc'] as $col) {
-            try {
-                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} text");
-            } catch (\Throwable $e) {
-                // 列已存在则忽略
-            }
-        }
     }
 
     /** 更新单张图片的标题/描述/地址。 */

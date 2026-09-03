@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.4.16
+ * @version 1.4.17
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -77,6 +77,10 @@
           if (!is_array($addrList)) { $addrList = []; }
           if (!is_array($imgTitles)) { $imgTitles = []; }
           if (!is_array($imgDescs)) { $imgDescs = []; }
+          // 去掉 null/空 字段，压缩内嵌 JSON；前端对缺失字段同样按“无”处理，展示不受影响。
+          $exifList = array_map(function ($e) {
+              return is_array($e) ? array_filter($e, function ($v) { return $v !== null && $v !== ''; }) : $e;
+          }, $exifList);
           $exif0 = $exifList[0] ?? [];
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
           ?>

@@ -193,15 +193,6 @@ class MediaProcessor
         if (is_array($info) && ($info[0] ?? 0) > 0 && ($info[1] ?? 0) > 0) {
             $w = (int)$info[0];
             $h = (int)$info[1];
-        } elseif (class_exists('\Imagick')) {
-            try {
-                $im = new \Imagick($srcPath);
-                $w = (int)$im->getImageWidth();
-                $h = (int)$im->getImageHeight();
-                $im->destroy();
-            } catch (\Throwable $e) {
-                // 无法读取尺寸时交由后续解码流程处理
-            }
         }
         if ($w > 0 && $h > 0 && $w * $h > self::MAX_PIXELS) {
             throw new \RuntimeException(

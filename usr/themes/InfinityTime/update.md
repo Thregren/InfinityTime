@@ -1,5 +1,13 @@
 # 更新日志
 
+## 1.4.17
+
+- 优化：移除主题中未被引用的 `assets/webfonts/`（Font Awesome，约 2.7M）；主题发布包由 ~2.3M 降到 ~1.1M。
+- 优化：首页内嵌的 `data-exif` 去掉 null/空字段，多图/大图集时首屏 HTML 更轻（展示不变）。
+- 优化：大图尺寸校验只走 `getimagesize`（JPEG/PNG 等），HEIC 不再多读一次 Imagick（省一次解码 I/O）。
+- 优化：上传表 `title/desc` 列已在启用时补齐，运行期不再每请求执行 2 条 `ALTER TABLE`。
+- 构建：主题发布包不再打进运行期用到的 `assets/sass/`（仓库保留，便于开发）。
+
 ## 1.4.16
 
 - 优化：后台「已发布图集」列表由 N+1 查询改为一次 `rowsForCids(cid IN ...)` 批量取数，图集多时不卡。
