@@ -177,7 +177,7 @@ if (!empty($_GET['ajax'])) {
         $batch = 3;
         $quality = (int)Plugin::opt('infinitytimeQuality', 82);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 0);
+        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
         $started = microtime(true);
         $budget = 25; // 单次 AJAX 最多秒数，避免重建拖着后台页面
         $total = count($list);
@@ -295,7 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $firstExif = null; $index = 0; $fail = 0;
         $quality = (int)Plugin::opt('infinitytimeQuality', 82);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 0);
+        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
         $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
 
         $count = count($_FILES['files']['name']);
@@ -501,7 +501,7 @@ $noticeType = $options->request->get('noticeType', 'success');
 $albums = pp_albums($prefix);
 $quality = (int)Plugin::opt('infinitytimeQuality', 82);
 $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-$maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 0);
+$maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
 $keepOriginal = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
 $tools = MediaProcessor::detectTools();
 $siteLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
@@ -1053,7 +1053,7 @@ if (resetBtn) {
     var f = resetBtn.closest('form');
     if (!f) return;
     var set = function (name, val) { var el = f.querySelector('[name="' + name + '"]'); if (el) el.value = val; };
-    set('quality', '82'); set('thumbMax', '1280'); set('maxWidth', '0'); set('keepOriginal', '1');
+    set('quality', '82'); set('thumbMax', '1280'); set('maxWidth', '2560'); set('keepOriginal', '1');
     var out = document.getElementById('pp-quality-out');
     if (out) out.textContent = '82';
     f.submit();
