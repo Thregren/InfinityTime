@@ -241,54 +241,6 @@
 
 			});
 
-		// Poptrox.
-			$main.poptrox({
-				baseZIndex: 20000,
-				caption: function($a) { return $a.next('h2').text().trim(); },
-				fadeSpeed: 300,
-				onPopupClose: function() { 
-					isPopupActive = false;
-					$body.removeClass('modal-active');
-					document.querySelectorAll('.pic-swipe-wrapper').forEach(function(w) { w.remove(); });
-					$('html, body').css({
-						'overflow': '',
-						'position': '',
-						'height': '',
-						'width': ''
-					});
-					touchStartX = 0;
-					touchEndX = 0;
-					isTransitioning = false;
-				},
-				onPopupOpen: function() { 
-					isPopupActive = true;
-					$body.addClass('modal-active');
-				},
-				overlayOpacity: 0,
-				popupCloserText: '',
-				popupHeight: 150,
-				popupLoaderText: '',
-				popupSpeed: 300,
-				popupWidth: 150,
-				selector: '.thumb > a.image',
-				usePopupCaption: false,
-				usePopupCloser: true,
-				usePopupDefaultStyling: false,
-				usePopupForceClose: true,
-				usePopupLoader: true,
-				usePopupNav: true,
-				windowMargin: 50
-			});
-
-			// Hack: Set margins to 0 when 'xsmall' activates.
-				breakpoints.on('<=xsmall', function() {
-					$main[0]._poptrox.windowMargin = 0;
-				});
-
-				breakpoints.on('>xsmall', function() {
-					$main[0]._poptrox.windowMargin = 50;
-				});
-
 })(jQuery);
 
 // 优化全屏切换功能
@@ -390,6 +342,14 @@ document.addEventListener('DOMContentLoaded', function() {
         usePopupLoader: true,
         usePopupNav: true,
         windowMargin: 50
+    });
+
+    // 适配窄屏：xsmall 时把弹窗边距归零（对第二个（当前）poptrox 实例生效，带守卫防未初始化时报错）。
+    breakpoints.on('<=xsmall', function() {
+        if ($main[0]._poptrox) { $main[0]._poptrox.windowMargin = 0; }
+    });
+    breakpoints.on('>xsmall', function() {
+        if ($main[0]._poptrox) { $main[0]._poptrox.windowMargin = 50; }
     });
 
     // 触摸事件：多图时拖动跟手，松手分页切换

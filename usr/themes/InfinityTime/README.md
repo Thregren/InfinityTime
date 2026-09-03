@@ -1,4 +1,4 @@
-# InfinityTime（无限时光）主题 · v1.4.17
+# InfinityTime（无限时光）主题 · v1.4.18
 
 Typecho 纯图片分享前端主题，需搭配配套插件 **InfinityTime** 使用。
 

@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.4.17
+ * @version 1.4.18
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.4.17';
+    public const VERSION = '1.4.18';
     public const MENU_NAME = 'InfinityTime';
 
     /**

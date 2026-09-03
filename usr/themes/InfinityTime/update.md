@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.4.18
+
+- 修复：合并 `assets/js/main.js` 中重复的 poptrox 初始化（此前有两处，会生成重复灯箱 DOM，是 EXIF 侧栏潜在风险来源）；窄屏 `windowMargin` 断点处理器迁移到当前实例并加守卫。
+
 ## 1.4.17
 
 - 优化：移除主题中未被引用的 `assets/webfonts/`（Font Awesome，约 2.7M）；主题发布包由 ~2.3M 降到 ~1.1M。
