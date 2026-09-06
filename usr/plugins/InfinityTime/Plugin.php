@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.5.0
+ * @version 1.6.0
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,8 +26,16 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.5.0';
+    public const VERSION = '1.6.0';
     public const MENU_NAME = 'InfinityTime';
+    // 统一默认（“恢复默认/写入”）配置，避免各处写死不同数值
+    public const DEFAULT_QUALITY      = 76;   // 缩略图质量
+    public const DEFAULT_THUMB_MAX    = 1280; // 缩略图最长边
+    public const DEFAULT_MAX_WIDTH    = 2560; // 普通图宽度上限
+    public const DEFAULT_FULL_QUALITY = 82;   // 普通图质量
+    public const DEFAULT_PANO_WIDTH   = 0;    // 全景图宽度（0=不裁剪）
+    public const DEFAULT_PANO_QUALITY = 92;   // 全景图质量
+    public const DEFAULT_KEEP_ORIGINAL = '1'; // 保留原图
 
     /**
      * 激活插件：建表、挂菜单/面板。

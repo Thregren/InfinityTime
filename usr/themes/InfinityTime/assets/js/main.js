@@ -451,6 +451,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.body.addEventListener('touchstart', function(e) {
         const popup = e.target.closest('.poptrox-popup');
         if (!isPopupActive || !popup) return;
+        if (popup.__panoActive) return; // 全景激活：拖动交给 Pannellum 旋转，不做切图
         touchStartX = e.touches[0].clientX;
         touchCurrentX = touchStartX;
         const nav = popup.querySelector('.breadcrumb-nav');
@@ -463,6 +464,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.body.addEventListener('touchmove', function(e) {
         const popup = e.target.closest('.poptrox-popup');
         if (!isPopupActive || !popup) return;
+        if (popup.__panoActive) return;
         if (isDragging && popup.querySelector('.pic-swipe-track')) {
             e.preventDefault();
             touchCurrentX = e.touches[0].clientX;
@@ -475,6 +477,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.body.addEventListener('touchend', function(e) {
         const popup = e.target.closest('.poptrox-popup');
         if (!isPopupActive || !popup) return;
+        if (popup.__panoActive) return;
         touchEndX = e.changedTouches[0].clientX;
         const track = popup.querySelector('.pic-swipe-track');
         const moved = Math.abs(touchEndX - touchStartX);
@@ -621,6 +624,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function handleSwipe(popup) {
         if (isTransitioning) return;
+        if (popup && popup.__panoActive) return;
 
         const track = popup.querySelector('.pic-swipe-track');
         if (track) return;

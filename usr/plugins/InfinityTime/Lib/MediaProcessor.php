@@ -111,15 +111,21 @@ class MediaProcessor
         int $maxWidth = 2560,
         int $fullQuality = 82
     ): array {
-        // 大图（如手机高像素照片）解码需要的内存可能超过默认 128M，这里放宽到 256M（PHP 允许运行时提高）。
-        @ini_set('memory_limit', '256M');
-
         if (!is_file($srcPath)) {
             throw new \RuntimeException('未找到源文件: ' . $srcPath);
         }
 
         // 解码前先做单图尺寸上限保护，避免超大图把内存撑爆。
         self::assertImageSize($srcPath);
+
+        // 按像素数动态放宽内存：解码 + GD 编码 WebP 需要约 3 倍位图内存（8K 全景 8192×4096 峰值约 260MB）。
+        $__sz = @getimagesize($srcPath);
+        if (is_array($__sz) && ($__sz[0] ?? 0) > 0 && ($__sz[1] ?? 0) > 0) {
+            $__mb = (int)ceil($__sz[0] * $__sz[1] * 12 / 1048576);
+            @ini_set('memory_limit', max(256, min($__mb, 1024)) . 'M');
+        } else {
+            @ini_set('memory_limit', '256M');
+        }
 
         // 前提：先在转换成 WebP 之前读 EXIF（避免丢失）
         $exif = ExifReader::read($srcPath);

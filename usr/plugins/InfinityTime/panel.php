@@ -213,10 +213,12 @@ if (!empty($_GET['ajax'])) {
         $idx = (int)($state['done'] ?? 0);
         $failed = (int)($state['failed'] ?? 0);
         $batch = 3;
-        $quality = (int)Plugin::opt('infinitytimeQuality', 76);
-        $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
-        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', 82);
+        $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
+        $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
+        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);
+        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', Plugin::DEFAULT_FULL_QUALITY);
+        $panoWidth = (int)Plugin::opt('infinitytimePanoWidth', Plugin::DEFAULT_PANO_WIDTH);
+        $panoQuality = (int)Plugin::opt('infinitytimePanoQuality', Plugin::DEFAULT_PANO_QUALITY);
         $started = microtime(true);
         $budget = 25; // 单次 AJAX 最多秒数，避免重建拖着后台页面
         $total = count($list);
@@ -228,13 +230,25 @@ if (!empty($_GET['ajax'])) {
             $item = $list[$idx];
             $src = ImageRepository::toAbs($item[1]);
             if (is_file($src)) {
+                $mw = $maxWidth;
+                $fq = $fullQuality;
+                $__info = @getimagesize($src);
+                if (is_array($__info) && ($__info[0] ?? 0) > 0 && ($__info[1] ?? 0) > 0
+                    && ImageRepository::isPano((int)$__info[0], (int)$__info[1])) {
+                    $mw = $panoWidth > 0 ? (int)min((int)$__info[0], $panoWidth) : 0; // 全景：独立宽度，0=不裁剪
+                    $fq = $panoQuality;
+                }
                 try {
-                    MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $maxWidth, $fullQuality);
+                    MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $mw, $fq);
                 } catch (\Throwable $e) {
                     Plugin::log('rebuild ajax: id=' . $item[0] . ' ' . $e->getMessage());
                     $failed++;
                 }
                 $state['current'] = basename($src);
+            } else {
+                // 原图缺失：无法重建，计为失败（不要静默跳过）
+                $failed++;
+                $state['current'] = basename($src) . '（缺原图）';
             }
             $idx++;
         }
@@ -334,13 +348,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'allowComment' => '0', 'allowPing' => '0', 'allowFeed' => '0', 'template' => '', 'password' => '',
         ]));
 
-        $imgs = []; $thumbs = []; $exifs = []; $addrs = []; $titles = []; $descs = [];
+        $imgs = []; $thumbs = []; $exifs = []; $addrs = []; $titles = []; $descs = []; $panos = [];
         $firstExif = null; $index = 0; $fail = 0;
-        $quality = (int)Plugin::opt('infinitytimeQuality', 76);
-        $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
-        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', 82);
-        $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
+        $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
+        $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
+        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);
+        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', Plugin::DEFAULT_FULL_QUALITY);
+        $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', Plugin::DEFAULT_KEEP_ORIGINAL);
+        $panoWidth = (int)Plugin::opt('infinitytimePanoWidth', Plugin::DEFAULT_PANO_WIDTH);
+        $panoQuality = (int)Plugin::opt('infinitytimePanoQuality', Plugin::DEFAULT_PANO_QUALITY);
 
         $count = count($_FILES['files']['name']);
         // 逐图标题/描述（与 files[] 同序，后端据此写入每张图的 title/desc）
@@ -361,7 +377,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'tmp_name' => $_FILES['files']['tmp_name'][$i],
                 'size' => $_FILES['files']['size'][$i] ?? 0,
                 'error' => $_FILES['files']['error'][$i] ?? UPLOAD_ERR_OK,
-            ], ['quality' => $quality, 'thumb_max' => $thumbMax, 'max_width' => $maxWidth, 'full_quality' => $fullQuality, 'keep_original' => $keep, 'address' => $address]);
+            ], ['quality' => $quality, 'thumb_max' => $thumbMax, 'max_width' => $maxWidth, 'pano_width' => $panoWidth, 'pano_quality' => $panoQuality, 'full_quality' => $fullQuality, 'keep_original' => $keep, 'address' => $address]);
             if (!$meta) {
                 $fail++;
                 continue;
@@ -374,6 +390,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $imgs[] = $meta['full']; $thumbs[] = $meta['thumb']; $exifs[] = $meta['exif']; $addrs[] = $address;
             $titles[] = $imgTitle; $descs[] = $imgDesc;
+            $pw = (int)($meta['width'] ?? 0); $ph = (int)($meta['height'] ?? 0);
+            $panos[] = ImageRepository::isPano($pw, $ph) ? 1 : 0;
             if ($firstExif === null) {
                 $firstExif = $meta['exif'];
             }
@@ -398,6 +416,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'addresses' => json_encode($addrs, JSON_UNESCAPED_UNICODE),
             'titles' => json_encode($titles, JSON_UNESCAPED_UNICODE),
             'descs' => json_encode($descs, JSON_UNESCAPED_UNICODE),
+            'panos' => json_encode($panos, JSON_UNESCAPED_UNICODE),
             'device' => $device !== '' ? $device : trim((string)($firstExif['make'] ?? '') . ' ' . (string)($firstExif['model'] ?? '')),
             'location' => $address,
         ] as $name => $val) {
@@ -412,6 +431,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'update_album') {
+        $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
         if ($cid > 0) {
             $title = trim((string)($_POST['title'] ?? ''));
@@ -421,11 +441,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             pp_set_field($cid, 'device', trim((string)($_POST['device'] ?? '')));
             pp_set_field($cid, 'tags', trim((string)($_POST['tags'] ?? '')));
             pp_set_field($cid, 'location', trim((string)($_POST['address'] ?? '')));
+            if ($ajax) { pp_reply_json(true, _t('已更新图集信息')); }
             pp_reply(_t('已更新图集信息'));
         }
     }
 
     if ($action === 'set_image_meta') {
+        $ajax = !empty($_POST['ajax']);
         $rowId = (int)($_POST['rowId'] ?? 0);
         $title = trim((string)($_POST['title'] ?? ''));
         $desc = trim((string)($_POST['desc'] ?? ''));
@@ -437,10 +459,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ImageRepository::syncPostFields((int)$row['cid']);
             }
         }
+        if ($ajax) { pp_reply_json(true, _t('已保存图片信息')); }
         pp_reply(_t('已保存图片信息'));
     }
 
     if ($action === 'delete_image') {
+        $ajax = !empty($_POST['ajax']);
         $rowId = (int)($_POST['rowId'] ?? 0);
         if ($rowId > 0) {
             $row = $db->fetchRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
@@ -449,14 +473,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
             }
         }
+        if ($ajax) { pp_reply_json(true, _t('已删除该图片')); }
         pp_reply(_t('已删除该图片'));
     }
 
+    if ($action === 'preview_non_plugin' || $action === 'delete_non_plugin') {
+        // 汇总“本插件发布的图集”cid：有 img 自定义字段 或 在 infinitytime_images 表里
+        $pluginCids = [];
+        foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img')) as $f) {
+            $pluginCids[(int)$f['cid']] = true;
+        }
+        foreach ($db->fetchAll($db->select('cid')->from(ImageRepository::table())) as $f) {
+            $pluginCids[(int)$f['cid']] = true;
+        }
+        $rows = $db->fetchAll($db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post'));
+        $nonCount = 0;
+        $titles = [];
+        foreach ($rows as $r) {
+            $cid = (int)$r['cid'];
+            if (isset($pluginCids[$cid])) {
+                continue;
+            }
+            $nonCount++;
+            if ($action === 'delete_non_plugin') {
+                $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+                $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+            } elseif (count($titles) < 20) {
+                $titles[] = (string)($r['title'] ?? '');
+            }
+        }
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($action === 'delete_non_plugin'
+            ? ['ok' => true, 'deleted' => $nonCount]
+            : ['ok' => true, 'count' => $nonCount, 'titles' => $titles],
+            JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
     if ($action === 'save_settings') {
-        Plugin::setOption('infinitytimeQuality', max(1, min(100, (int)($_POST['quality'] ?? 76))));
-        Plugin::setOption('infinitytimeThumbMax', max(200, min(4096, (int)($_POST['thumbMax'] ?? 1280))));
-        Plugin::setOption('infinitytimeMaxWidth', max(0, min(20000, (int)($_POST['maxWidth'] ?? 0))));
+        $ajax = !empty($_POST['ajax']);
+        Plugin::setOption('infinitytimeQuality', max(1, min(100, (int)($_POST['quality'] ?? Plugin::DEFAULT_QUALITY))));
+        Plugin::setOption('infinitytimeThumbMax', max(200, min(4096, (int)($_POST['thumbMax'] ?? Plugin::DEFAULT_THUMB_MAX))));
+        Plugin::setOption('infinitytimeMaxWidth', max(0, min(20000, (int)($_POST['maxWidth'] ?? Plugin::DEFAULT_MAX_WIDTH))));
+        Plugin::setOption('infinitytimeFullQuality', max(1, min(100, (int)($_POST['fullQuality'] ?? Plugin::DEFAULT_FULL_QUALITY))));
         Plugin::setOption('infinitytimeKeepOriginal', ($_POST['keepOriginal'] ?? '1') === '1' ? '1' : '0');
+        Plugin::setOption('infinitytimePanoWidth', max(0, min(20000, (int)($_POST['panoWidth'] ?? Plugin::DEFAULT_PANO_WIDTH))));
+        Plugin::setOption('infinitytimePanoQuality', max(1, min(100, (int)($_POST['panoQuality'] ?? Plugin::DEFAULT_PANO_QUALITY))));
+        if ($ajax) { pp_reply_json(true, _t('已保存 WebP 转换设置')); }
         pp_reply(_t('已保存 WebP 转换设置'));
     }
 
@@ -477,6 +540,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_site') {
+        $ajax = !empty($_POST['ajax']);
         $oldLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
         $logo = trim((string)($_POST['siteLogo'] ?? ''));
         $newAvatarAbs = null;
@@ -502,6 +566,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ],
             ]);
             if (!$meta) {
+                if ($ajax) { pp_reply_json(false, _t('头像上传失败：') . (ImageRepository::$lastError ?: '未知错误')); }
                 pp_reply(_t('头像上传失败：') . (ImageRepository::$lastError ?: '未知错误'), 'error');
             }
             $logo = rtrim((string)$options->siteUrl, '/') . $meta['full'];
@@ -513,10 +578,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         Plugin::setOption('infinitytimeSiteName', trim((string)($_POST['siteName'] ?? '')));
         Plugin::setOption('infinitytimeSiteTagline', trim((string)($_POST['siteTagline'] ?? '')));
         Plugin::setOption('infinitytimeAbout', trim((string)($_POST['aboutText'] ?? '')));
+        if ($ajax) { pp_reply_json(true, _t('已保存站点信息')); }
         pp_reply(_t('已保存站点信息'));
     }
 
     if ($action === 'save_contacts') {
+        $ajax = !empty($_POST['ajax']);
         $names = (array)($_POST['contactName'] ?? []);
         $urls = (array)($_POST['contactUrl'] ?? []);
         $icons = (array)($_POST['contactIcon'] ?? []);
@@ -536,6 +603,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
         }
         Plugin::setOption('infinitytimeContacts', json_encode($contacts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        if ($ajax) { pp_reply_json(true, _t('已保存联系方式')); }
         pp_reply(_t('已保存联系方式'));
     }
 
@@ -584,10 +652,13 @@ function pp_albums(string $prefix): array
 $notice = $options->request->get('notice');
 $noticeType = $options->request->get('noticeType', 'success');
 $albums = pp_albums($prefix);
-$quality = (int)Plugin::opt('infinitytimeQuality', 76);
-$thumbMax = (int)Plugin::opt('infinitytimeThumbMax', 1280);
-$maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', 2560);
-$keepOriginal = (bool)Plugin::opt('infinitytimeKeepOriginal', '1');
+$quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
+$thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
+$maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);
+$fullQuality = (int)Plugin::opt('infinitytimeFullQuality', Plugin::DEFAULT_FULL_QUALITY);
+$keepOriginal = (bool)Plugin::opt('infinitytimeKeepOriginal', Plugin::DEFAULT_KEEP_ORIGINAL);
+$panoWidth = (int)Plugin::opt('infinitytimePanoWidth', Plugin::DEFAULT_PANO_WIDTH);
+$panoQuality = (int)Plugin::opt('infinitytimePanoQuality', Plugin::DEFAULT_PANO_QUALITY);
 $tools = MediaProcessor::detectTools();
 $siteLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
 $siteName = (string)Plugin::opt('infinitytimeSiteName', '');
@@ -625,6 +696,7 @@ include $adminDir . '/menu.php';
       .pp-meta{font-size:12px;color:#999;line-height:1.7}
       .pp-row{display:grid;grid-template-columns:150px 1fr;gap:8px 16px;align-items:center;margin:12px 0}
       .pp-row>label{font-size:13px;color:#444;text-align:left}
+      .pp-group{margin:18px 0 6px;padding:6px 0 6px 10px;border-left:3px solid #467B96;font-size:13px;font-weight:bold;color:#444}
       .pp-row .pp-col{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       .pp-row input[type=text],.pp-row input[type=number],.pp-row select,.pp-row textarea{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #D9D9D6;border-radius:2px;font-size:14px;background:#fff;height:34px}
       .pp-row textarea{min-height:64px;height:auto}
@@ -941,19 +1013,39 @@ include $adminDir . '/menu.php';
         <h2>WebP 转换设置</h2>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
           <input type="hidden" name="action" value="save_settings">
-          <div class="pp-row"><label>WebP 质量</label>
-            <div class="pp-col">
-              <input type="range" name="quality" id="pp-quality" class="pp-range" min="1" max="100" step="1" value="<?php echo $quality; ?>">
-              <output id="pp-quality-out" class="pp-hint" for="pp-quality"><?php echo $quality; ?></output>
-            </div>
-          </div>
-          <div class="pp-row"><label>缩略图最长边</label><input type="number" name="thumbMax" min="200" max="4096" value="<?php echo $thumbMax; ?>"></div>
-          <div class="pp-row"><label>全图最长边上限</label><div class="pp-col"><input type="number" name="maxWidth" min="0" max="20000" value="<?php echo $maxWidth; ?>"><span class="pp-hint">0=不裁剪</span></div></div>
+          <div class="pp-group">通用 · 上传保留原图</div>
           <div class="pp-row"><label>保留原图</label>
             <select name="keepOriginal">
               <option value="1" <?php echo $keepOriginal ? 'selected' : ''; ?>>保留（original/）</option>
               <option value="0" <?php echo !$keepOriginal ? 'selected' : ''; ?>>不保留（省空间）</option>
             </select>
+          </div>
+
+          <div class="pp-group">缩略图（通用）</div>
+          <div class="pp-row"><label>最长边</label><input type="number" name="thumbMax" min="200" max="4096" value="<?php echo $thumbMax; ?>"></div>
+          <div class="pp-row"><label>质量</label>
+            <div class="pp-col">
+              <input type="range" name="quality" id="pp-quality" class="pp-range" min="1" max="100" step="1" value="<?php echo $quality; ?>">
+              <output id="pp-quality-out" class="pp-hint" for="pp-quality"><?php echo $quality; ?></output>
+            </div>
+          </div>
+
+          <div class="pp-group">普通图（灯箱大图）</div>
+          <div class="pp-row"><label>宽度上限</label><div class="pp-col"><input type="number" name="maxWidth" min="0" max="20000" value="<?php echo $maxWidth; ?>"><span class="pp-hint">0=不裁剪</span></div></div>
+          <div class="pp-row"><label>质量</label>
+            <div class="pp-col">
+              <input type="range" name="fullQuality" id="pp-full-quality" class="pp-range" min="1" max="100" step="1" value="<?php echo $fullQuality; ?>">
+              <output id="pp-full-quality-out" class="pp-hint" for="pp-full-quality"><?php echo $fullQuality; ?></output>
+            </div>
+          </div>
+
+          <div class="pp-group">全景图（宽高比 2:1）</div>
+          <div class="pp-row"><label>宽度上限</label><div class="pp-col"><input type="number" name="panoWidth" min="0" max="20000" value="<?php echo $panoWidth; ?>"><span class="pp-hint">0=不裁剪</span></div></div>
+          <div class="pp-row"><label>质量</label>
+            <div class="pp-col">
+              <input type="range" name="panoQuality" id="pp-pano-quality" class="pp-range" min="1" max="100" step="1" value="<?php echo $panoQuality; ?>">
+              <output id="pp-pano-quality-out" class="pp-hint" for="pp-pano-quality"><?php echo $panoQuality; ?></output>
+            </div>
           </div>
           <div class="pp-note">
             <div class="pp-meta">转换工具：</div>
@@ -973,6 +1065,27 @@ include $adminDir . '/menu.php';
             <button class="pp-btn" type="submit">保存设置</button>
           </div>
         </form>
+      </div>
+
+      <!-- 维护 -->
+      <div class="pp-card">
+        <h2>维护</h2>
+        <div class="pp-maintain">
+          <div>
+            <button class="pp-btn gray" type="button" data-run="cleanup">清理孤儿文件</button>
+            <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-cleanup"></div></div><span class="pp-msg" id="pp-msg-cleanup"></span></div>
+            <div class="pp-meta" style="margin-top:8px">删除所有不被任何图集引用的 original/full/thumb 文件，并清理空目录。</div>
+          </div>
+          <div>
+            <button class="pp-btn gray" type="button" data-run="rebuild">重建缩略图/全图</button>
+            <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-rebuild"></div></div><span class="pp-msg" id="pp-msg-rebuild"></span></div>
+            <div class="pp-meta" style="margin-top:8px">按当前质量/尺寸设置，用原图重新生成全部 full/thumb（改设置后批量重做）。</div>
+          </div>
+          <div>
+            <button class="pp-btn red" type="button" id="pp-clean-posts">清理非插件文章</button>
+            <div class="pp-meta" style="margin-top:8px">删除所有不是 InfinityTime 发布的 type=post 文章（不含本插件图集；会连同自定义字段一起删除）。</div>
+          </div>
+        </div>
       </div>
 
       <!-- 图集列表 -->
@@ -1033,7 +1146,7 @@ include $adminDir . '/menu.php';
                     <input type="text" name="address" value="<?php echo htmlspecialchars($img['address']); ?>" placeholder="写地址">
                     <button class="pp-btn gray" type="submit">保存图片信息</button>
                   </form>
-                  <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>" onsubmit="return confirm('删除这张图片及其文件？')">
+                  <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
                     <input type="hidden" name="action" value="delete_image">
                     <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
                     <button class="pp-btn red" type="submit">删除</button>
@@ -1045,22 +1158,6 @@ include $adminDir . '/menu.php';
         <?php endforeach; endif; ?>
       </div>
 
-      <!-- 维护 -->
-      <div class="pp-card">
-        <h2>维护</h2>
-        <div class="pp-maintain">
-          <div>
-            <button class="pp-btn gray" type="button" data-run="cleanup">清理孤儿文件</button>
-            <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-cleanup"></div></div><span class="pp-msg" id="pp-msg-cleanup"></span></div>
-            <div class="pp-meta" style="margin-top:8px">删除所有不被任何图集引用的 original/full/thumb 文件，并清理空目录。</div>
-          </div>
-          <div>
-            <button class="pp-btn gray" type="button" data-run="rebuild">重建缩略图/全图</button>
-            <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-rebuild"></div></div><span class="pp-msg" id="pp-msg-rebuild"></span></div>
-            <div class="pp-meta" style="margin-top:8px">按当前质量/尺寸设置，用原图重新生成全部 full/thumb（改设置后批量重做）。</div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </main>
@@ -1095,7 +1192,6 @@ function runJob(job) {
             if (msg) msg.textContent += ' ✓ 完成';
           }
           if (btn) btn.disabled = false;
-          setTimeout(function(){ location.reload(); }, 800);
         }
       })
       .catch(function(){
@@ -1108,6 +1204,39 @@ function runJob(job) {
 document.querySelectorAll('[data-run]').forEach(function(b){
   b.addEventListener('click', function(){ runJob(this.getAttribute('data-run')); });
 });
+
+// 清理非插件文章：先预览数量，确认后再删除
+var cleanPosts = document.getElementById('pp-clean-posts');
+if (cleanPosts) {
+  cleanPosts.addEventListener('click', function () {
+    var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
+    function post(act) {
+      var fd = new FormData();
+      fd.set('ajax', '1'); fd.set('action', act);
+      return fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' }).then(function (r) { return r.json(); });
+    }
+    cleanPosts.disabled = true;
+    post('preview_non_plugin')
+      .then(function (d) {
+        cleanPosts.disabled = false;
+        if (d && d.ok && d.count > 0) {
+          var titleStr = (d.titles && d.titles.length) ? '（如：' + d.titles.join('、') + (d.count > d.titles.length ? '…' : '') + '）' : '';
+          if (confirm('将删除 ' + d.count + ' 篇不是 InfinityTime 发布的文章' + titleStr + '。确认删除？此操作不可恢复！')) {
+            cleanPosts.disabled = true;
+            post('delete_non_plugin').then(function (r2) {
+              cleanPosts.disabled = false;
+              ppShowNotice((r2 && r2.ok) ? ('已清理 ' + (r2.deleted || 0) + ' 篇非插件文章') : '清理失败', (r2 && r2.ok) ? 'success' : 'error');
+            }).catch(function () { cleanPosts.disabled = false; ppShowNotice('清理出错，请重试', 'error'); });
+          }
+        } else if (d && d.ok) {
+          ppShowNotice('没有发现非插件文章', 'success');
+        } else {
+          ppShowNotice((d && d.msg) ? d.msg : '查询失败', 'error');
+        }
+      })
+      .catch(function () { cleanPosts.disabled = false; ppShowNotice('查询出错，请重试', 'error'); });
+  });
+}
 
 // 删除图集：AJAX 局部删除，整页不跳转（事件委托，卡片局部刷新后仍生效）
 document.addEventListener('submit', function (e) {
@@ -1144,6 +1273,46 @@ document.addEventListener('submit', function (e) {
     .catch(function () {
       if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
       alert('删除失败，请重试');
+    });
+});
+
+// 各表单 / 设置保存：AJAX 提交，整页不刷新
+document.addEventListener('submit', function (e) {
+  var form = e.target && e.target.closest ? e.target.closest('form') : null;
+  if (!form) return;
+  var actEl = form.querySelector('input[name="action"]');
+  var act = actEl ? actEl.value : '';
+  var actions = ['save_site', 'save_contacts', 'save_settings', 'update_album', 'set_image_meta', 'delete_image'];
+  if (actions.indexOf(act) === -1) return;
+  if (act === 'delete_image' && !confirm('删除这张图片及其文件？')) return;
+  e.preventDefault();
+  var btn = form.querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
+  var fd = new FormData(form);
+  fd.set('ajax', '1');
+  fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+    .then(function (r) { return r.json().catch(function () { return { ok: false, msg: '服务器返回异常' }; }); })
+    .then(function (d) {
+      if (d && d.ok) {
+        if (act === 'delete_image') {
+          var pic = form.closest('.pp-img');
+          if (pic && pic.parentNode) pic.parentNode.removeChild(pic);
+        } else if (act === 'update_album') {
+          var ab = form.closest('.pp-album');
+          if (ab) {
+            var t = form.querySelector('[name="title"]');
+            var titleEl = ab.querySelector('summary strong');
+            if (titleEl && t) titleEl.textContent = t.value;
+          }
+        }
+      }
+      ppShowNotice((d && d.msg) ? d.msg : '已保存', (d && d.ok) ? 'success' : 'error');
+      if (btn) btn.disabled = false;
+    })
+    .catch(function () {
+      ppShowNotice('网络/保存出错，请重试', 'error');
+      if (btn) btn.disabled = false;
     });
 });
 
@@ -1220,16 +1389,14 @@ document.addEventListener('click', function () {
   document.querySelectorAll('.pp-icon-pop.open').forEach(function (p) { p.classList.remove('open'); });
 });
 
-// WebP 质量滑块：实时显示数值
-(function () {
-  var q = document.getElementById('pp-quality');
-  var out = document.getElementById('pp-quality-out');
-  if (q && out) {
-    var sync = function () { out.textContent = q.value; };
-    q.addEventListener('input', sync);
-    sync();
-  }
-})();
+// 质量滑块：实时显示数值（缩略图 / 普通图 / 全景图）
+document.querySelectorAll('.pp-range').forEach(function (r) {
+  var out = document.querySelector('output[for="' + r.id + '"]');
+  if (!out) return;
+  var sync = function () { out.textContent = r.value; };
+  r.addEventListener('input', sync);
+  sync();
+});
 
 // 恢复默认最佳设置：填回默认值并保存
 var resetBtn = document.getElementById('pp-reset-webp');
@@ -1237,10 +1404,23 @@ if (resetBtn) {
   resetBtn.addEventListener('click', function () {
     var f = resetBtn.closest('form');
     if (!f) return;
+    var DEFAULTS = <?php echo json_encode([
+      'quality' => Plugin::DEFAULT_QUALITY,
+      'thumbMax' => Plugin::DEFAULT_THUMB_MAX,
+      'maxWidth' => Plugin::DEFAULT_MAX_WIDTH,
+      'keepOriginal' => Plugin::DEFAULT_KEEP_ORIGINAL,
+      'fullQuality' => Plugin::DEFAULT_FULL_QUALITY,
+      'panoWidth' => Plugin::DEFAULT_PANO_WIDTH,
+      'panoQuality' => Plugin::DEFAULT_PANO_QUALITY,
+    ], JSON_UNESCAPED_UNICODE); ?>;
     var set = function (name, val) { var el = f.querySelector('[name="' + name + '"]'); if (el) el.value = val; };
-    set('quality', '76'); set('thumbMax', '1280'); set('maxWidth', '2560'); set('keepOriginal', '1');
-    var out = document.getElementById('pp-quality-out');
-    if (out) out.textContent = '82';
+    set('quality', String(DEFAULTS.quality)); set('thumbMax', String(DEFAULTS.thumbMax)); set('maxWidth', String(DEFAULTS.maxWidth)); set('keepOriginal', String(DEFAULTS.keepOriginal));
+    set('fullQuality', String(DEFAULTS.fullQuality)); set('panoWidth', String(DEFAULTS.panoWidth)); set('panoQuality', String(DEFAULTS.panoQuality));
+    // 同步滑块输出
+    document.querySelectorAll('.pp-range').forEach(function (r) {
+      var out = document.querySelector('output[for="' + r.id + '"]');
+      if (out) out.textContent = r.value;
+    });
     f.submit();
   });
 }

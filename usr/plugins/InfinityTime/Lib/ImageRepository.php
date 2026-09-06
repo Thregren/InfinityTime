@@ -26,6 +26,12 @@ class ImageRepository
         return \Typecho\Db::get()->getPrefix() . 'infinitytime_images';
     }
 
+    /** 是否 360 全景：等距圆柱即宽高比约 2:1（1.98~2.02），排除 XPAN 等更宽画幅。 */
+    public static function isPano(int $w, int $h): bool
+    {
+        return $h > 0 && $w / $h >= 1.98 && $w / $h <= 2.02;
+    }
+
     /** 上传根目录（文件系统绝对路径）。 */
     public static function uploadRoot(): string
     {
@@ -139,6 +145,19 @@ class ImageRepository
 
             $fullPath  = $fullAbsDir  . '/' . $base . '.webp';
             $thumbPath = $thumbAbsDir . '/' . $base . '.webp';
+
+            // 全景（宽高比 ≥2）用独立“全景图宽度”（pano_width）控制全图尺寸；0=不裁剪（保留原尺寸最清晰）
+            $panoW = (int)($opts['pano_width'] ?? 0);
+            $srcInfo = @getimagesize($src);
+            if (is_array($srcInfo) && ($srcInfo[0] ?? 0) > 0 && ($srcInfo[1] ?? 0) > 0) {
+                $srcW = (int)$srcInfo[0];
+                $srcH = (int)$srcInfo[1];
+                if (self::isPano($srcW, $srcH)) {
+                    $opts['max_width'] = $panoW > 0 ? (int)min($srcW, $panoW) : 0;
+                    // 全景用独立质量（pano_quality），比普通全图更高，兼顾清晰度
+                    $opts['full_quality'] = (int)($opts['pano_quality'] ?? $opts['full_quality']);
+                }
+            }
 
             $result = MediaProcessor::process($src, $fullPath, $thumbPath, $opts['thumb_max'], $opts['quality'], $opts['max_width'], $opts['full_quality']);
 
@@ -270,14 +289,20 @@ class ImageRepository
         $addresses = [];
         $titles = [];
         $descs = [];
+        $panos = [];
         foreach ($rows as $r) {
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
             $descs[] = (string)($r['desc'] ?? '');
+            $w = (int)($r['width'] ?? 0);
+            $h = (int)($r['height'] ?? 0);
+            // 长宽比 ≥ 2 视为全景（equirectangular 360 照片，如 8192×4096）
+            $panos[] = self::isPano($w, $h) ? 1 : 0;
         }
-        foreach (['addresses', 'titles', 'descs'] as $f) {
+        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos];
+        foreach (['addresses', 'titles', 'descs', 'panos'] as $f) {
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
-            $val = $f === 'addresses' ? $addresses : ($f === 'titles' ? $titles : $descs);
+            $val = $map[$f];
             if (count(array_filter($val, 'strlen')) > 0) {
                 $db->query($db->insert($prefix . 'fields')->rows([
                     'cid' => $cid, 'name' => $f, 'type' => 'str',
@@ -340,10 +365,12 @@ class ImageRepository
     public static function rebuild(array $opts = []): array
     {
         $opts = array_merge([
-            'quality' => (int)Plugin::opt('infinitytimeQuality', 82),
-            'thumb_max' => (int)Plugin::opt('infinitytimeThumbMax', 1280),
-            'max_width' => (int)Plugin::opt('infinitytimeMaxWidth', 0),
-            'full_quality' => (int)Plugin::opt('infinitytimeFullQuality', 82),
+            'quality' => (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY),
+            'thumb_max' => (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX),
+            'max_width' => (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH),
+            'pano_width' => (int)Plugin::opt('infinitytimePanoWidth', Plugin::DEFAULT_PANO_WIDTH),
+            'full_quality' => (int)Plugin::opt('infinitytimeFullQuality', Plugin::DEFAULT_FULL_QUALITY),
+            'pano_quality' => (int)Plugin::opt('infinitytimePanoQuality', Plugin::DEFAULT_PANO_QUALITY),
         ], $opts);
 
         $db = \Typecho\Db::get();
@@ -358,6 +385,16 @@ class ImageRepository
             if (!is_file($src)) {
                 $failed++;
                 continue;
+            }
+            $pw = (int)($opts['pano_width'] ?? 0);
+            $info = @getimagesize($src);
+            if (is_array($info) && ($info[0] ?? 0) > 0 && ($info[1] ?? 0) > 0) {
+                $sw = (int)$info[0]; $sh = (int)$info[1];
+                if (self::isPano($sw, $sh)) {
+                    // 全景用独立宽度（0=不裁剪）
+                    $opts['max_width'] = $pw > 0 ? (int)min($sw, $pw) : 0;
+                    $opts['full_quality'] = (int)($opts['pano_quality'] ?? $opts['full_quality']);
+                }
             }
             try {
                 MediaProcessor::process($src, self::toAbs($r['full']), self::toAbs($r['thumb']), $opts['thumb_max'], $opts['quality'], $opts['max_width'] ?? 0, $opts['full_quality']);

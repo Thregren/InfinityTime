@@ -2575,6 +2575,20 @@ span.tag-list a:hover {
   max-width: 100vw;
   position: relative;
 }
+/* 灯箱全景查看器：Pannellum 填充 .pic，位于主图之上、导航按钮(z2)/关闭(z2)之下 */
+.pp-pano-viewer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+}
+.pp-pano-viewer .pnlm-container {
+  width: 100%;
+  height: 100%;
+  background: #111;
+}
 
 /* 灯箱渐进加载：先用缩略图模糊垫底，全图加载后渐入 */
 .poptrox-popup .pp-lqip {

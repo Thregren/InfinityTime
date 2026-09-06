@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.5.0
+ * @version 1.6.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -23,6 +23,7 @@
   <link rel="icon" href="<?php echo pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css'); ?>" />
   <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
+  <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/pannellum.css'); ?>" />
   <noscript>
     <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/noscript.css'); ?>" />
   </noscript>
@@ -71,10 +72,12 @@
           $addrList = json_decode($this->fields->addresses, true);
           $imgTitles = json_decode($this->fields->titles, true);
           $imgDescs = json_decode($this->fields->descs, true);
+          $panoList = json_decode($this->fields->panos, true);
           if (!is_array($exifList)) { $exifList = []; }
           if (!is_array($addrList)) { $addrList = []; }
           if (!is_array($imgTitles)) { $imgTitles = []; }
           if (!is_array($imgDescs)) { $imgDescs = []; }
+          if (!is_array($panoList)) { $panoList = []; }
           // 去掉 null/空 字段，压缩内嵌 JSON；前端对缺失字段同样按“无”处理，展示不受影响。
           $exifList = array_map(function ($e) {
               return is_array($e) ? array_filter($e, function ($v) { return $v !== null && $v !== ''; }) : $e;
@@ -88,7 +91,8 @@
              data-exif='<?php echo json_encode($exifList, JSON_UNESCAPED_UNICODE); ?>'
              data-addresses='<?php echo json_encode($addrList, JSON_UNESCAPED_UNICODE); ?>'
              data-titles='<?php echo json_encode($imgTitles, JSON_UNESCAPED_UNICODE); ?>'
-             data-descs='<?php echo json_encode($imgDescs, JSON_UNESCAPED_UNICODE); ?>'>
+             data-descs='<?php echo json_encode($imgDescs, JSON_UNESCAPED_UNICODE); ?>'
+             data-panos='<?php echo json_encode($panoList, JSON_UNESCAPED_UNICODE); ?>'>
             <img class="zmki_px my-photo"
               alt="<?php echo htmlspecialchars($this->title()); ?>"
               src="<?php echo $firstThumb; ?>"
@@ -144,50 +148,11 @@
       <?php endwhile; ?>
       </div>
       
-      <!-- 分页导航 -->
+      <!-- 无限瀑布流：不渲染分页页码，仅计算总量供 #load-more 滚动加载使用 -->
       <?php
         $total = ceil($this->getTotal() / $this->parameter->pageSize);
-        if($total > 1):
+        $category = $this->is('category') ? $this->getArchiveSlug() : '';
       ?>
-      <div class="pagination-container">
-        <?php 
-          $current = $this->_currentPage;
-          $max_pages = 6; // 最多显示的页码数
-          
-          // 计算显示的页码范围
-          $start = max(1, min($current - floor($max_pages/2), $total - $max_pages + 1));
-          $end = min($start + $max_pages - 1, $total);
-          
-          // 获取当前分类路径
-          $category = '';
-          if ($this->is('category')) {
-            $category = $this->getArchiveSlug();
-          }
-          
-          // 上一页按钮
-          if ($current > 1): 
-            $prevUrl = $category ? $this->options->siteUrl . 'index.php/category/' . $category . '/' . ($current-1) . '/' : $this->options->siteUrl . 'index.php/page/' . ($current-1);
-            echo '<a href="' . $prevUrl . '" class="page-btn prev-btn">上一页</a>';
-          endif;
-
-          // 页码按钮
-          for ($i = $start; $i <= $end; $i++):
-            if ($i == $current): ?>
-              <span class="page-btn current"><?php echo $i; ?></span>
-            <?php else: 
-              $pageUrl = $category ? $this->options->siteUrl . 'index.php/category/' . $category . '/' . $i . '/' : $this->options->siteUrl . 'index.php/page/' . $i;
-            ?>
-              <a href="<?php echo $pageUrl; ?>" class="page-btn"><?php echo $i; ?></a>
-            <?php endif;
-          endfor;
-
-          // 下一页按钮
-          if ($current < $total): 
-            $nextUrl = $category ? $this->options->siteUrl . 'index.php/category/' . $category . '/' . ($current+1) . '/' : $this->options->siteUrl . 'index.php/page/' . ($current+1);
-            echo '<a href="' . $nextUrl . '" class="page-btn next-btn">下一页</a>';
-          endif; ?>
-      </div>
-      <?php endif; ?>
 
       <!-- 原有的 load-more div -->
       <div id="load-more" data-page="1" data-total-pages="<?php echo $total; ?>"></div>
@@ -302,6 +267,42 @@
           clearTimeout(rt);
           rt = setTimeout(build, 120);
         });
+        // 无限瀑布流：滚动到底自动加载下一页并追加到列
+        var lm = document.getElementById('load-more');
+        var PAGER_BASE = <?php echo json_encode($this->is('category')
+            ? (rtrim((string)$this->options->siteUrl, '/') . '/index.php/category/' . $this->getArchiveSlug() . '/')
+            : (rtrim((string)$this->options->siteUrl, '/') . '/index.php/page/')); ?>;
+        var curPage = lm ? (parseInt(lm.getAttribute('data-page'), 10) || 1) : 1;
+        var totPages = lm ? (parseInt(lm.getAttribute('data-total-pages'), 10) || 1) : 1;
+        var loadingMore = false;
+        function loadMore() {
+          if (!lm || loadingMore || curPage >= totPages) return;
+          loadingMore = true;
+          fetch(PAGER_BASE + (curPage + 1), { credentials: 'same-origin' })
+            .then(function (r) { return r.text(); })
+            .then(function (html) {
+              try {
+                var doc = new DOMParser().parseFromString(html, 'text/html');
+                var cards = Array.prototype.slice.call(doc.querySelectorAll('#waterfall > .thumb'));
+                if (cards.length) {
+                  var N = Math.max(1, colCount());
+                  var cols = wf.querySelectorAll('.wf-col');
+                  if (!cols.length) { build(); cols = wf.querySelectorAll('.wf-col'); }
+                  var idx = wf.querySelectorAll('.thumb').length % N;
+                  cards.forEach(function (card) { cols[idx++ % N].appendChild(card); });
+                  curPage += 1;
+                  if (lm) lm.setAttribute('data-page', String(curPage));
+                  if (typeof checkImgs === 'function') checkImgs();
+                }
+              } catch (e) {}
+              loadingMore = false;
+            })
+            .catch(function () { loadingMore = false; });
+        }
+        window.addEventListener('scroll', function () {
+          if ((window.innerHeight + window.scrollY) >= (document.documentElement.offsetHeight - 600)) loadMore();
+        }, { passive: true });
+        if (document.documentElement.offsetHeight <= window.innerHeight + 600) loadMore();
       })();
       </script>
       <script>
@@ -382,12 +383,14 @@
           if (!article) return null;
           const a = article.querySelector ? article.querySelector('a.image') : null;
           const src = a || article;
-          const d = { images: [], exif: [], addr: [], titles: [], descs: [] };
+          const d = { images: [], previews: [], exif: [], addr: [], titles: [], descs: [], panos: [] };
           try { d.images = JSON.parse(src.dataset.images || '[]'); } catch (e) {}
+          try { d.previews = JSON.parse(src.dataset.previews || '[]'); } catch (e) {}
           try { d.exif = JSON.parse(src.dataset.exif || '[]'); } catch (e) {}
           try { d.addr = JSON.parse(src.dataset.addresses || '[]'); } catch (e) {}
           try { d.titles = JSON.parse(src.dataset.titles || '[]'); } catch (e) {}
           try { d.descs = JSON.parse(src.dataset.descs || '[]'); } catch (e) {}
+          try { d.panos = JSON.parse(src.dataset.panos || '[]'); } catch (e) {}
           return d;
         }
         // 根据当前激活图片索引刷新 EXIF 侧栏（数据源：popup.__article 相册）
@@ -441,6 +444,108 @@
           return art;
         }
         function esc(s) { return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+        // ===== 灯箱全景（Pannellum）：长宽比 ≥2 自动进入可拖拽/缩放的 360 浏览 =====
+        let ppPanoState = null;
+        let ppPanoGuardBound = false;
+        let ppPanoDragActive = false;
+        // 点击捕获：刚在全景内按下/拖拽过，则吞掉紧随其后的 click（无论松手在哪），避免误关
+        function ppPanoClickGuard(e) {
+          if (ppPanoDragActive) { e.stopPropagation(); e.preventDefault(); ppPanoDragActive = false; }
+        }
+        // 按压捕获：每次新的按下先清标记，若落在全景容器内则标记为全景交互
+        function ppPanoDownGuard(e) {
+          ppPanoDragActive = false;
+          try { if (e.target && e.target.closest && e.target.closest('.pp-pano-viewer')) ppPanoDragActive = true; } catch (err) {}
+        }
+        function ppBindPanoGuard() {
+          if (ppPanoGuardBound) return;
+          document.addEventListener('click', ppPanoClickGuard, true);
+          document.addEventListener('pointerdown', ppPanoDownGuard, true);
+          ppPanoGuardBound = true;
+        }
+        function ppSetPanoActive(popup, v) {
+          if (popup) popup.__panoActive = !!v;
+          document.querySelectorAll('.poptrox-popup').forEach(function (p) { if (p !== popup) p.__panoActive = false; });
+        }
+        function ppDestroyPano() {
+          if (ppPanoState) {
+            try { if (ppPanoState.viewer && ppPanoState.viewer.destroy) ppPanoState.viewer.destroy(); } catch (e) {}
+            try { if (ppPanoState.ro && ppPanoState.ro.disconnect) ppPanoState.ro.disconnect(); } catch (e) {}
+            if (ppPanoState.wrap && ppPanoState.wrap.parentNode) ppPanoState.wrap.parentNode.removeChild(ppPanoState.wrap);
+            if (ppPanoState.img) ppPanoState.img.style.visibility = '';
+            ppPanoState = null;
+          }
+          ppSetPanoActive(null, false);
+        }
+        function ppMountPano(popup, url) {
+          if (ppPanoState && ppPanoState.popup === popup && ppPanoState.url === url && ppPanoState.viewer) return;
+          ppDestroyPano();
+          if (typeof window.pannellum === 'undefined') return; // 库未加载（异常兜底）
+          const pic = popup.querySelector('.pic');
+          if (!pic) return;
+          const img = pic.querySelector('img');
+          // 移除 blur 预览遮层（z-index 4）避免盖住 Pannellum
+          const lq = pic.querySelector('.pp-lqip');
+          if (lq && lq.parentNode) lq.parentNode.removeChild(lq);
+          const wrap = document.createElement('div');
+          wrap.className = 'pp-pano-viewer';
+          // 内联绝对定位：不依赖外部 CSS（避免某些场景下未生效），铺满 .pic
+          wrap.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:1;';
+          // Pannellum 会把传入容器设为 position:relative，故放一个内层容器，外层保持绝对定位铺满 .pic
+          const inner = document.createElement('div');
+          inner.className = 'pp-pano-inner';
+          inner.style.cssText = 'width:100%;height:100%;position:relative;';
+          wrap.appendChild(inner);
+          if (img) img.style.visibility = 'hidden'; // 保留盒子尺寸，让 Pannellum 填充
+          pic.appendChild(wrap);
+          let viewer;
+          try {
+            viewer = window.pannellum.viewer(inner, {
+              type: 'equirectangular', panorama: url, autoLoad: true,
+              showZoomCtrl: false, showFullscreenCtrl: false, compass: false, driftEnabled: false, autoRotate: 0
+            });
+          } catch (e) {
+            if (img) img.style.visibility = '';
+            if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+            return;
+          }
+          // 跟随容器尺寸（poptrox 弹窗有放大动画，叠加 ResizeObserver 保证 Pannellum 画布尺寸正确）
+          const ro = new ResizeObserver(function () {
+            if (viewer && typeof viewer.setSize === 'function') {
+              try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
+            }
+          });
+          try { ro.observe(pic); } catch (e) {}
+          setTimeout(function () {
+            if (viewer && typeof viewer.setSize === 'function') {
+              try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
+            }
+          }, 60);
+          // 防“视窗内拖拽、视窗外松手”误退出：document 捕获阶段按“拖拽后时间窗”拦截 click，无论松手在哪都不关闭；
+          // 不拦 pointerup/mouseup，避免 Pannellum 拖拽结束不了（鼠标锁住）。仍需点弹窗外部空白可正常关闭。
+          ppBindPanoGuard();
+          ppPanoState = { popup: popup, url: url, viewer: viewer, wrap: wrap, img: img, ro: ro };
+          ppSetPanoActive(popup, true);
+        }
+        function syncPano() {
+          const overlay = document.querySelector('.poptrox-overlay');
+          const vis = overlay && getComputedStyle(overlay).display !== 'none'
+            && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden';
+          if (!vis) { ppDestroyPano(); return; }
+          const popup = currentPopupExif();
+          if (!popup) { ppDestroyPano(); return; }
+          const img = popup.querySelector('.pic img');
+          if (!img || !img.complete || img.naturalWidth === 0) return; // 图片加载后再判定，保证 .pic 有盒子尺寸
+          const article = findArtForPopup(popup) || activeArticle;
+          if (!article) { ppDestroyPano(); return; }
+          const d = articleData(article);
+          const idx = currentImgIndex(popup, d);
+          if (idx < 0) { ppDestroyPano(); return; }
+          const isPano = !!(d.panos && d.panos[idx]);
+          if (isPano) ppMountPano(popup, d.images[idx] || img.getAttribute('src'));
+          else ppDestroyPano();
+        }
 
         // ===== 灯箱 EXIF 侧栏（轮询驱动，单数据源） =====
         let activeArticle = null;
@@ -538,6 +643,7 @@
           } else {
             if (document.body.style.overflow !== '') document.body.style.overflow = '';
             if (exifDock) exifDock.classList.remove('show');
+            ppDestroyPano();
           }
         }
         function startExifPoll() {
@@ -545,7 +651,7 @@
           exifTimer = setInterval(function() {
             const vis = overlayVisible();
             applyExifState(vis);
-            if (vis) syncDockExif();
+            if (vis) { syncDockExif(); syncPano(); }
           }, 120);
         }
         function stopExifPoll() {
@@ -586,6 +692,7 @@
   <script src="<?php $this->options->themeUrl('assets/js/jquery.poptrox.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/browser.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/breakpoints.min.js'); ?>"></script>
+  <script src="<?php $this->options->themeUrl('assets/js/pannellum.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/main.js'); ?>"></script>
 </body>
 
