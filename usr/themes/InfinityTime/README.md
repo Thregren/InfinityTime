@@ -25,3 +25,5 @@ Typecho 纯图片分享前端主题，需搭配配套插件 **InfinityTime** 使
 
 ## 许可
 MIT。由 [TimePlus](https://github.com/zhheo/TimePlus)（zhheo）二次开发而来。
+
+主题内嵌/引用的第三方开源项目：**Pannellum**（MIT）、**jQuery**（MIT）、**jQuery poptrox**（MIT）、**browser.js / breakpoints.js**（MIT）、**Multiverse**（HTML5 UP，CCA 3.0）、**TimePlus**（MIT）、本地 iconfont。完整许可与来源见仓库 `README.md` 的「许可与致谢」。

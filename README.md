@@ -4,7 +4,7 @@
 
 > 主题 `InfinityTime` 负责展示，插件 `InfinityTime` 负责处理。**只需安装这两部分，无需改动任何 Typecho 原生文件。**
 
-> **v1.8.0** 重点：灯箱「主题色」下新增 **RGB 直方图**（清晰、不与主题色重复采样）；**清理死代码**（移除失效滑动结构 JS、无用 CSS）、加固 `analyzePhoto/drawHistogram`。**v1.7.4** 起已含：主题色提取（3 色 + 大写色号）、全景缩略图 4:3 中央裁切、CSS 列瀑布流（灯箱按源码顺序 + 原生比例丝滑）、移动端 Safari 隐藏元素全屏与 Pannellum 自带按钮。
+> **v1.8.0** 重点：灯箱「主题色」下新增 **RGB 直方图**（清晰、不与主题色重复采样）；**清理死代码**（移除失效滑动结构 JS、无用 CSS）、加固 `analyzePhoto/drawHistogram`。**v1.7.4** 起已含：主题色提取（3 色 + 大写色号）、全景缩略图 **16:9 中央裁切**、CSS 列瀑布流（灯箱按源码顺序 + 原生比例丝滑）、移动端 Safari 隐藏元素全屏与 Pannellum 自带按钮。
 
 ## 功能特性
 
@@ -114,4 +114,26 @@ git tag v1.7.0 && git push origin v1.7.0
 工作流校验主题/插件/`releases.json` 版本一致 → 打包两个 zip → 创建 Release（正文自动取 `update.md` 当前版本 Changelog）。
 
 ## 许可与致谢
-MIT。由 [TimePlus](https://github.com/zhheo/TimePlus)（zhheo）二次开发而来，特此致谢。
+
+本主题/插件基于 **MIT** 许可（见 `usr/themes/InfinityTime/LICENSE`）。下述开源项目被直接引用/内嵌，特此致谢并保留其许可声明。
+
+### 内嵌的前端库（随主题打包、本地加载，不依赖 CDN）
+
+| 项目 | 用途 | 许可 | 来源 |
+|---|---|---|---|
+| **Pannellum** | 360°/全景图查看器（拖拽、缩放、全屏） | MIT | [github.com/mpetroff/pannellum](https://github.com/mpetroff/pannellum) |
+| **jQuery** | 基础 DOM/事件库 | MIT | [jquery.org](https://jquery.org) |
+| **jQuery poptrox** | 灯箱/图集弹窗 | MIT | [github.com/ajlkn/jquery.poptrox](https://github.com/ajlkn/jquery.poptrox) |
+| **browser.js** | 浏览器/设备检测 | MIT | 随 **Multiverse** 主题附带（@ajlkn） |
+| **breakpoints.js** | 响应式断点 | MIT | 随 **Multiverse** 主题附带（@ajlkn） |
+| **Multiverse** | 基础主题骨架（`main.js`/`main.css`/布局） | **CCA 3.0** | [html5up.net/multiverse](https://html5up.net/multiverse) |
+| **TimePlus** | 本主题的二次开发母版 | MIT（© zhheo） | [github.com/zhheo/TimePlus](https://github.com/zhheo/TimePlus) |
+| **iconfont** | 站点图标字体（本地内嵌） | 以授权来源平台为准 | 主题 `assets/fonts/` |
+
+### 说明
+- **Multiverse（HTML5 UP）** 采用 **CCA 3.0**，使用时需保留作者与出处标注；本主题已在 `main.js` 文件头保留原版权声明。
+- **TimePlus（zhheo）** 为本主题的直接母版（其本身亦基于 Multiverse）；主题的 `LICENSE` 为 MIT（© zhheo）。
+- **iconfont** 为本地内嵌字体，源码未单独标注；如需对外分发，请按图标来源平台（如 Iconfont）的授权条款补充说明。
+- 插件后端依赖系统已安装的工具（`php-gd`、ImageMagick、`heif-convert`/libheif 等），各工具由各自项目授权、随系统提供。
+
+> 若你基于本主题二次分发，请同时保留上述第三方项目的许可声明。
