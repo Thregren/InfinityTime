@@ -3,9 +3,20 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.6.0
+ * @version 1.7.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
+?>
+<?php
+// 静态资源版本号（以文件 mtime 生成，改动即失效缓存，避免改后还看到旧的 CSS/JS）
+$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js')), 0, 8);
+// HTML 内联了灯箱/全景 JS，改动后必须立即生效。禁止浏览器缓存页面本体，
+// 否则即使 CSS/JS 带了 ?v= 版本号，用户仍会拿到旧的 HTML（看不到新按钮/新逻辑）。
+if (!headers_sent()) {
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+}
 ?>
 <!DOCTYPE html>
 <html>
@@ -21,7 +32,7 @@
   <link rel="bookmark" href="<?php $this->options->AppleIcon(); ?>">
   <link rel="apple-touch-icon-precomposed" sizes="180x180" href="<?php $this->options->AppleIcon(); ?>">
   <link rel="icon" href="<?php echo pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options); ?>">
-  <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css'); ?>" />
+  <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css?v=' . $__assetVer); ?>" />
   <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/pannellum.css'); ?>" />
   <noscript>
@@ -144,6 +155,9 @@
             </div>
             <div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"><?php echo htmlspecialchars($addr0 ?: ''); ?></span></div>
           </div>
+          <?php if (in_array(1, $panoList, true)): ?>
+          <span class="pano-badge">全景</span>
+          <?php endif; ?>
         </article>
       <?php endwhile; ?>
       </div>
@@ -448,20 +462,32 @@
         // ===== 灯箱全景（Pannellum）：长宽比 ≥2 自动进入可拖拽/缩放的 360 浏览 =====
         let ppPanoState = null;
         let ppPanoGuardBound = false;
-        let ppPanoDragActive = false;
-        // 点击捕获：刚在全景内按下/拖拽过，则吞掉紧随其后的 click（无论松手在哪），避免误关
+        let ppPanoDownX = 0, ppPanoDownY = 0, ppPanoMoved = false;
+        // 点击捕获：仅当发生真实拖拽（位移>8px）才吞掉紧随其后的 click（无论松手在哪）；纯点击（按钮等）不拦
         function ppPanoClickGuard(e) {
-          if (ppPanoDragActive) { e.stopPropagation(); e.preventDefault(); ppPanoDragActive = false; }
+          if (ppPanoMoved) { e.stopPropagation(); e.preventDefault(); ppPanoMoved = false; }
         }
-        // 按压捕获：每次新的按下先清标记，若落在全景容器内则标记为全景交互
+        // 按压捕获：记录按下位置，重置拖拽标记
         function ppPanoDownGuard(e) {
-          ppPanoDragActive = false;
-          try { if (e.target && e.target.closest && e.target.closest('.pp-pano-viewer')) ppPanoDragActive = true; } catch (err) {}
+          ppPanoMoved = false;
+          try { if (e.target && e.target.closest && e.target.closest('.pp-pano-viewer')) { ppPanoDownX = e.clientX; ppPanoDownY = e.clientY; } } catch (err) {}
+        }
+        // 移动捕获：在全景内移动超过阈值判定为拖拽
+        function ppPanoMoveGuard(e) {
+          try {
+            if (e.target && e.target.closest && e.target.closest('.pp-pano-viewer')) {
+              var dx = e.clientX - ppPanoDownX, dy = e.clientY - ppPanoDownY;
+              if (dx * dx + dy * dy > 64) ppPanoMoved = true;
+            }
+          } catch (err) {}
         }
         function ppBindPanoGuard() {
           if (ppPanoGuardBound) return;
           document.addEventListener('click', ppPanoClickGuard, true);
           document.addEventListener('pointerdown', ppPanoDownGuard, true);
+          ['pointermove', 'mousemove', 'touchmove'].forEach(function (ev) {
+            document.addEventListener(ev, ppPanoMoveGuard, true);
+          });
           ppPanoGuardBound = true;
         }
         function ppSetPanoActive(popup, v) {
@@ -470,9 +496,14 @@
         }
         function ppDestroyPano() {
           if (ppPanoState) {
+            try { if (ppPanoState.viewer && ppPanoState.viewer.setFullscreen) ppPanoState.viewer.setFullscreen(false); } catch (e) {}
             try { if (ppPanoState.viewer && ppPanoState.viewer.destroy) ppPanoState.viewer.destroy(); } catch (e) {}
             try { if (ppPanoState.ro && ppPanoState.ro.disconnect) ppPanoState.ro.disconnect(); } catch (e) {}
+            try { if (ppPanoState.onFsChange) document.removeEventListener('fullscreenchange', ppPanoState.onFsChange); } catch (e) {}
+            if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e) {} }
             if (ppPanoState.wrap && ppPanoState.wrap.parentNode) ppPanoState.wrap.parentNode.removeChild(ppPanoState.wrap);
+            if (ppPanoState.fsBtn && ppPanoState.fsBtn.parentNode) ppPanoState.fsBtn.parentNode.removeChild(ppPanoState.fsBtn);
+            if (ppPanoState.exitBtn && ppPanoState.exitBtn.parentNode) ppPanoState.exitBtn.parentNode.removeChild(ppPanoState.exitBtn);
             if (ppPanoState.img) ppPanoState.img.style.visibility = '';
             ppPanoState = null;
           }
@@ -481,7 +512,7 @@
         function ppMountPano(popup, url) {
           if (ppPanoState && ppPanoState.popup === popup && ppPanoState.url === url && ppPanoState.viewer) return;
           ppDestroyPano();
-          if (typeof window.pannellum === 'undefined') return; // 库未加载（异常兜底）
+          if (typeof window.pannellum === 'undefined') { console.error('[InfinityTime pano] pannellum not loaded'); return; } // 库未加载（异常兜底）
           const pic = popup.querySelector('.pic');
           if (!pic) return;
           const img = pic.querySelector('img');
@@ -508,6 +539,7 @@
           } catch (e) {
             if (img) img.style.visibility = '';
             if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+            console.error('[InfinityTime pano] viewer init failed:', e && e.message);
             return;
           }
           // 跟随容器尺寸（poptrox 弹窗有放大动画，叠加 ResizeObserver 保证 Pannellum 画布尺寸正确）
@@ -522,10 +554,77 @@
               try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
             }
           }, 60);
+          // 自定义全屏按钮（匹配站点圆角），隐藏 Pannellum 默认全屏控制。
+          // 直接挂到 .pic 下（与 .pp-pano-viewer 平级），使其落在灯箱自身的堆叠上下文，
+          // 用高 z-index 盖过 Pannellum 画布与 poptrox 的导航/关闭钮，避免被遮挡。
+          const fsBtn = document.createElement('button');
+          fsBtn.type = 'button';
+          fsBtn.className = 'pp-pano-fullscreen';
+          fsBtn.setAttribute('aria-label', '全屏 / 退出全屏');
+          fsBtn.setAttribute('title', '全屏 / 退出全屏');
+          // 内联兜底定位（不依赖外部 CSS），即使样式表没命中也能看到并点得到
+          fsBtn.style.cssText = 'position:absolute;top:12px;right:12px;z-index:9999;width:44px;height:44px;'
+            + 'border:2px solid rgba(255,255,255,.92);border-radius:50%;background:rgba(0,0,0,.48);'
+            + 'color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;'
+            + '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:0;';
+          fsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display:block"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+          pic.appendChild(fsBtn);
+          // 退出全屏按钮：挂到 Pannellum 容器（inner 即 .pnlm-container，全屏时的顶层元素）内部，
+          // 这样全屏时才不会被画布盖住。平时隐藏，仅在全屏态显示。
+          const exitBtn = document.createElement('button');
+          exitBtn.type = 'button';
+          exitBtn.className = 'pp-pano-fullscreen-exit';
+          exitBtn.setAttribute('aria-label', '退出全屏');
+          exitBtn.setAttribute('title', '退出全屏');
+          exitBtn.style.cssText = 'position:absolute;top:12px;right:12px;z-index:9999;width:44px;height:44px;'
+            + 'border:2px solid rgba(255,255,255,.92);border-radius:50%;background:rgba(0,0,0,.48);'
+            + 'color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;'
+            + 'box-sizing:border-box;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:0;';
+          exitBtn.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M4 4l5 5M20 4l-5 5M4 20l5-5M20 20l-5-5"/></svg>';
+          inner.appendChild(exitBtn);
+          const onFsChange = function () {
+            fsBtn.classList.toggle('active', !!document.fullscreenElement);
+            const fs = !!document.fullscreenElement;
+            fsBtn.style.display = fs ? 'none' : 'flex';
+            exitBtn.style.display = fs ? 'flex' : 'none';
+            try { if (viewer && typeof viewer.setSize === 'function') viewer.setSize(wrap.clientWidth || 0, wrap.clientHeight || 0); } catch (e) {}
+          };
+          document.addEventListener('fullscreenchange', onFsChange);
+          fsBtn.addEventListener('click', function (e) {
+            e.stopPropagation(); // 不触发“点弹窗外部关闭”
+            try {
+              if (document.fullscreenElement) { viewer.setFullscreen(false); }
+              else { viewer.setFullscreen(true); }
+            } catch (err) {
+              if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e2) {} }
+              else { try { wrap.requestFullscreen(); } catch (e2) {} }
+            }
+            try { console.info('[InfinityTime pano] fs click, fs=', !!document.fullscreenElement); } catch (e) {}
+          });
+          // 退出全屏：容器内 mousedown/pointerdown 停止冒泡，避免触发 Pannellum 的拖拽
+          ['mousedown', 'pointerdown', 'touchstart'].forEach(function (ev) {
+            exitBtn.addEventListener(ev, function (e) { e.stopPropagation(); });
+          });
+          exitBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            try { viewer.setFullscreen(false); } catch (err) { try { document.exitFullscreen(); } catch (e2) {} }
+          });
+          // 兜底诊断：挂载后打印按钮几何信息，便于排查“按钮不显示”
+          setTimeout(function () {
+            try {
+              const r = fsBtn.getBoundingClientRect();
+              const cs = getComputedStyle(fsBtn);
+              console.info('[InfinityTime pano] fsBtn', {
+                connected: fsBtn.isConnected,
+                rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+                display: cs.display, visibility: cs.visibility, opacity: cs.opacity, z: cs.zIndex
+              });
+            } catch (e) {}
+          }, 500);
           // 防“视窗内拖拽、视窗外松手”误退出：document 捕获阶段按“拖拽后时间窗”拦截 click，无论松手在哪都不关闭；
           // 不拦 pointerup/mouseup，避免 Pannellum 拖拽结束不了（鼠标锁住）。仍需点弹窗外部空白可正常关闭。
           ppBindPanoGuard();
-          ppPanoState = { popup: popup, url: url, viewer: viewer, wrap: wrap, img: img, ro: ro };
+          ppPanoState = { popup: popup, url: url, viewer: viewer, wrap: wrap, img: img, ro: ro, fsBtn: fsBtn, exitBtn: exitBtn, onFsChange: onFsChange };
           ppSetPanoActive(popup, true);
         }
         function syncPano() {
@@ -693,7 +792,7 @@
   <script src="<?php $this->options->themeUrl('assets/js/browser.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/breakpoints.min.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/pannellum.js'); ?>"></script>
-  <script src="<?php $this->options->themeUrl('assets/js/main.js'); ?>"></script>
+  <script src="<?php $this->options->themeUrl('assets/js/main.js?v=' . $__assetVer); ?>"></script>
 </body>
 
 </html>

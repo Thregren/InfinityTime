@@ -2589,6 +2589,37 @@ span.tag-list a:hover {
   height: 100%;
   background: #111;
 }
+.pp-pano-viewer .pp-pano-fullscreen {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 9999;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s ease;
+}
+.pp-pano-viewer .pp-pano-fullscreen:hover {
+  background: rgba(0, 0, 0, .62);
+}
+.pp-pano-viewer .pp-pano-fullscreen svg {
+  display: block;
+}
+/* 全屏进入/退出按钮：入口钮已移到 .pic 下（不再位于 .pp-pano-viewer 内），
+   此处用类选择器兜底，保证悬停反馈一致；exit 钮挂在 Pannellum 容器内（仅全屏显示）。 */
+.pp-pano-fullscreen:hover,
+.pp-pano-fullscreen-exit:hover {
+  background: rgba(0, 0, 0, .62) !important;
+}
 
 /* 灯箱渐进加载：先用缩略图模糊垫底，全图加载后渐入 */
 .poptrox-popup .pp-lqip {
@@ -2891,6 +2922,24 @@ span.tag-list a:hover {
 #main > #waterfall .thumb .content-wrapper,
 #main > #waterfall .thumb .exif-panel {
   display: none !important;
+}
+/* 全景卡片右上角标识 */
+#main > #waterfall .thumb .pano-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .46);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .06em;
+  pointer-events: none;
 }
 /* 修正：main 改回块级，避免 flex 干扰瀑布流多列宽度（第二列边距异常） */
 #main {
