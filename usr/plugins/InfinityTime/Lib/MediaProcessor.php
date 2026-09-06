@@ -160,16 +160,16 @@ class MediaProcessor
         if ($thumbMax > 0) {
             $isPano = $height > 0 && ($width / $height) >= 1.98 && ($width / $height) <= 2.02;
             if ($isPano) {
-                // 全景缩略图：不把整幅 2:1 压成细条，而是【中央裁一块 4:3 的前方画面】再缩放，
-                // 更适合作为卡片/预览（内容可辨、比例像正常照片）。
-                $cropW = (int)round($height * 4 / 3);
+                // 全景缩略图：不把整幅 2:1 压成细条，而是【中央裁一块 16:9 的前方画面】再缩放，
+                // 更适合作为卡片/预览（内容可辨、比例更像宽幅照片）。
+                $cropW = (int)round($height * 16 / 9);
                 if ($cropW > $width) {
                     $cropW = $width;
                 }
-                $cropH = (int)round($cropW * 3 / 4);
+                $cropH = (int)round($cropW * 9 / 16);
                 if ($cropH > $height) {
                     $cropH = $height;
-                    $cropW = (int)round($cropH * 4 / 3);
+                    $cropW = (int)round($cropH * 16 / 9);
                 }
                 $sx = max(0, (int)round(($width - $cropW) / 2));
                 $sy = max(0, (int)round(($height - $cropH) / 2));
