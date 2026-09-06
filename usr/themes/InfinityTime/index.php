@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.7.4
+ * @version 1.8.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -364,7 +364,8 @@ if (!headers_sent()) {
               + '<div class="exif-title">拍摄参数</div>'
               + '<div class="exif-grid"></div>'
               + '<div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"></span></div>'
-              + '<div class="exif-palette"><div class="exif-title">主题色</div><div class="palette-list"></div></div>';
+              + '<div class="exif-palette"><div class="exif-title">主题色</div><div class="palette-list"></div>'
+              + '<canvas class="hist-canvas" width="240" height="88"></canvas></div>';
             document.body.appendChild(exifDock);
           }
           return exifDock;
@@ -377,16 +378,14 @@ if (!headers_sent()) {
           }
           return '#' + h(r) + h(g) + h(b);
         }
-        // 提取 3 个“确实存在于照片中”的代表性颜色：
-        // 先降采样 + 粗分桶统计哪个色区占比最高；再用每个高位色区里的【众数（真实像素）】作为该颜色，
-        // 避免把一桶内不同颜色求平均而“调出”照片里不存在的颜色。
-        function extractThemeColors(src, cb) {
+        // 单次采样照片：返回 3 个真实存在的代表性颜色 + RGB 直方图 + 主色（用于氛围光）。
+        function analyzePhoto(src, cb) {
           var img = new Image();
           img.crossOrigin = 'anonymous';
           img.onload = function () {
             try {
               var w = img.naturalWidth, h = img.naturalHeight;
-              if (!w || !h) return cb([]);
+              if (!w || !h) return cb({ colors: [], hist: null, top: null });
               var maxDim = 300;
               var scale = Math.min(1, maxDim / Math.max(w, h));
               var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
@@ -395,6 +394,8 @@ if (!headers_sent()) {
               var ctx = c.getContext('2d', { willReadFrequently: true });
               ctx.drawImage(img, 0, 0, cw, ch);
               var data = ctx.getImageData(0, 0, cw, ch).data;
+              var histR = [], histG = [], histB = [];
+              for (var b0 = 0; b0 < 64; b0++) { histR[b0] = 0; histG[b0] = 0; histB[b0] = 0; }
               // 按“色相”分桶：把同一色系的颜色合并（绿色水母、粉色水母分别成桶），
               // 这样小面积的醒目色不会被巨大的背景/剪影淹没；低饱和度(灰/黑)单独压低权重。
               var hueB = {};   // 色相桶 -> { n, satSum, exact:{ek:{r,g,b,c}} }
@@ -402,6 +403,9 @@ if (!headers_sent()) {
               for (var i = 0; i < data.length; i += 4) {
                 var r = data[i], g = data[i + 1], b = data[i + 2];
                 if (data[i + 3] < 128) continue;
+                histR[(r >> 2) & 63]++;
+                histG[(g >> 2) & 63]++;
+                histB[(b >> 2) & 63]++;
                 var mx = Math.max(r, g, b), mn = Math.min(r, g, b), diff = mx - mn;
                 var sat = mx ? (diff / mx) : 0;
                 var hue = 0;
@@ -470,28 +474,69 @@ if (!headers_sent()) {
                   picked.push(selected);
                 }
               }
-              cb(picked.slice(0, 3).map(function (e) { return rgbToHex(e.r, e.g, e.b); }));
-            } catch (e) { cb([]); }
+              cb({
+                colors: picked.slice(0, 3).map(function (e) { return rgbToHex(e.r, e.g, e.b); }),
+                hist: [histR, histG, histB]
+              });
+            } catch (e) { cb({ colors: [], hist: null, top: null }); }
           };
-          img.onerror = function () { cb([]); };
+          img.onerror = function () { cb({ colors: [], hist: null, top: null }); };
           img.src = src;
         }
-        // 把主题色渲染到 EXIF 侧栏
+        // 画 RGB 直方图（三条半透明色带）
+        function drawHistogram(cv, hist) {
+          try {
+            if (!cv || !hist || !hist.length || !hist[0] || !hist[0].length) return;
+            // 按实际显示尺寸 × 设备像素比渲染，避免被 CSS 拉伸导致模糊
+            var dpr = window.devicePixelRatio || 1;
+            var cw = cv.clientWidth || 240, ch = cv.clientHeight || 88;
+            cv.width = Math.max(1, Math.round(cw * dpr));
+            cv.height = Math.max(1, Math.round(ch * dpr));
+            var ctx = cv.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            var W = cw, H = ch;
+            ctx.clearRect(0, 0, W, H);
+            var cols = ['rgba(255,86,86,.55)', 'rgba(96,221,96,.5)', 'rgba(86,150,255,.55)'];
+            for (var ch = 0; ch < 3; ch++) {
+              var bins = hist[ch];
+              var max = 1;
+              for (var i = 0; i < bins.length; i++) { if (bins[i] > max) max = bins[i]; }
+              ctx.beginPath();
+              ctx.moveTo(0, H);
+              for (var x = 0; x < bins.length; x++) {
+                var px = x / (bins.length - 1) * W;
+                var py = H - (bins[x] / max) * H;
+                ctx.lineTo(px, py);
+              }
+              ctx.lineTo(W, H);
+              ctx.closePath();
+              ctx.fillStyle = cols[ch];
+              ctx.fill();
+            }
+            ctx.strokeStyle = 'rgba(255,255,255,.14)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(.5, .5, W - 1, H - 1);
+          } catch (e) {}
+        }
+        // 把主题色 + 直方图渲染到 EXIF 侧栏，并用主色给弹窗加氛围光
         function renderThemePalette(popup) {
           const dock = getExifDock();
           const list = dock.querySelector('.palette-list');
           const box = dock.querySelector('.exif-palette');
+          const histCv = dock.querySelector('.hist-canvas');
           const img = popup && popup.querySelector('.pic img');
           if (!list || !box || !img) return;
           const src = (img.getAttribute('src') || '').split('?')[0];
-          if (!src) { box.style.display = 'none'; return; }
+          if (!src) { box.style.display = 'none'; if (histCv) histCv.style.display = 'none'; return; }
           box.style.display = '';
+          if (histCv) histCv.style.display = '';
           list.innerHTML = '<span class="palette-loading">提取中…</span>';
-          extractThemeColors(src, function (colors) {
-            if (!colors || !colors.length) { box.style.display = 'none'; return; }
-            list.innerHTML = colors.map(function (hex) {
+          analyzePhoto(src, function (res) {
+            if (!res || !res.colors || !res.colors.length) { box.style.display = 'none'; if (histCv) histCv.style.display = 'none'; return; }
+            list.innerHTML = res.colors.map(function (hex) {
               return '<span class="palette-item"><span class="palette-swatch" style="background:' + hex + '"></span><span class="palette-hex">' + hex + '</span></span>';
             }).join('');
+            if (histCv && res.hist) drawHistogram(histCv, res.hist);
           });
         }
         // 从相册文章读取该相册的图片 / EXIF / 地址 / 标题 / 描述数组

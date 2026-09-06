@@ -292,10 +292,8 @@ $(document).ready(function() {
 document.addEventListener('DOMContentLoaded', function() {
     let touchStartX = 0;
     let touchEndX = 0;
-    let touchCurrentX = 0;
     let isTransitioning = false;
     let isPopupActive = false;
-    let isDragging = false;
     const minSwipeDistance = 50;
     const $main = $('#main');
     const $body = $('body');
@@ -327,14 +325,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 var p = document.querySelector('.poptrox-popup');
                 if (p) applyLqip(p);
             }, 60);
-            if ($body.hasClass('touch')) {
-                setTimeout(function() {
-                    const popup = document.querySelector('.poptrox-popup');
-                    if (popup && popup.querySelector('.breadcrumb-nav') && !popup.querySelector('.pic-swipe-track')) {
-                        ensureSwipeStructure(popup);
-                    }
-                }, 350);
-            }
         },
         overlayOpacity: 0,
         popupCloserText: '',
@@ -476,25 +466,13 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!isPopupActive || !popup) return;
         if (popup.__panoActive) return; // 全景激活：拖动交给 Pannellum 旋转，不做切图
         touchStartX = e.touches[0].clientX;
-        touchCurrentX = touchStartX;
-        const nav = popup.querySelector('.breadcrumb-nav');
-        if (nav) {
-            isDragging = true;
-            ensureSwipeStructure(popup);
-        }
     }, { passive: true });
 
     document.body.addEventListener('touchmove', function(e) {
         const popup = e.target.closest('.poptrox-popup');
         if (!isPopupActive || !popup) return;
         if (popup.__panoActive) return;
-        if (isDragging && popup.querySelector('.pic-swipe-track')) {
-            e.preventDefault();
-            touchCurrentX = e.touches[0].clientX;
-            updateSwipePosition(popup);
-        } else if (popup) {
-            e.preventDefault();
-        }
+        e.preventDefault(); // 灯箱内禁止触发页面滚动
     }, { passive: false, capture: true });
 
     document.body.addEventListener('touchend', function(e) {
@@ -502,17 +480,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!isPopupActive || !popup) return;
         if (popup.__panoActive) return;
         touchEndX = e.changedTouches[0].clientX;
-        const track = popup.querySelector('.pic-swipe-track');
         const moved = Math.abs(touchEndX - touchStartX);
-        if (isDragging && track) {
-            if (moved > 10) {
-                e.preventDefault();
-                endSwipeDrag(popup);
-            }
-        } else if (moved > minSwipeDistance) {
+        if (moved > minSwipeDistance) {
             handleSwipe(popup);
         }
-        isDragging = false;
     }, { passive: false });
 
     // 添加图片查看器状态变化监听
@@ -532,175 +503,23 @@ document.addEventListener('DOMContentLoaded', function() {
         attributeFilter: ['style', 'class']
     });
 
-    function getImageSuffix(popup) {
-        const img = popup.querySelector('.pic img');
-        if (!img || !img.src) return '';
-        const m = img.src.match(/!.*$/);
-        return m ? m[0] : '';
-    }
-
-    function ensureSwipeStructure(popup) {
-        const nav = popup.querySelector('.breadcrumb-nav');
-        const track = popup.querySelector('.pic-swipe-track');
-        const pic = popup.querySelector('.pic');
-        if (!nav || !pic) return;
-        if (track) {
-            pic.querySelectorAll(':scope > img').forEach(function(img) { img.remove(); });
-            return;
-        }
-        const img = pic.querySelector('img');
-        if (!img) return;
-
-        const images = ppParseArr(nav.dataset.images);
-        const suffix = getImageSuffix(popup);
-        const dots = nav.querySelectorAll('.nav-dot');
-        const currentIndex = Array.from(dots).findIndex(d => d.classList.contains('active'));
-
-        const wrapper = document.createElement('div');
-        wrapper.className = 'pic-swipe-wrapper';
-        wrapper.style.cssText = 'overflow:hidden;width:100%;touch-action:none;';
-
-        const trackEl = document.createElement('div');
-        trackEl.className = 'pic-swipe-track';
-        trackEl.style.cssText = 'display:flex;width:' + (images.length * 100) + '%;will-change:transform;';
-        trackEl.dataset.currentIndex = currentIndex;
-
-        function createSlide(url, idx) {
-            const slide = document.createElement('div');
-            slide.className = 'pic-swipe-slide';
-            slide.style.cssText = 'flex:0 0 ' + (100 / images.length) + '%;width:' + (100 / images.length) + '%;display:flex;align-items:center;justify-content:center;';
-            var slideImg;
-            if (idx === currentIndex && img.src) {
-                slideImg = img;
-                slideImg.style.cssText = 'max-width:100%;width:100%;height:auto;object-fit:contain;vertical-align:bottom;';
-            } else {
-                slideImg = document.createElement('img');
-                slideImg.src = url + suffix;
-                slideImg.style.cssText = 'max-width:100%;width:100%;height:auto;object-fit:contain;vertical-align:bottom;';
-                slideImg.alt = '';
-            }
-            slide.appendChild(slideImg);
-            return slide;
-        }
-
-        images.forEach(function(url, idx) { trackEl.appendChild(createSlide(url, idx)); });
-        wrapper.appendChild(trackEl);
-        pic.appendChild(wrapper);
-
-        requestAnimationFrame(function() {
-            const slideWidth = trackEl.querySelector('.pic-swipe-slide')?.offsetWidth || trackEl.offsetWidth;
-            trackEl.style.transform = 'translateX(-' + (currentIndex * slideWidth) + 'px)';
-        });
-    }
-
-    function getSlideWidth(track) {
-        const slide = track.querySelector('.pic-swipe-slide');
-        const w = slide ? slide.offsetWidth : 0;
-        if (w > 0) return w;
-        const wrapper = track.closest('.pic-swipe-wrapper');
-        return wrapper ? wrapper.offsetWidth : track.offsetWidth;
-    }
-
-    function updateSwipePosition(popup) {
-        const track = popup.querySelector('.pic-swipe-track');
-        const nav = popup.querySelector('.breadcrumb-nav');
-        if (!track || !nav) return;
-
-        const slides = track.querySelectorAll('.pic-swipe-slide');
-        const slideWidth = getSlideWidth(track);
-        const currentIndex = parseInt(track.dataset.currentIndex) || 0;
-        let deltaX = touchCurrentX - touchStartX;
-
-        if (currentIndex <= 0 && deltaX > 0) deltaX = deltaX * 0.3;
-        if (currentIndex >= slides.length - 1 && deltaX < 0) deltaX = deltaX * 0.3;
-
-        const offset = -currentIndex * slideWidth + deltaX;
-        track.style.transition = 'none';
-        track.style.transform = `translateX(${offset}px)`;
-    }
-
-    function endSwipeDrag(popup) {
-        const track = popup.querySelector('.pic-swipe-track');
-        const nav = popup.querySelector('.breadcrumb-nav');
-        if (!track || !nav) return;
-
-        const dots = nav.querySelectorAll('.nav-dot');
-        const images = ppParseArr(nav.dataset.images);
-        let currentIndex = parseInt(track.dataset.currentIndex) || 0;
-        const deltaX = touchEndX - touchStartX;
-        const slideWidth = getSlideWidth(track);
-        const threshold = slideWidth * 0.2;
-
-        if (deltaX < -threshold && currentIndex < images.length - 1) {
-            currentIndex++;
-        } else if (deltaX > threshold && currentIndex > 0) {
-            currentIndex--;
-        }
-
-        track.dataset.currentIndex = currentIndex;
-        track.style.transition = 'transform 0.3s ease-out';
-        track.style.transform = `translateX(-${currentIndex * slideWidth}px)`;
-
-        dots.forEach(d => d.classList.remove('active'));
-        dots[currentIndex].classList.add('active');
-    }
-
     function handleSwipe(popup) {
         if (isTransitioning) return;
         if (popup && popup.__panoActive) return;
 
-        const track = popup.querySelector('.pic-swipe-track');
-        if (track) return;
-
         const swipeDistance = touchEndX - touchStartX;
         if (Math.abs(swipeDistance) < minSwipeDistance) return;
 
-        const nav = popup.querySelector('.breadcrumb-nav');
-        if (!nav) {
-            // 没有 breadcrumb-nav：优先在图集内循环；到边界再触发 poptrox 内建 上一张/下一张（跨图集）。
-            if (typeof inAlbumNav === 'function' && inAlbumNav(popup, swipeDistance < 0 ? 1 : -1)) {
-                return;
-            }
-            const prev = popup.querySelector('.nav-previous');
-            const next = popup.querySelector('.nav-next');
-            const btn = swipeDistance > 0 ? prev : next;
-            if (!btn) return;
-            isTransitioning = true;
-            btn.click();
-            setTimeout(function() { isTransitioning = false; }, 400);
+        // 图集内优先切换；到边界再交给 poptrox 上一张/下一张（跨图集）
+        if (typeof inAlbumNav === 'function' && inAlbumNav(popup, swipeDistance < 0 ? 1 : -1)) {
             return;
         }
-
-        const dots = nav.querySelectorAll('.nav-dot');
-        const images = ppParseArr(nav.dataset.images);
-        const currentIndex = Array.from(dots).findIndex(dot => dot.classList.contains('active'));
-        
-        let nextIndex;
-        if (swipeDistance > 0) {
-            nextIndex = (currentIndex - 1 + images.length) % images.length;
-        } else {
-            nextIndex = (currentIndex + 1) % images.length;
-        }
-
-        const imgWrapper = popup.querySelector('.pic');
-        const img = imgWrapper.querySelector('img');
-        if (img) {
-            isTransitioning = true;
-            const suffix = getImageSuffix(popup);
-            img.style.transition = 'opacity 0.3s ease-in-out';
-            img.style.opacity = '0';
-
-            setTimeout(() => {
-                img.src = images[nextIndex] + suffix;
-                img.onload = function() {
-                    img.style.opacity = '1';
-                    isTransitioning = false;
-                };
-                img.onerror = function() { isTransitioning = false; };
-            }, 300);
-
-            dots.forEach(dot => dot.classList.remove('active'));
-            dots[nextIndex].classList.add('active');
-        }
+        const prev = popup.querySelector('.nav-previous');
+        const next = popup.querySelector('.nav-next');
+        const btn = swipeDistance > 0 ? prev : next;
+        if (!btn) return;
+        isTransitioning = true;
+        btn.click();
+        setTimeout(function() { isTransitioning = false; }, 400);
     }
 });

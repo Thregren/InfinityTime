@@ -2589,31 +2589,6 @@ span.tag-list a:hover {
   height: 100%;
   background: #111;
 }
-.pp-pano-viewer .pp-pano-fullscreen {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 9999;
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, .45);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background .15s ease;
-}
-.pp-pano-viewer .pp-pano-fullscreen:hover {
-  background: rgba(0, 0, 0, .62);
-}
-.pp-pano-viewer .pp-pano-fullscreen svg {
-  display: block;
-}
 /* 全屏进入/退出按钮：入口钮已移到 .pic 下（不再位于 .pp-pano-viewer 内），
    此处用类选择器兜底，保证悬停反馈一致；exit 钮挂在 Pannellum 容器内（仅全屏显示）。 */
 .pp-pano-fullscreen:hover,
@@ -2905,6 +2880,15 @@ span.tag-list a:hover {
   font-size: 12px;
   color: rgba(255, 255, 255, .5);
 }
+/* RGB 直方图 */
+.poptrox-exif-dock .hist-canvas {
+  display: block;
+  width: 100%;
+  height: 88px;
+  border-radius: 6px;
+  margin-top: 10px;
+  background: rgba(255, 255, 255, .03);
+}
 @media (max-width: 900px) {
   .poptrox-exif-dock {
     left: 10px !important;
@@ -2917,6 +2901,7 @@ span.tag-list a:hover {
 }
 
 /* ==== 首页瀑布流（JS 弹性列 + 自然高度，保证首行顶对齐） ==== */
+
 #main > #waterfall {
   column-count: 4;
   column-gap: 14px;

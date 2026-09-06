@@ -1,5 +1,16 @@
 # 更新日志
 
+## 1.8.0
+
+### 新增：RGB 直方图
+- 灯箱「主题色」下方新增实时 **RGB 直方图**（三条半透明色带），一眼看出照片的曝光/色彩分布。
+- 与主题色共用一次 canvas 降采样（一次采样、两处使用），几乎零额外开销；按**实际显示尺寸 × 设备像素比**渲染，清晰不模糊。
+
+### 代码清理 & 健壮性
+- 移除 `main.js` 中已失效的「图集内滑动结构」死代码（`ensureSwipeStructure` / `updateSwipePosition` / `endSwipeDrag` / `getImageSuffix` 等），保留移动端“滑动→上一张/下一张 + 图集内切换”的兜底逻辑与灯箱内禁止页面滚动。
+- 移除 `main.css` 中不再使用的 `.pp-pano-viewer .pp-pano-fullscreen` 基础样式（全屏按钮已移到 `.pic` 下，保留悬停兜底）。
+- `analyzePhoto` / `drawHistogram` 增加空值防护，输出更稳健。
+
 ## 1.7.4
 
 ### 主题色提取（新增）
