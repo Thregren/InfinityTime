@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.7.2
+ * @version 1.7.3
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -266,6 +266,10 @@ if (!headers_sent()) {
           var cards = Array.prototype.slice.call(wf.querySelectorAll('.thumb'));
           wf.querySelectorAll('.wf-col').forEach(function (c) { c.remove(); });
           if (!cards.length) return; // 无卡片则不创建空列
+          // 记录原始顺序（首个 build 时卡片尚未重排 = 源码顺序；resize 时已有序号则保留）
+          var base = 0;
+          cards.forEach(function (c) { var n = parseInt(c.dataset.ppOrder || '0', 10); if (n > base) base = n; });
+          cards.forEach(function (c) { if (!c.dataset.ppOrder) c.dataset.ppOrder = base + 1; base++; });
           var N = Math.max(1, colCount());
           var cols = [];
           for (var i = 0; i < N; i++) {
@@ -305,8 +309,10 @@ if (!headers_sent()) {
                   var N = Math.max(1, colCount());
                   var cols = wf.querySelectorAll('.wf-col');
                   if (!cols.length) { build(); cols = wf.querySelectorAll('.wf-col'); }
+                  var maxOrder = 0;
+                  wf.querySelectorAll('.thumb').forEach(function (c) { var n = parseInt(c.dataset.ppOrder || '0', 10); if (n > maxOrder) maxOrder = n; });
                   var idx = wf.querySelectorAll('.thumb').length % N;
-                  cards.forEach(function (card) { cols[idx++ % N].appendChild(card); });
+                  cards.forEach(function (card, ci) { card.dataset.ppOrder = maxOrder + 1 + ci; cols[idx++ % N].appendChild(card); });
                   curPage += 1;
                   if (lm) lm.setAttribute('data-page', String(curPage));
                   // 新卡片需绑定灯箱（poptrox 只在初始化时逐个绑定），否则点击会直接跳原图

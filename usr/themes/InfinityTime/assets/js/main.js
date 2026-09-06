@@ -449,6 +449,22 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         return null;
     }
+    // 灯箱按“源码顺序”切图（而非瀑布流列序）：先按卡片 data-pp-order 排，再扁平化每张图。
+    // 每次切换时按当前 DOM 现算，保证无限瀑布流新加载的卡片也在顺序里。
+    function currentImgOrder() {
+        var cards = Array.prototype.slice.call(document.querySelectorAll('#main a.image[data-images]'));
+        var ordered = cards.map(function(a) {
+            var ord = 0;
+            var th = a.closest ? a.closest('.thumb') : null;
+            if (th && th.dataset.ppOrder) { var n = parseInt(th.dataset.ppOrder, 10); if (!isNaN(n)) ord = n; }
+            return { ord: ord, a: a };
+        }).sort(function(x, y) { return x.ord - y.ord; });
+        var out = [];
+        ordered.forEach(function(item) {
+            ppParseArr(item.a.dataset.images).forEach(function(u) { out.push(u); });
+        });
+        return out;
+    }
     function inAlbumNav(popup, delta) {
         var img = popup && popup.querySelector('.pic img');
         if (!img || !img.getAttribute('src')) return false;
@@ -461,13 +477,27 @@ document.addEventListener('DOMContentLoaded', function() {
         if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
         return true;
     }
+    // 跨图集切换：按源码顺序切到相邻图集的图（覆盖 poptrox 默认的“瀑布流列序”）
+    function crossAlbumNav(popup, delta) {
+        var img = popup && popup.querySelector('.pic img');
+        if (!img || !img.getAttribute('src')) return false;
+        var src = img.getAttribute('src').split('?')[0];
+        var order = currentImgOrder();
+        var i = order.indexOf(src);
+        if (i < 0) return false;
+        var ni = i + delta;
+        if (ni < 0 || ni >= order.length) return false;
+        img.setAttribute('src', order[ni]);
+        if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
+        return true;
+    }
     // 捕获阶段拦截上一张/下一张按钮，避免 poptrox 直接跳到相邻图集
     document.addEventListener('click', function(e) {
         var t = e.target && e.target.closest ? e.target.closest('.poptrox-popup .nav-previous, .poptrox-popup .nav-next') : null;
         if (!t) return;
         var popup = t.closest('.poptrox-popup');
         var delta = t.classList.contains('nav-next') ? 1 : -1;
-        if (inAlbumNav(popup, delta)) { e.preventDefault(); e.stopImmediatePropagation(); }
+        if (inAlbumNav(popup, delta) || crossAlbumNav(popup, delta)) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
 
     // 触摸事件：多图时拖动跟手，松手分页切换
