@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.7.1
+ * @version 1.7.2
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -309,6 +309,10 @@ if (!headers_sent()) {
                   cards.forEach(function (card) { cols[idx++ % N].appendChild(card); });
                   curPage += 1;
                   if (lm) lm.setAttribute('data-page', String(curPage));
+                  // 新卡片需绑定灯箱（poptrox 只在初始化时逐个绑定），否则点击会直接跳原图
+                  if (typeof window.__rebindPoptrox === 'function') {
+                    try { window.__rebindPoptrox(); } catch (e) {}
+                  }
                   if (typeof checkImgs === 'function') checkImgs();
                 }
               } catch (e) {}
@@ -466,8 +470,16 @@ if (!headers_sent()) {
         let ppPanoState = null;
         let ppPanoGuardBound = false;
         let ppPanoDownX = 0, ppPanoDownY = 0, ppPanoMoved = false;
-        // 点击捕获：仅当发生真实拖拽（位移>8px）才吞掉紧随其后的 click（无论松手在哪）；纯点击（按钮等）不拦
+        let ppPanoFullscreen = false;
+        // 点击捕获：
+        //  - 全屏时：不响应“点击退出/关闭”，但全屏/退出按钮与 Pannellum 控件仍可点；
+        //  - 非全屏：仅当发生真实拖拽（位移>8px）才吞掉紧随其后的 click（无论松手在哪）；纯点击不拦
         function ppPanoClickGuard(e) {
+          if (ppPanoFullscreen) {
+            var t = e.target;
+            if (t && t.closest && t.closest('.pp-pano-fullscreen, .pp-pano-fullscreen-exit, .pnlm-control, .pnlm-hotspot, .pnlm-hotspot-base')) { ppPanoMoved = false; return; }
+            e.stopPropagation(); e.preventDefault(); ppPanoMoved = false; return;
+          }
           if (ppPanoMoved) { e.stopPropagation(); e.preventDefault(); ppPanoMoved = false; }
         }
         // 按压捕获：记录按下位置，重置拖拽标记
@@ -493,11 +505,23 @@ if (!headers_sent()) {
           });
           ppPanoGuardBound = true;
         }
+        // 全景销毁时解绑 document 级捕获监听，避免灯箱关闭后仍常驻消耗
+        function ppUnbindPanoGuard() {
+          if (!ppPanoGuardBound) return;
+          document.removeEventListener('click', ppPanoClickGuard, true);
+          document.removeEventListener('pointerdown', ppPanoDownGuard, true);
+          ['pointermove', 'mousemove', 'touchmove'].forEach(function (ev) {
+            document.removeEventListener(ev, ppPanoMoveGuard, true);
+          });
+          ppPanoGuardBound = false;
+        }
         function ppSetPanoActive(popup, v) {
           if (popup) popup.__panoActive = !!v;
           document.querySelectorAll('.poptrox-popup').forEach(function (p) { if (p !== popup) p.__panoActive = false; });
         }
         function ppDestroyPano() {
+          ppPanoFullscreen = false;
+          ppUnbindPanoGuard();
           if (ppPanoState) {
             try { if (ppPanoState.viewer && ppPanoState.viewer.setFullscreen) ppPanoState.viewer.setFullscreen(false); } catch (e) {}
             try { if (ppPanoState.viewer && ppPanoState.viewer.destroy) ppPanoState.viewer.destroy(); } catch (e) {}
@@ -588,6 +612,7 @@ if (!headers_sent()) {
           const onFsChange = function () {
             fsBtn.classList.toggle('active', !!document.fullscreenElement);
             const fs = !!document.fullscreenElement;
+            ppPanoFullscreen = fs;
             fsBtn.style.display = fs ? 'none' : 'flex';
             exitBtn.style.display = fs ? 'flex' : 'none';
             try { if (viewer && typeof viewer.setSize === 'function') viewer.setSize(wrap.clientWidth || 0, wrap.clientHeight || 0); } catch (e) {}
@@ -751,9 +776,11 @@ if (!headers_sent()) {
         function startExifPoll() {
           if (exifTimer) return;
           exifTimer = setInterval(function() {
-            const vis = overlayVisible();
-            applyExifState(vis);
-            if (vis) { syncDockExif(); syncPano(); }
+            try {
+              const vis = overlayVisible();
+              applyExifState(vis);
+              if (vis) { syncDockExif(); syncPano(); }
+            } catch (e) {} // 避免单个异常导致每 120ms 在控制台刷报错
           }, 120);
         }
         function stopExifPoll() {

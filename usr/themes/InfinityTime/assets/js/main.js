@@ -243,6 +243,9 @@
 
 })(jQuery);
 
+// 安全解析 JSON 数组：非法/缺失时回退为空数组，避免一个脏 data-* 弄瘫整站灯箱
+function ppParseArr(s) { try { var v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+
 // 优化全屏切换功能
 const fullscreenAPI = {
 	enter: document.documentElement.requestFullscreen ||
@@ -297,8 +300,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const $main = $('#main');
     const $body = $('body');
 
-    // 监听弹窗状态
-    $main.poptrox({
+    // 监听弹窗状态（配置复用：无限瀑布流翻页后需重绑一次）
+    const PP_CONFIG = {
         baseZIndex: 20000,
         caption: function($a) { return $a.next('h2').text().trim(); },
         fadeSpeed: 300,
@@ -347,7 +350,27 @@ document.addEventListener('DOMContentLoaded', function() {
         usePopupLoader: true,
         usePopupNav: true,
         windowMargin: 50
-    });
+    };
+    $main.poptrox(PP_CONFIG);
+
+    // 无限瀑布流翻页后，把新卡片也绑定到灯箱。
+    // poptrox 只绑定“还有 href”的锚点，而早已绑定过的锚点 href 已被 poptrox 移除，
+    // 所以重绑前要把 href 从 data-images[0] 补回来；否则重绑会跳过旧卡片（导致“所有灯箱打不开”）。
+    window.__rebindPoptrox = function() {
+        if ($('.poptrox-overlay').is(':visible')) return; // 灯箱打开时不重建
+        $main.find('.thumb > a.image').each(function() {
+            var a = this;
+            if (!a.getAttribute('href') && a.dataset.images) {
+                try { var imgs = ppParseArr(a.dataset.images); if (imgs[0]) a.setAttribute('href', imgs[0]); } catch (e) {}
+            }
+        });
+        $('.poptrox-overlay').remove();
+        $('.poptrox-popup').remove();
+        $main.find('.thumb > a.image').off('click');
+        $main.poptrox(PP_CONFIG);
+        if (typeof ensureExifObserver === 'function') ensureExifObserver();
+        if (typeof checkImgs === 'function') checkImgs();
+    };
 
     // 适配窄屏：xsmall 时把弹窗边距归零（对第二个（当前）poptrox 实例生效，带守卫防未初始化时报错）。
     breakpoints.on('<=xsmall', function() {
@@ -360,8 +383,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // ---- 灯箱渐进加载（blur-up）：用缩略图当作模糊预览，全图加载后淡出 ----
     var previewMap = {};
     document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
-        var imgs = JSON.parse(a.dataset.images || '[]');
-        var pre = JSON.parse(a.dataset.previews || '[]');
+        var imgs = ppParseArr(a.dataset.images);
+        var pre = ppParseArr(a.dataset.previews);
         imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
     });
     function lqipFor(full) { return previewMap[full] || full; }
@@ -411,12 +434,12 @@ document.addEventListener('DOMContentLoaded', function() {
     var ALBUMS = [];
     document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
         ALBUMS.push({
-            images: JSON.parse(a.dataset.images || '[]'),
-            previews: JSON.parse(a.dataset.previews || '[]'),
-            exifs: JSON.parse(a.dataset.exif || '[]'),
-            titles: JSON.parse(a.dataset.titles || '[]'),
-            descs: JSON.parse(a.dataset.descs || '[]'),
-            addrs: JSON.parse(a.dataset.addresses || '[]')
+            images: ppParseArr(a.dataset.images),
+            previews: ppParseArr(a.dataset.previews),
+            exifs: ppParseArr(a.dataset.exif),
+            titles: ppParseArr(a.dataset.titles),
+            descs: ppParseArr(a.dataset.descs),
+            addrs: ppParseArr(a.dataset.addresses)
         });
     });
     function albumForSrc(src) {
@@ -528,7 +551,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const img = pic.querySelector('img');
         if (!img) return;
 
-        const images = JSON.parse(nav.dataset.images);
+        const images = ppParseArr(nav.dataset.images);
         const suffix = getImageSuffix(popup);
         const dots = nav.querySelectorAll('.nav-dot');
         const currentIndex = Array.from(dots).findIndex(d => d.classList.contains('active'));
@@ -602,7 +625,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!track || !nav) return;
 
         const dots = nav.querySelectorAll('.nav-dot');
-        const images = JSON.parse(nav.dataset.images);
+        const images = ppParseArr(nav.dataset.images);
         let currentIndex = parseInt(track.dataset.currentIndex) || 0;
         const deltaX = touchEndX - touchStartX;
         const slideWidth = getSlideWidth(track);
@@ -649,7 +672,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         const dots = nav.querySelectorAll('.nav-dot');
-        const images = JSON.parse(nav.dataset.images);
+        const images = ppParseArr(nav.dataset.images);
         const currentIndex = Array.from(dots).findIndex(dot => dot.classList.contains('active'));
         
         let nextIndex;
