@@ -317,6 +317,15 @@ if (!empty($_GET['ajax'])) {
 /* ---------------------------------- POST 处理 ---------------------------------- */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF / 同源校验：后台写操作只接受本站后台页面发起的请求，拒绝跨站伪造（删除图集、清文章等）。
+    $__ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    if ($__ref !== '') {
+        $__refHost = (string)parse_url($__ref, PHP_URL_HOST);
+        $__reqHost = (string)($_SERVER['HTTP_HOST'] ?? '');
+        if ($__refHost !== '' && strcasecmp($__refHost, $__reqHost) !== 0) {
+            pp_reply_json(false, _t('请求来源不合法（已拦截跨站请求），请刷新后台页面后重试'));
+        }
+    }
     $action = (string)($_POST['action'] ?? '');
 
     if ($action === 'create_album') {

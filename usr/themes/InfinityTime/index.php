@@ -3,13 +3,16 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.7.0
+ * @version 1.7.1
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
 <?php
 // 静态资源版本号（以文件 mtime 生成，改动即失效缓存，避免改后还看到旧的 CSS/JS）
 $__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js')), 0, 8);
+// JSON 嵌入 HTML 属性时的安全标志：把 ' " & < > 转成 \uXXXX，
+// 防止用户标题/描述/文件名等含引号或尖括号时破坏属性或注入脚本（存储型 XSS）。
+$__jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG;
 // HTML 内联了灯箱/全景 JS，改动后必须立即生效。禁止浏览器缓存页面本体，
 // 否则即使 CSS/JS 带了 ?v= 版本号，用户仍会拿到旧的 HTML（看不到新按钮/新逻辑）。
 if (!headers_sent()) {
@@ -97,13 +100,13 @@ if (!headers_sent()) {
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
           ?>
           <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo $firstImage; ?>"
-             data-images='<?php echo json_encode($images, JSON_UNESCAPED_UNICODE); ?>'
-             data-previews='<?php echo json_encode($thumbs ?: $images ?: [], JSON_UNESCAPED_UNICODE); ?>'
-             data-exif='<?php echo json_encode($exifList, JSON_UNESCAPED_UNICODE); ?>'
-             data-addresses='<?php echo json_encode($addrList, JSON_UNESCAPED_UNICODE); ?>'
-             data-titles='<?php echo json_encode($imgTitles, JSON_UNESCAPED_UNICODE); ?>'
-             data-descs='<?php echo json_encode($imgDescs, JSON_UNESCAPED_UNICODE); ?>'
-             data-panos='<?php echo json_encode($panoList, JSON_UNESCAPED_UNICODE); ?>'>
+             data-images='<?php echo json_encode($images, $__jsonFlags); ?>'
+             data-previews='<?php echo json_encode($thumbs ?: $images ?: [], $__jsonFlags); ?>'
+             data-exif='<?php echo json_encode($exifList, $__jsonFlags); ?>'
+             data-addresses='<?php echo json_encode($addrList, $__jsonFlags); ?>'
+             data-titles='<?php echo json_encode($imgTitles, $__jsonFlags); ?>'
+             data-descs='<?php echo json_encode($imgDescs, $__jsonFlags); ?>'
+             data-panos='<?php echo json_encode($panoList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
               alt="<?php echo htmlspecialchars($this->title()); ?>"
               src="<?php echo $firstThumb; ?>"
@@ -119,10 +122,10 @@ if (!headers_sent()) {
           <?php endif; ?>
           <li class="tag-info tag-info-bottom">
             <?php if($this->fields->device): ?>
-            <span class="tag-device"><i class="iconfont icon-camera-lens-line"></i><?php echo $this->fields->device(); ?></span>
+            <span class="tag-device"><i class="iconfont icon-camera-lens-line"></i><?php echo htmlspecialchars((string)$this->fields->device); ?></span>
             <?php endif; ?>
             <?php if($this->fields->location): ?>
-            <span class="tag-location"><i class="iconfont icon-map-pin-2-line"></i><?php echo $this->fields->location(); ?></span>
+            <span class="tag-location"><i class="iconfont icon-map-pin-2-line"></i><?php echo htmlspecialchars((string)$this->fields->location); ?></span>
             <?php endif; ?>
             <?php if (!empty($exif0['datetime'])): ?>
             <span class="tag-time"><i class="iconfont icon-time-line"></i><?php echo htmlspecialchars(pp_date_cn((string)$exif0['datetime'])); ?></span>
@@ -146,10 +149,10 @@ if (!headers_sent()) {
                 <div class="exif-item"><span>镜头</span><b><?php echo htmlspecialchars($exifLens); ?></b></div>
               <?php endif; ?>
               <?php if(!empty($exif0['iso'])): ?><div class="exif-item"><span>ISO</span><b><?php echo (int)$exif0['iso']; ?></b></div><?php endif; ?>
-              <?php if(!empty($exif0['fnumber'])): ?><div class="exif-item"><span>光圈</span><b>f/<?php echo $exif0['fnumber']; ?></b></div><?php endif; ?>
+              <?php if(!empty($exif0['fnumber'])): ?><div class="exif-item"><span>光圈</span><b>f/<?php echo htmlspecialchars((string)$exif0['fnumber']); ?></b></div><?php endif; ?>
               <?php if(!empty($exif0['exposure'])): ?><div class="exif-item"><span>快门</span><b><?php echo htmlspecialchars($exif0['exposure']); ?></b></div><?php endif; ?>
               <?php $focalShow = $exif0['focal35'] ?? $exif0['focal'] ?? ''; ?>
-              <?php if(!empty($focalShow)): ?><div class="exif-item"><span>焦距</span><b><?php echo $focalShow; ?>mm</b></div><?php endif; ?>
+              <?php if(!empty($focalShow)): ?><div class="exif-item"><span>焦距</span><b><?php echo htmlspecialchars((string)$focalShow); ?>mm</b></div><?php endif; ?>
               <?php if(!empty($exif0['flash'])): ?><div class="exif-item"><span>闪光</span><b>是</b></div><?php endif; ?>
               <?php if(!empty($exif0['datetime'])): ?><div class="exif-item"><span>时间</span><b><?php echo htmlspecialchars(pp_date_cn((string)$exif0['datetime'])); ?></b></div><?php endif; ?>
             </div>

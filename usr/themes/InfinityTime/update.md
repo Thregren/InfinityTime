@@ -1,5 +1,17 @@
 # 更新日志
 
+## 1.7.1
+
+### 安全加固（重点）
+- **存储型 XSS 防护**：前台图片卡的 `data-images / data-exif / data-titles / data-descs / data-addresses` 等 JSON 改用 `JSON_HEX_APOS|JSON_HEX_QUOT|JSON_HEX_AMP|JSON_HEX_TAG` 安全标志嵌入 HTML 属性，避免图片标题/描述/文件名含 `' " & < >` 时破坏属性或注入脚本。
+- 卡片上直接输出的**设备/地点**、以及灯箱**光圈/焦距**等由 EXIF/字段提供的文本全部 `htmlspecialchars` 转义，防止恶意 EXIF 元数据注入。
+- **后台 CSRF 防护**：`panel.php` 的所有 POST 操作（上传/编辑/删除/设置/维护）增加**同源校验**（校验 Referer 主机），拦截跨站伪造请求。
+- 移除 `comments.php` 中遗留的、使用了已废弃 `/e` 正则修饰符的死代码函数 `getTopDomainhuo`（PHP 7+ 会报错）。
+
+### 代码清理
+- 删除主题里**未被引用的重复文件**：主题根目录 `main.css`、`main.js`（实际只加载 `assets/` 下的）。
+- 删除插件里**未被引用的重复类文件**：插件根目录 `MediaProcessor.php`、`ImageRepository.php`（实际只用命名空间 `Lib/` 下的，避免潜在的“重复声明类”隐患）。
+
 ## 1.7.0
 
 ### 全景浏览增强

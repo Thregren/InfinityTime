@@ -1,4 +1,4 @@
-<?php if (!defined('__TYPECHO_ROOT_DIR__')) exit; error_reporting(0);function getTopDomainhuo(){ $host=$_SERVER['HTTP_HOST']; $matchstr="[^\.]+\.(?:(".$str.")|\w{2}|((".$str.")\.\w{2}))$"; if(preg_match("/".$matchstr."/ies",$host,$matchs)){ $domain=$matchs['0'];}else{ $domain=$host;} return $domain;} $domain=getTopDomainhuo(); unset($domain);?>
+<?php if (!defined('__TYPECHO_ROOT_DIR__')) exit; error_reporting(0); ?>
 <div id="comments">
     <?php $this->comments()->to($comments); ?>
     <?php if ($comments->have()): ?>
