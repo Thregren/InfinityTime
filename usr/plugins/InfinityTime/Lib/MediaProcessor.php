@@ -158,17 +158,47 @@ class MediaProcessor
 
         // 缩略图
         if ($thumbMax > 0) {
-            $scale = min(1.0, $thumbMax / max($width, $height));
-            $tw = (int)round($width * $scale);
-            $th = (int)round($height * $scale);
-            if ($scale < 1.0) {
-                $thumb = imagescale($img, $tw, $th, IMG_BILINEAR_FIXED);
+            $isPano = $height > 0 && ($width / $height) >= 1.98 && ($width / $height) <= 2.02;
+            if ($isPano) {
+                // 全景缩略图：不把整幅 2:1 压成细条，而是【中央裁一块 4:3 的前方画面】再缩放，
+                // 更适合作为卡片/预览（内容可辨、比例像正常照片）。
+                $cropW = (int)round($height * 4 / 3);
+                if ($cropW > $width) {
+                    $cropW = $width;
+                }
+                $cropH = (int)round($cropW * 3 / 4);
+                if ($cropH > $height) {
+                    $cropH = $height;
+                    $cropW = (int)round($cropH * 4 / 3);
+                }
+                $sx = max(0, (int)round(($width - $cropW) / 2));
+                $sy = max(0, (int)round(($height - $cropH) / 2));
+                $thumb = @imagecrop($img, ['x' => $sx, 'y' => $sy, 'width' => $cropW, 'height' => $cropH]);
                 if (!$thumb) {
-                    throw new \RuntimeException('缩略图缩放失败');
+                    $thumb = $img;
+                } else {
+                    // 裁好后缩放到缩略图目标最长边
+                    $scale = min(1.0, $thumbMax / max($cropW, $cropH));
+                    if ($scale < 1.0) {
+                        $resized = imagescale($thumb, (int)round($cropW * $scale), (int)round($cropH * $scale), IMG_BILINEAR_FIXED);
+                        if ($resized) {
+                            $thumb = $resized;
+                        }
+                    }
                 }
             } else {
-                // 图片已不比缩略图目标大，直接复用原图
-                $thumb = $img;
+                $scale = min(1.0, $thumbMax / max($width, $height));
+                $tw = (int)round($width * $scale);
+                $th = (int)round($height * $scale);
+                if ($scale < 1.0) {
+                    $thumb = imagescale($img, $tw, $th, IMG_BILINEAR_FIXED);
+                    if (!$thumb) {
+                        throw new \RuntimeException('缩略图缩放失败');
+                    }
+                } else {
+                    // 图片已不比缩略图目标大，直接复用原图
+                    $thumb = $img;
+                }
             }
             if (!imagewebp($thumb, $thumbPath, max(60, $quality - 7))) {
                 throw new \RuntimeException('缩略图 WebP 写入失败（最常见是目录不可写）: ' . $thumbPath);

@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.7.3
+ * @version 1.7.4
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -256,39 +256,8 @@ if (!headers_sent()) {
       (function () {
         var wf = document.getElementById('waterfall');
         if (!wf) return;
-        function colCount() {
-          var w = window.innerWidth;
-          if (w >= 1300) return 4;
-          if (w >= 900) return 3;
-          return 2;
-        }
-        function build() {
-          var cards = Array.prototype.slice.call(wf.querySelectorAll('.thumb'));
-          wf.querySelectorAll('.wf-col').forEach(function (c) { c.remove(); });
-          if (!cards.length) return; // 无卡片则不创建空列
-          // 记录原始顺序（首个 build 时卡片尚未重排 = 源码顺序；resize 时已有序号则保留）
-          var base = 0;
-          cards.forEach(function (c) { var n = parseInt(c.dataset.ppOrder || '0', 10); if (n > base) base = n; });
-          cards.forEach(function (c) { if (!c.dataset.ppOrder) c.dataset.ppOrder = base + 1; base++; });
-          var N = Math.max(1, colCount());
-          var cols = [];
-          for (var i = 0; i < N; i++) {
-            var col = document.createElement('div');
-            col.className = 'wf-col';
-            wf.appendChild(col);
-            cols.push(col);
-          }
-          var idx = 0;
-          cards.forEach(function (card) { cols[idx++ % N].appendChild(card); });
-        }
-        build();
-        if (typeof checkImgs === 'function') checkImgs(); // 重建后立即加载首屏可见图片
-        var rt;
-        window.addEventListener('resize', function () {
-          clearTimeout(rt);
-          rt = setTimeout(build, 120);
-        });
-        // 无限瀑布流：滚动到底自动加载下一页并追加到列
+        // 列布局交给 CSS column 实现，DOM 保持源码顺序（灯箱 poptrox 因此按源码顺序切图）。
+        // 无限瀑布流：滚动到底自动加载下一页并追加到容器。
         var lm = document.getElementById('load-more');
         var PAGER_BASE = <?php echo json_encode($this->is('category')
             ? (rtrim((string)$this->options->siteUrl, '/') . '/index.php/category/' . $this->getArchiveSlug() . '/')
@@ -306,13 +275,7 @@ if (!headers_sent()) {
                 var doc = new DOMParser().parseFromString(html, 'text/html');
                 var cards = Array.prototype.slice.call(doc.querySelectorAll('#waterfall > .thumb'));
                 if (cards.length) {
-                  var N = Math.max(1, colCount());
-                  var cols = wf.querySelectorAll('.wf-col');
-                  if (!cols.length) { build(); cols = wf.querySelectorAll('.wf-col'); }
-                  var maxOrder = 0;
-                  wf.querySelectorAll('.thumb').forEach(function (c) { var n = parseInt(c.dataset.ppOrder || '0', 10); if (n > maxOrder) maxOrder = n; });
-                  var idx = wf.querySelectorAll('.thumb').length % N;
-                  cards.forEach(function (card, ci) { card.dataset.ppOrder = maxOrder + 1 + ci; cols[idx++ % N].appendChild(card); });
+                  cards.forEach(function (card) { wf.appendChild(card); });
                   curPage += 1;
                   if (lm) lm.setAttribute('data-page', String(curPage));
                   // 新卡片需绑定灯箱（poptrox 只在初始化时逐个绑定），否则点击会直接跳原图
@@ -400,10 +363,136 @@ if (!headers_sent()) {
               + '<div class="exif-imgdesc"></div>'
               + '<div class="exif-title">拍摄参数</div>'
               + '<div class="exif-grid"></div>'
-              + '<div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"></span></div>';
+              + '<div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"></span></div>'
+              + '<div class="exif-palette"><div class="exif-title">主题色</div><div class="palette-list"></div></div>';
             document.body.appendChild(exifDock);
           }
           return exifDock;
+        }
+        function rgbToHex(r, g, b) {
+          function h(v) {
+            var s = Number(v) & 255;
+            var x = s.toString(16).toUpperCase();
+            return x.length < 2 ? '0' + x : x;
+          }
+          return '#' + h(r) + h(g) + h(b);
+        }
+        // 提取 3 个“确实存在于照片中”的代表性颜色：
+        // 先降采样 + 粗分桶统计哪个色区占比最高；再用每个高位色区里的【众数（真实像素）】作为该颜色，
+        // 避免把一桶内不同颜色求平均而“调出”照片里不存在的颜色。
+        function extractThemeColors(src, cb) {
+          var img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = function () {
+            try {
+              var w = img.naturalWidth, h = img.naturalHeight;
+              if (!w || !h) return cb([]);
+              var maxDim = 300;
+              var scale = Math.min(1, maxDim / Math.max(w, h));
+              var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+              var c = document.createElement('canvas');
+              c.width = cw; c.height = ch;
+              var ctx = c.getContext('2d', { willReadFrequently: true });
+              ctx.drawImage(img, 0, 0, cw, ch);
+              var data = ctx.getImageData(0, 0, cw, ch).data;
+              // 按“色相”分桶：把同一色系的颜色合并（绿色水母、粉色水母分别成桶），
+              // 这样小面积的醒目色不会被巨大的背景/剪影淹没；低饱和度(灰/黑)单独压低权重。
+              var hueB = {};   // 色相桶 -> { n, satSum, exact:{ek:{r,g,b,c}} }
+              var grayB = {};  // dark/mid/light -> { n, exact:{...} }
+              for (var i = 0; i < data.length; i += 4) {
+                var r = data[i], g = data[i + 1], b = data[i + 2];
+                if (data[i + 3] < 128) continue;
+                var mx = Math.max(r, g, b), mn = Math.min(r, g, b), diff = mx - mn;
+                var sat = mx ? (diff / mx) : 0;
+                var hue = 0;
+                if (diff > 0) {
+                  if (mx === r) hue = 60 * ((g - b) / diff);
+                  else if (mx === g) hue = 60 * (((b - r) / diff) + 2);
+                  else hue = 60 * (((r - g) / diff) + 4);
+                  if (hue < 0) hue += 360;
+                }
+                var ek = (r << 16) | (g << 8) | b;
+                if (sat < 0.14) {
+                  var gk = mx < 72 ? 'dark' : (mx > 200 ? 'light' : 'mid');
+                  var g0 = grayB[gk] || (grayB[gk] = { n: 0, exact: {} });
+                  g0.n++;
+                  if (g0.exact[ek]) g0.exact[ek].c++; else g0.exact[ek] = { r: r, g: g, b: b, c: 1 };
+                } else {
+                  var hb = Math.floor(hue / 15);
+                  var o = hueB[hb] || (hueB[hb] = { n: 0, satSum: 0, exact: {} });
+                  o.n++; o.satSum += sat;
+                  if (o.exact[ek]) o.exact[ek].c++; else o.exact[ek] = { r: r, g: g, b: b, c: 1 };
+                }
+              }
+              function modeOf(exact) {
+                var best = null, bc = -1;
+                for (var ek in exact) { if (exact[ek].c > bc) { bc = exact[ek].c; best = exact[ek]; } }
+                return best;
+              }
+              // 候选：彩色桶按 “数量 × (0.2 + 平均饱和度²)” 打分（醒目彩色占优），灰色桶仅 0.06 权重
+              var cands = [];
+              Object.keys(hueB).forEach(function (hb) {
+                var o = hueB[hb];
+                if (!o.n) return;
+                var m = modeOf(o.exact);
+                if (!m) return;
+                var avgSat = o.satSum / o.n;
+                cands.push({ r: m.r, g: m.g, b: m.b, score: o.n * (0.2 + avgSat * avgSat), n: o.n });
+              });
+              Object.keys(grayB).forEach(function (gk) {
+                var g0 = grayB[gk];
+                if (!g0.n) return;
+                var m = modeOf(g0.exact);
+                if (!m) return;
+                cands.push({ r: m.r, g: m.g, b: m.b, score: g0.n * 0.06, n: g0.n });
+              });
+              cands.sort(function (a, b) { return b.score - a.score; });
+              // 只在“足够显著”的颜色里做“最大最小距离”挑选，避免选到极小噪点；
+              // 选满 3 个，颜色尽量分散，照片色够多时不会出现两个很接近的色。
+              var pool = cands.slice(0, 15);
+              var picked = [];
+              if (pool.length) {
+                picked.push(pool[0]);
+                while (picked.length < 3) {
+                  var selected = null, bestMin = -1;
+                  for (var ci = 0; ci < pool.length; ci++) {
+                    var ci2 = pool[ci];
+                    var already = picked.indexOf(ci2) >= 0;
+                    if (already) continue;
+                    var minD = 765;
+                    for (var pi = 0; pi < picked.length; pi++) {
+                      var d = Math.abs(ci2.r - picked[pi].r) + Math.abs(ci2.g - picked[pi].g) + Math.abs(ci2.b - picked[pi].b);
+                      if (d < minD) minD = d;
+                    }
+                    if (minD > bestMin) { bestMin = minD; selected = ci2; }
+                  }
+                  if (!selected) break;
+                  picked.push(selected);
+                }
+              }
+              cb(picked.slice(0, 3).map(function (e) { return rgbToHex(e.r, e.g, e.b); }));
+            } catch (e) { cb([]); }
+          };
+          img.onerror = function () { cb([]); };
+          img.src = src;
+        }
+        // 把主题色渲染到 EXIF 侧栏
+        function renderThemePalette(popup) {
+          const dock = getExifDock();
+          const list = dock.querySelector('.palette-list');
+          const box = dock.querySelector('.exif-palette');
+          const img = popup && popup.querySelector('.pic img');
+          if (!list || !box || !img) return;
+          const src = (img.getAttribute('src') || '').split('?')[0];
+          if (!src) { box.style.display = 'none'; return; }
+          box.style.display = '';
+          list.innerHTML = '<span class="palette-loading">提取中…</span>';
+          extractThemeColors(src, function (colors) {
+            if (!colors || !colors.length) { box.style.display = 'none'; return; }
+            list.innerHTML = colors.map(function (hex) {
+              return '<span class="palette-item"><span class="palette-swatch" style="background:' + hex + '"></span><span class="palette-hex">' + hex + '</span></span>';
+            }).join('');
+          });
         }
         // 从相册文章读取该相册的图片 / EXIF / 地址 / 标题 / 描述数组
         function articleData(article) {
@@ -439,6 +528,7 @@ if (!headers_sent()) {
           if (t) t.textContent = addr;
           const ar = dock.querySelector('.exif-addr');
           if (ar) ar.style.display = addr ? '' : 'none';
+          renderThemePalette(popup);
         }
 
         // 根据当前弹窗显示的主图 src，匹配到该相册里的图片下标
@@ -529,7 +619,6 @@ if (!headers_sent()) {
           ppPanoFullscreen = false;
           ppUnbindPanoGuard();
           if (ppPanoState) {
-            try { if (ppPanoState.viewer && ppPanoState.viewer.setFullscreen) ppPanoState.viewer.setFullscreen(false); } catch (e) {}
             try { if (ppPanoState.viewer && ppPanoState.viewer.destroy) ppPanoState.viewer.destroy(); } catch (e) {}
             try { if (ppPanoState.ro && ppPanoState.ro.disconnect) ppPanoState.ro.disconnect(); } catch (e) {}
             try { if (ppPanoState.onFsChange) document.removeEventListener('fullscreenchange', ppPanoState.onFsChange); } catch (e) {}
@@ -567,7 +656,8 @@ if (!headers_sent()) {
           try {
             viewer = window.pannellum.viewer(inner, {
               type: 'equirectangular', panorama: url, autoLoad: true,
-              showZoomCtrl: false, showFullscreenCtrl: false, compass: false, driftEnabled: false, autoRotate: 0
+              showZoomCtrl: false, showFullscreenCtrl: false, showControls: false,
+              compass: false, driftEnabled: false, autoRotate: 0
             });
           } catch (e) {
             if (img) img.style.visibility = '';
@@ -602,6 +692,11 @@ if (!headers_sent()) {
             + '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:0;';
           fsBtn.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="display:block"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
           pic.appendChild(fsBtn);
+          // 移动端 Safari 不支持对 WebGL/普通元素做 element 级全屏（Pannellum 亦如此）。
+          // 在不支持全屏的设备上隐藏全屏按钮，避免出现“点了没反应”的死按钮。
+          if (!(document.fullscreenEnabled || (document.documentElement && document.documentElement.requestFullscreen))) {
+            fsBtn.style.display = 'none';
+          }
           // 退出全屏按钮：挂到 Pannellum 容器（inner 即 .pnlm-container，全屏时的顶层元素）内部，
           // 这样全屏时才不会被画布盖住。平时隐藏，仅在全屏态显示。
           const exitBtn = document.createElement('button');
@@ -621,19 +716,23 @@ if (!headers_sent()) {
             ppPanoFullscreen = fs;
             fsBtn.style.display = fs ? 'none' : 'flex';
             exitBtn.style.display = fs ? 'flex' : 'none';
-            try { if (viewer && typeof viewer.setSize === 'function') viewer.setSize(wrap.clientWidth || 0, wrap.clientHeight || 0); } catch (e) {}
+            // 全屏时按视口撑满，否则按图片区尺寸
+            try {
+              if (viewer && typeof viewer.setSize === 'function') {
+                viewer.setSize(fs ? window.innerWidth : (pic.clientWidth || 0), fs ? window.innerHeight : (pic.clientHeight || 0));
+              }
+            } catch (e) {}
           };
           document.addEventListener('fullscreenchange', onFsChange);
+          // 用 Pannellum 原生全屏（公开方法是 toggleFullscreen；它会在全景容器上做 requestFullscreen，
+          // Safari/iOS 均支持，效果与 Pannellum 自带的全屏按钮一致）。
           fsBtn.addEventListener('click', function (e) {
             e.stopPropagation(); // 不触发“点弹窗外部关闭”
             try {
-              if (document.fullscreenElement) { viewer.setFullscreen(false); }
-              else { viewer.setFullscreen(true); }
-            } catch (err) {
-              if (document.fullscreenElement) { try { document.exitFullscreen(); } catch (e2) {} }
+              if (viewer && typeof viewer.toggleFullscreen === 'function') { viewer.toggleFullscreen(); }
+              else if (document.fullscreenElement) { document.exitFullscreen(); }
               else { try { wrap.requestFullscreen(); } catch (e2) {} }
-            }
-            try { console.info('[InfinityTime pano] fs click, fs=', !!document.fullscreenElement); } catch (e) {}
+            } catch (err) {}
           });
           // 退出全屏：容器内 mousedown/pointerdown 停止冒泡，避免触发 Pannellum 的拖拽
           ['mousedown', 'pointerdown', 'touchstart'].forEach(function (ev) {
@@ -641,7 +740,10 @@ if (!headers_sent()) {
           });
           exitBtn.addEventListener('click', function (e) {
             e.stopPropagation();
-            try { viewer.setFullscreen(false); } catch (err) { try { document.exitFullscreen(); } catch (e2) {} }
+            try {
+              if (viewer && typeof viewer.toggleFullscreen === 'function') { viewer.toggleFullscreen(); }
+              else { document.exitFullscreen(); }
+            } catch (err) { try { document.exitFullscreen(); } catch (e2) {} }
           });
           // 兜底诊断：挂载后打印按钮几何信息，便于排查“按钮不显示”
           setTimeout(function () {

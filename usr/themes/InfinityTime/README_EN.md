@@ -1,4 +1,4 @@
-# InfinityTime For Typecho · v1.7.3
+# InfinityTime For Typecho · v1.7.4
 
 A photo-sharing theme for Typecho, powered by the companion **InfinityTime** plugin.
 
@@ -6,6 +6,7 @@ A photo-sharing theme for Typecho, powered by the companion **InfinityTime** plu
 - Lightbox: poptrox single instance, prev/next, swipe, progressive blur-up loading, in-album switching;
 - **360° panorama**: auto-detect ~2:1 aspect, viewable with Pannellum in the lightbox (drag/zoom), no accidental close when releasing outside; panorama lightbox has a top-right **fullscreen / exit-fullscreen** button and cards show a **"panorama" badge**;
 - EXIF sidebar (title / desc / camera params / address) synced with the current photo;
+- Lightbox "theme palette": extracts 3 representative colors (swatch + uppercase hex) below camera params;
 - All admin operations are AJAX (no full-page reload), including avatar upload with DataTransfer file sync;
 - Local embedded iconfont & Pannellum, no CDN.
 
