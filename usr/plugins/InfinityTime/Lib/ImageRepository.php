@@ -290,17 +290,21 @@ class ImageRepository
         $titles = [];
         $descs = [];
         $panos = [];
+        $dims = [];
         foreach ($rows as $r) {
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
             $descs[] = (string)($r['desc'] ?? '');
             $w = (int)($r['width'] ?? 0);
             $h = (int)($r['height'] ?? 0);
+            // 每张图的实际尺寸（缩略图/全图同比例），供首页瀑布流用 aspect-ratio 预占位，
+            // 避免图片懒加载后高度突变导致 CSS 多列重新平衡（图片顺序跳变）。
+            $dims[] = ($w > 0 && $h > 0) ? ($w . 'x' . $h) : '';
             // 长宽比 ≥ 2 视为全景（equirectangular 360 照片，如 8192×4096）
             $panos[] = self::isPano($w, $h) ? 1 : 0;
         }
-        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos];
-        foreach (['addresses', 'titles', 'descs', 'panos'] as $f) {
+        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims];
+        foreach (['addresses', 'titles', 'descs', 'panos', 'dims'] as $f) {
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
             if (count(array_filter($val, 'strlen')) > 0) {

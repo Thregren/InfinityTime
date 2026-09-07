@@ -307,6 +307,59 @@ if (!empty($_GET['ajax'])) {
         }
         pp_write_json($jobFile, $state);
         $result = ['finished' => $idx >= count($list), 'total' => count($list), 'done' => $idx, 'current' => $state['current']];
+    } elseif ($job === 'resync') {
+        // 重算每篇图集的聚合字段（addresses/titles/descs/panos，并补上 dims 宽高数组）。
+        // 用于给已发布的历史文章补齐文章字段，使首页瀑布流能拿到图片比例做占位。
+        $listFile = pp_data_file() . '/resync_list.json';
+        $jobFile = pp_data_file() . '/job.json';
+        $state = pp_read_json($jobFile);
+        if (($state['job'] ?? '') !== 'resync' || !file_exists($listFile)) {
+            $cids = [];
+            foreach ($db->fetchAll($db->select('cid')->from(ImageRepository::table())) as $r) {
+                $cids[(int)$r['cid']] = true;
+            }
+            foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img')) as $r) {
+                $cids[(int)$r['cid']] = true;
+            }
+            $list = array_values(array_filter(array_map('intval', array_keys($cids))));
+            sort($list);
+            pp_write_json($listFile, $list);
+            pp_write_json($jobFile, ['job' => 'resync', 'total' => count($list), 'done' => 0, 'current' => '']);
+        }
+        $list = pp_read_json($listFile);
+        $state = pp_read_json($jobFile);
+        $idx = (int)($state['done'] ?? 0);
+        $failed = (int)($state['failed'] ?? 0);
+        $batch = 12; // 每次处理 12 篇，避免单次 AJAX 超时
+        $started = microtime(true);
+        $budget = 20;
+        $total = count($list);
+        for ($i = 0; $i < $batch && $idx < $total; $i++) {
+            if ((microtime(true) - $started) > $budget) {
+                break;
+            }
+            $cid = (int)($list[$idx] ?? 0);
+            if ($cid > 0) {
+                try {
+                    ImageRepository::syncPostFields($cid);
+                    $state['current'] = 'cid ' . $cid;
+                } catch (\Throwable $e) {
+                    Plugin::log('resync ajax: cid=' . $cid . ' ' . $e->getMessage());
+                    $failed++;
+                    $state['current'] = 'cid ' . $cid . '（失败）';
+                }
+            }
+            $idx++;
+        }
+        $state['done'] = $idx;
+        $state['failed'] = $failed;
+        $state['finished'] = $idx >= $total;
+        if ($state['finished']) {
+            $state = ['job' => 'resync', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true, 'failed' => $failed];
+            @unlink($listFile);
+        }
+        pp_write_json($jobFile, $state);
+        $result = ['finished' => $idx >= $total, 'total' => $total, 'done' => $idx, 'current' => $state['current'], 'failed' => $failed];
     }
 
     header('Content-Type: application/json');
@@ -1091,6 +1144,11 @@ include $adminDir . '/menu.php';
             <div class="pp-meta" style="margin-top:8px">按当前质量/尺寸设置，用原图重新生成全部 full/thumb（改设置后批量重做）。</div>
           </div>
           <div>
+            <button class="pp-btn gray" type="button" data-run="resync">重建尺寸字段</button>
+            <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-resync"></div></div><span class="pp-msg" id="pp-msg-resync"></span></div>
+            <div class="pp-meta" style="margin-top:8px">重算所有图集的文章字段（含缩略图宽高），供首页瀑布流按比例预占位，避免图片加载时顺序跳变。升级后跑一次即可。</div>
+          </div>
+          <div>
             <button class="pp-btn red" type="button" id="pp-clean-posts">清理非插件文章</button>
             <div class="pp-meta" style="margin-top:8px">删除所有不是 InfinityTime 发布的 type=post 文章（不含本插件图集；会连同自定义字段一起删除）。</div>
           </div>
@@ -1189,7 +1247,8 @@ function runJob(job) {
             if (msg) msg.textContent += '（失败 ' + d.failed + '）';
           }
         } else {
-          if (msg) msg.textContent = job === 'cleanup' ? '没有需要清理的孤儿文件' : '没有需要重建的图片';
+          var noJob = { cleanup: '没有需要清理的孤儿文件', rebuild: '没有需要重建的图片', resync: '没有需要重建字段的图集' };
+          if (msg) msg.textContent = noJob[job] || '没有需要处理的项目';
         }
         if (!d.finished) {
           setTimeout(tick, 300);

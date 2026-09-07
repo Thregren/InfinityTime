@@ -302,7 +302,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const PP_CONFIG = {
         baseZIndex: 20000,
         caption: function($a) { return $a.next('h2').text().trim(); },
-        fadeSpeed: 300,
+        fadeSpeed: 420,
         onPopupClose: function() { 
             isPopupActive = false;
             $body.removeClass('modal-active');
@@ -330,7 +330,7 @@ document.addEventListener('DOMContentLoaded', function() {
         popupCloserText: '',
         popupHeight: 150,
         popupLoaderText: '',
-        popupSpeed: 300,
+        popupSpeed: 420,
         popupWidth: 150,
         selector: '.thumb > a.image',
         usePopupCaption: false,
@@ -340,6 +340,13 @@ document.addEventListener('DOMContentLoaded', function() {
         usePopupLoader: true,
         usePopupNav: true,
         windowMargin: 50
+    };
+    // 灯箱淡入淡出改用柔和缓动（easeInOutQuad），替代 jQuery 默认的 swing 正弦式。
+    // poptrox 的 fadeTo/fadeIn/fadeOut 以及弹窗尺寸过渡都会应用这条曲线；
+    // 比 easeInOutCubic 更缓（中段速度峰值大幅降低），开/关不会有生硬的「冲」感。
+    // 只影响本页 jQuery 动画，不影响 CSS transition。
+    $.easing.swing = function (p) {
+      return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     };
     $main.poptrox(PP_CONFIG);
 

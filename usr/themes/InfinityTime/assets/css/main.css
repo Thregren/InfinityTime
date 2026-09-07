@@ -2606,7 +2606,7 @@ span.tag-list a:hover {
   -webkit-filter: blur(14px) scale(1.08);
   filter: blur(14px) scale(1.08);
   opacity: 1;
-  transition: opacity 0.45s ease;
+  transition: opacity 0.6s cubic-bezier(0.45, 0, 0.55, 1);
   pointer-events: none;
   background-color: #1d1e22;
 }
@@ -2768,11 +2768,14 @@ span.tag-list a:hover {
   box-shadow: 0 1em 3em .5em rgba(0, 0, 0, .35);
   z-index: 20010;
   opacity: 0;
+  transform: translateY(7px);
   pointer-events: none;
-  transition: opacity .2s ease-in-out;
+  transition: opacity .45s cubic-bezier(0.45, 0, 0.55, 1),
+              transform .45s cubic-bezier(0.45, 0, 0.55, 1);
 }
 .poptrox-exif-dock.show {
   opacity: 1;
+  transform: translateY(0);
   pointer-events: auto;
 }
 /* 灯箱主图：桌面端为 EXIF 停靠栏预留宽度（在渲染时就限宽，避免切图时先闪原尺寸再收缩） */

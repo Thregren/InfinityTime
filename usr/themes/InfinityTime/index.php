@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.8.1
+ * @version 1.8.2
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -87,11 +87,13 @@ if (!headers_sent()) {
           $imgTitles = json_decode($this->fields->titles, true);
           $imgDescs = json_decode($this->fields->descs, true);
           $panoList = json_decode($this->fields->panos, true);
+          $dimsList = json_decode($this->fields->dims, true);
           if (!is_array($exifList)) { $exifList = []; }
           if (!is_array($addrList)) { $addrList = []; }
           if (!is_array($imgTitles)) { $imgTitles = []; }
           if (!is_array($imgDescs)) { $imgDescs = []; }
           if (!is_array($panoList)) { $panoList = []; }
+          if (!is_array($dimsList)) { $dimsList = []; }
           // 去掉 null/空 字段，压缩内嵌 JSON；前端对缺失字段同样按“无”处理，展示不受影响。
           $exifList = array_map(function ($e) {
               return is_array($e) ? array_filter($e, function ($v) { return $v !== null && $v !== ''; }) : $e;
@@ -106,7 +108,8 @@ if (!headers_sent()) {
              data-addresses='<?php echo json_encode($addrList, $__jsonFlags); ?>'
              data-titles='<?php echo json_encode($imgTitles, $__jsonFlags); ?>'
              data-descs='<?php echo json_encode($imgDescs, $__jsonFlags); ?>'
-             data-panos='<?php echo json_encode($panoList, $__jsonFlags); ?>'>
+             data-panos='<?php echo json_encode($panoList, $__jsonFlags); ?>'
+             data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
               alt="<?php echo htmlspecialchars($this->title()); ?>"
               src="<?php echo $firstThumb; ?>"
@@ -236,6 +239,29 @@ if (!headers_sent()) {
             if (isInSight(el)) loadImg(el);
           });
         }
+        // 用插件写入的 data-dims 给缩略图预占位（aspect-ratio），
+        // 让 CSS 多列布局在图片加载前就有确定高度，避免加载后高度突变导致图片顺序跳变。
+        function applyDims(scope) {
+          (scope || document).querySelectorAll('a.image.my-photo').forEach(function (a) {
+            var host = a.querySelector('img');
+            if (!host) return;
+            var dims = [];
+            try { dims = JSON.parse(a.dataset.dims || '[]'); } catch (e) {}
+            if (!dims.length) return;
+            var m = String(dims[0] || '').split('x');
+            var w = parseInt(m[0], 10), h = parseInt(m[1], 10);
+            if (w > 0 && h > 0) {
+              // 宽高百分比回退：height:auto 会被 aspect-ratio + width 推出来；
+              // 这里同时给 width/height 属性，让现代浏览器在图片解码前也能按比例占空间。
+              host.style.aspectRatio = w + ' / ' + h;
+              host.setAttribute('width', String(w));
+              host.setAttribute('height', String(h));
+            }
+          });
+        }
+        applyDims(document);
+        // 无限瀑布流翻页后要重新给新卡片占位，暴露给其它内联脚本调用。
+        window.applyDims = applyDims;
         function throttle(fn, mustRun = 16) {
           var last = 0;
           return function () {
@@ -283,6 +309,7 @@ if (!headers_sent()) {
                     try { window.__rebindPoptrox(); } catch (e) {}
                   }
                   if (typeof checkImgs === 'function') checkImgs();
+                  if (typeof window.applyDims === 'function') window.applyDims(document);
                 }
               } catch (e) {}
               loadingMore = false;
