@@ -138,5 +138,6 @@ git tag v1.7.0 && git push origin v1.7.0
 - **TimePlus（zhheo）** 为本主题的直接母版（其本身亦基于 Multiverse）；主题的 `LICENSE` 为 MIT（© zhheo）。
 - **iconfont** 为本地内嵌字体，源码未单独标注；如需对外分发，请按图标来源平台（如 Iconfont）的授权条款补充说明。
 - 插件后端依赖系统已安装的工具（`php-gd`、ImageMagick、`heif-convert`/libheif 等），各工具由各自项目授权、随系统提供。
+- 本项目未引入任何新的第三方运行时库；灯箱 / EXIF / 瀑布流的动效基于 jQuery 内置缓动与 CSS 缓动实现，不依赖 GSAP、Three.js 等额外库。
 
 > 若你基于本主题二次分发，请同时保留上述第三方项目的许可声明。
