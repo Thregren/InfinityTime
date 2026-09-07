@@ -439,10 +439,23 @@ document.addEventListener('DOMContentLoaded', function() {
             addrs: ppParseArr(a.dataset.addresses)
         });
     });
+    // 清理 URL 上的缓存/分片参数，避免 src 带 ?v= 或 # 导致精确匹配失败
+    function normUrl(u) { return String(u || '').split('#')[0].split('?')[0]; }
+    // 在图集列表里找当前 src 的图集：先精确，再退化为前缀匹配（容错相对/绝对路径差异）
     function albumForSrc(src) {
+        var s = normUrl(src);
         for (var i = 0; i < ALBUMS.length; i++) {
-            var idx = ALBUMS[i].images.indexOf(src);
-            if (idx >= 0) return { album: ALBUMS[i], idx: idx };
+            var imgs = ALBUMS[i].images;
+            for (var k = 0; k < imgs.length; k++) {
+                if (normUrl(imgs[k]) === s) return { album: ALBUMS[i], idx: k };
+            }
+        }
+        for (var i2 = 0; i2 < ALBUMS.length; i2++) {
+            var imgs2 = ALBUMS[i2].images;
+            for (var k2 = 0; k2 < imgs2.length; k2++) {
+                var u = normUrl(imgs2[k2]);
+                if (u && (s.indexOf(u) === 0 || u.indexOf(s) === 0)) return { album: ALBUMS[i2], idx: k2 };
+            }
         }
         return null;
     }
@@ -453,7 +466,17 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!cur || cur.album.images.length <= 1) return false;
         var ni = cur.idx + delta;
         if (ni < 0 || ni >= cur.album.images.length) return false; // 边界：交给外部跨图集
-        img.setAttribute('src', cur.album.images[ni]);
+        if (popup.__switching) return false; // 动画进行中，忽略重复切换，避免 opacity 状态错乱
+        popup.__switching = true;
+        setTimeout(function() { popup.__switching = false; }, 460); // 与过渡总时长一致
+        // 同步比例切换也要带淡出→淡入，避免“直接换图”的生硬感。
+        // 过渡走 .poptrox-popup .pic img 的 CSS opacity transition（柔和缓动）。
+        var nextSrc = cur.album.images[ni];
+        img.style.opacity = '0';
+        setTimeout(function() {
+            img.setAttribute('src', nextSrc);
+            img.style.opacity = '1';
+        }, 220); // 略大于半程，让淡出先发生，再换图并淡入
         if (typeof applyLqip === 'function' && !cur.album.previews[ni]) { /* 预览依赖 src 变化触发的 observer */ }
         if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
         return true;
