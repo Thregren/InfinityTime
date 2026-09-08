@@ -378,8 +378,16 @@ document.addEventListener('DOMContentLoaded', function() {
     function applyResponsive(popup, img) {
         if (!popup || !img) return;
         var src = img.getAttribute('src') || '';
-        var v = variantMap[src] || variantMap[normUrl(src)] || null;
         var pic = popup.querySelector('.pic');
+        // 全景：隐藏的 <img> 只用于「加载完成」判定，真正渲染由 Pannellum 读全图；
+        // 这里若走 srcset 会额外下一份 1600 变体，反而多流量，直接跳过。
+        if (isPanoUrl(src)) {
+            img.removeAttribute('srcset');
+            img.removeAttribute('sizes');
+            if (pic) pic.querySelectorAll('picture.pp-picture').forEach(function (p) { if (!p.contains(img)) p.remove(); });
+            return;
+        }
+        var v = variantMap[src] || variantMap[normUrl(src)] || null;
         // 清理上一张切走后遗留的 <picture>（poptrox 会 detach 旧 img，留下空包装）
         if (pic) pic.querySelectorAll('picture.pp-picture').forEach(function (p) { if (!p.contains(img)) p.remove(); });
         if (!v) {

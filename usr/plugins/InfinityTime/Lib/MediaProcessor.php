@@ -205,7 +205,8 @@ class MediaProcessor
             }
         }
 
-        // 响应式变体：中间尺寸 WebP + AVIF（Imagick 可用时）。失败不影响主流程。
+        // 先释放 GD 位图，再用 Imagick 生成变体：避免 8K 图「GD 全图 + Imagick 全图」内存叠加
+        unset($img, $thumb);
         $variants = self::generateVariants($fullPath, $fullQuality);
 
         return [

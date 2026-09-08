@@ -92,6 +92,7 @@
       var dropzone = $('#pp-dropzone');
       var bar = $('#pp-upload-bar');
       var barOuter = $('#pp-upload-progress');
+      var barMsg = barOuter ? barOuter.querySelector('.pp-msg') : null;
 
       function fileKey(f) { return f.name + '|' + f.size + '|' + (f.lastModified || 0); }
 
@@ -216,7 +217,9 @@
         xhr.open('POST', URL, true);
         xhr.withCredentials = true;
         xhr.upload.onprogress = function (ev) {
-          if (ev.lengthComputable && bar) bar.style.width = Math.round(ev.loaded * 100 / ev.total) + '%';
+          if (!ev.lengthComputable) return;
+          if (bar) bar.style.width = Math.round(ev.loaded * 100 / ev.total) + '%';
+          if (barMsg) barMsg.textContent = humanSize(ev.loaded) + ' / ' + humanSize(ev.total);
         };
         xhr.onload = function () {
           var d = null;
