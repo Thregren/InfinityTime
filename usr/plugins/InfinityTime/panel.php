@@ -688,7 +688,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $nonCount = 0;
         $titles = [];
         $isDelete = ($action === 'delete_non_plugin');
-        if ($isDelete) { $db->query('START TRANSACTION'); }
+        // 注意：SQLite 只支持 BEGIN，不支持 MySQL 的 START TRANSACTION（BEGIN 在两者都可用）
+        if ($isDelete) { $db->query('BEGIN'); }
         try {
             foreach ($rows as $r) {
                 $cid = (int)$r['cid'];

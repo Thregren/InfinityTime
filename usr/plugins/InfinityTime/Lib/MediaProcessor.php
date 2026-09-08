@@ -247,15 +247,16 @@ class MediaProcessor
                 return $out;
             }
 
-            $mid = clone $im;
+            $mid = null;
             if ($w > $midWidth) {
+                $mid = clone $im;
                 $mid->scaleImage($midWidth, max(1, (int)round($h * $midWidth / $w)));
-            }
-            $midPath = $dir . '/' . $base . '@' . $midWidth . '.webp';
-            $mid->setImageFormat('webp');
-            $mid->setImageCompressionQuality($fullQuality);
-            if ($mid->writeImage($midPath)) {
-                $out['mid'] = $midPath;
+                $midPath = $dir . '/' . $base . '@' . $midWidth . '.webp';
+                $mid->setImageFormat('webp');
+                $mid->setImageCompressionQuality($fullQuality);
+                if ($mid->writeImage($midPath)) {
+                    $out['mid'] = $midPath;
+                }
             }
 
             $formats = array_map('strtoupper', \Imagick::queryFormats());
@@ -267,16 +268,20 @@ class MediaProcessor
                 if ($avif->writeImage($avifPath)) {
                     $out['avif'] = $avifPath;
                 }
-                $midAvif = clone $mid;
-                $midAvif->setImageFormat('avif');
-                $midAvif->setImageCompressionQuality($fullQuality);
-                $midAvifPath = $dir . '/' . $base . '@' . $midWidth . '.avif';
-                if ($midAvif->writeImage($midAvifPath)) {
-                    $out['mid_avif'] = $midAvifPath;
+                if ($mid) {
+                    $midAvif = clone $mid;
+                    $midAvif->setImageFormat('avif');
+                    $midAvif->setImageCompressionQuality($fullQuality);
+                    $midAvifPath = $dir . '/' . $base . '@' . $midWidth . '.avif';
+                    if ($midAvif->writeImage($midAvifPath)) {
+                        $out['mid_avif'] = $midAvifPath;
+                    }
+                    $midAvif->clear();
                 }
-                $avif->clear(); $midAvif->clear();
+                $avif->clear();
             }
-            $im->clear(); $mid->clear();
+            if ($mid) { $mid->clear(); }
+            $im->clear();
         } catch (\Throwable $e) {
             // 变体是增强项：失败只记日志，主图仍然可用
             \TypechoPlugin\InfinityTime\Plugin::log('generateVariants failed: ' . $e->getMessage());
