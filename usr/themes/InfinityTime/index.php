@@ -938,8 +938,8 @@ if (!headers_sent()) {
         }
         // 定位并显示侧栏：灯箱开着就显示，放到主图外侧。
         // 当主图太宽、左右都放不下侧栏时，收缩主图宽度，保证 EXIF 面板不遮挡照片。
-        // 桌面端切图按钮：水平与 EXIF 侧栏同列居中，垂直固定在右下角空白处。
-        // 垂直位置不跟随侧栏高度/淡入淡出变化，避免面板一动按钮就跳。
+        // 桌面端切图按钮：固定死在右下角，完全不跟随 EXIF 面板的位置/宽度变化，
+        // 避免切图时面板变宽变窄导致按钮横向跳变。
         function ppPlaceDockNav(dock, on) {
           const nav = document.querySelector('.pp-mobile-nav');
           if (!nav) return;
@@ -948,10 +948,9 @@ if (!headers_sent()) {
             nav.style.left = ''; nav.style.top = ''; nav.style.right = ''; nav.style.bottom = ''; nav.style.width = '';
             return;
           }
-          const dr = dock.getBoundingClientRect();
-          nav.style.left = Math.round(dr.left) + 'px';
-          nav.style.right = 'auto';
-          nav.style.width = Math.round(dr.width) + 'px';
+          nav.style.left = 'auto';
+          nav.style.right = '12px';
+          nav.style.width = 'auto';
           nav.style.top = 'auto';
           nav.style.bottom = '40px';
           nav.classList.add('pp-nav-placed');
