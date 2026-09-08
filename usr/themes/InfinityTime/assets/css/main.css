@@ -1410,7 +1410,7 @@ table.alt tfoot {
   position: absolute;
   top: 0;
   width: 100%;
-  z-index: 2;
+  z-index: 1;
   opacity: 0;
 }
 
@@ -2576,9 +2576,6 @@ span.tag-list a:hover {
   width: 100%;
   max-width: 100vw;
   position: relative;
-  /* 主图始终盖在 .pp-lqip（z-index:0）之上：poptrox 加载完成会对 .pic 做
-     opacity 淡入，若 .pic 与遮罩同层，淡入期间遮罩会反过来盖住主图。 */
-  z-index: 1;
 }
 /* 灯箱全景查看器：Pannellum 填充 .pic，位于主图之上、导航按钮(z2)/关闭(z2)之下 */
 .pp-pano-viewer {

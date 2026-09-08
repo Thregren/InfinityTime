@@ -427,9 +427,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!lq) {
             lq = document.createElement('div');
             lq.className = 'pp-lqip';
-            // 挂在弹窗（而非 .pic）下：poptrox 加载完成会对 .pic 做一次 hide().fadeIn()，
-            // 若遮罩在 .pic 内会跟着一起闪一下；挂在外层则能稳定垫底、让全图在其上柔和淡入。
-            popup.appendChild(lq);
+            // 插在 .pic 前面（而非 .pic 内）：poptrox 加载完成会对 .pic 做一次 hide().fadeIn()，
+            // 若遮罩在 .pic 内会跟着一起闪；放在 .pic 前面则按文档顺序垫底，全图淡入时遮罩保持稳定。
+            // 不用 z-index 抬 .pic，避免破坏全景/全屏按钮依赖的原有堆叠关系。
+            popup.insertBefore(lq, pic);
         }
         // 缩略图立刻垫底：不能从透明淡入，否则切图瞬间会先露出弹窗外面的背景（更生硬）。
         lq.style.backgroundImage = 'url("' + pre + '")';
