@@ -2500,6 +2500,20 @@ span.tag-list a:hover {
   transition: opacity 0.6s cubic-bezier(0.45, 0, 0.55, 1);
 }
 
+/* 灯箱渐进加载：缩略图模糊垫底（在 img 下方），原图解码完成后淡入覆盖，避免「模糊 → 清晰」跳变。
+   注意：必须放在全局，不能写进窄屏 @media，否则桌面端不会生效。 */
+.poptrox-popup .pp-lqip {
+  position: absolute;
+  inset: -10px;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  -webkit-filter: blur(12px);
+  filter: blur(12px);
+  opacity: 1;
+  pointer-events: none;
+}
+
 @media screen and (max-width: 736px) {
   .poptrox-popup .tag-info-bottom {
     flex-direction: column;
@@ -2596,19 +2610,6 @@ span.tag-list a:hover {
 .pp-pano-fullscreen:hover,
 .pp-pano-fullscreen-exit:hover {
   background: rgba(0, 0, 0, .62) !important;
-}
-
-/* 灯箱渐进加载：缩略图模糊垫底（在 img 下方），原图解码完成后淡入覆盖，避免「模糊 → 清晰」跳变 */
-.poptrox-popup .pp-lqip {
-  position: absolute;
-  inset: -10px;
-  z-index: 0;
-  background-size: cover;
-  background-position: center;
-  -webkit-filter: blur(12px);
-  filter: blur(12px);
-  opacity: 1;
-  pointer-events: none;
 }
 
   .poptrox-popup .pic img,
