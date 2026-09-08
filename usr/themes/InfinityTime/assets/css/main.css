@@ -2951,14 +2951,15 @@ span.tag-list a:hover {
   }
 }
 
-/* 移动端底部切图按钮：灯箱打开时淡入，EXIF 抽屉展开时淡出隐藏 */
+/* 底部切图按钮（全端统一）：灯箱打开时淡入，EXIF 抽屉展开时淡出隐藏。
+   桌面端也用它替代 poptrox 的左右箭头与右上角关闭叉。 */
 .pp-mobile-nav {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 92px;
   z-index: 20012;
-  display: none;
+  display: flex;
   justify-content: center;
   gap: 18px;
   opacity: 0;
@@ -2967,43 +2968,45 @@ span.tag-list a:hover {
   transition: opacity .45s cubic-bezier(0.45, 0, 0.55, 1),
               transform .45s cubic-bezier(0.45, 0, 0.55, 1);
 }
+/* 显示态：灯箱打开且抽屉收起 */
+body.exif-dock-open .pp-mobile-nav {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* 抽屉展开（仅移动端会出现）：同速向上移动淡出 */
+body.pp-dock-expanded .pp-mobile-nav {
+  opacity: 0;
+  transform: translateY(-24px);
+  pointer-events: none;
+  transition-delay: 0s;
+}
+.pp-mnav-btn {
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(0, 0, 0, .4);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .2s ease;
+}
+.pp-mnav-btn:active { background: rgba(0, 0, 0, .62); }
+/* 全端统一：隐藏 poptrox 的左右箭头与右上角关闭叉 */
+.poptrox-popup .closer,
+.poptrox-popup .nav-previous,
+.poptrox-popup .nav-next { display: none !important; }
+
 @media (max-width: 900px) {
-  .pp-mobile-nav { display: flex; }
-  /* 显示态：灯箱打开且抽屉收起；等抽屉收起到底后再向下淡入 */
-  body.exif-dock-open .pp-mobile-nav {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-    transition-delay: .45s;
-  }
-  /* 抽屉展开：同速向上移动淡出 */
-  body.pp-dock-expanded .pp-mobile-nav {
-    opacity: 0;
-    transform: translateY(-24px);
-    pointer-events: none;
-    transition-delay: 0s;
-  }
-  .pp-mnav-btn {
-    width: 46px;
-    height: 46px;
-    padding: 0;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, .16);
-    background: rgba(0, 0, 0, .4);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
-    color: #fff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    transition: background .2s ease;
-  }
-  .pp-mnav-btn:active { background: rgba(0, 0, 0, .62); }
-  /* 移动端用底部按钮替代 poptrox 左右两侧按钮 */
-  .poptrox-popup .nav-previous,
-  .poptrox-popup .nav-next { display: none !important; }
+  /* 移动端等 EXIF 抽屉收起到底后再淡入，避免与抽屉动画打架 */
+  body.exif-dock-open .pp-mobile-nav { transition-delay: .45s; }
 }
 
 /* 移动端切图加载态：隐藏深色小框与 loader，避免「黑色小块 → 大图」的突兀感 */
