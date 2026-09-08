@@ -25,16 +25,16 @@ if (!headers_sent()) {
 <html>
 
 <head>
-  <title><?php echo pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options); ?> - <?php echo pp_opt('infinitytimeSiteTagline', (string)$this->options->Indexdict, $this->options); ?> </title>
+  <title><?php echo htmlspecialchars(pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options)); ?> - <?php echo htmlspecialchars(pp_opt('infinitytimeSiteTagline', (string)$this->options->Indexdict, $this->options)); ?> </title>
   <meta http-equiv="content-type" content="text/html; charset=<?php $this->options->charset(); ?>" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
   <meta name="keywords" content="<?php $this->options->keywords(); ?>" />
   <meta name="description" content="<?php $this->options->description(); ?>" />
   <link rel="apple-touch-icon" href="<?php $this->options->AppleIcon(); ?>">
-  <meta name="apple-mobile-web-app-title" content="<?php echo pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options); ?>">
+  <meta name="apple-mobile-web-app-title" content="<?php echo htmlspecialchars(pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options), ENT_QUOTES); ?>">
   <link rel="bookmark" href="<?php $this->options->AppleIcon(); ?>">
   <link rel="apple-touch-icon-precomposed" sizes="180x180" href="<?php $this->options->AppleIcon(); ?>">
-  <link rel="icon" href="<?php echo pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options); ?>">
+  <link rel="icon" href="<?php echo htmlspecialchars(pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options), ENT_QUOTES); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css?v=' . $__assetVer); ?>" />
   <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/pannellum.css'); ?>" />
@@ -46,9 +46,9 @@ if (!headers_sent()) {
 <body class="is-preload">
   <header id="header">
     <a href="#footer" class="pp-site-toggle" title="关于">
-      <img class="site-logo" src="<?php echo pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options); ?>">
-      <h1><strong><?php echo pp_opt('infinitytimeSiteName', (string)$this->options->zmkiabout, $this->options); ?></strong></h1>
-      <span class="discription"><?php echo pp_opt('infinitytimeSiteTagline', (string)$this->options->zmkiabouts, $this->options); ?></span>
+      <img class="site-logo" src="<?php echo htmlspecialchars(pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options), ENT_QUOTES); ?>">
+      <h1><strong><?php echo htmlspecialchars(pp_opt('infinitytimeSiteName', (string)$this->options->zmkiabout, $this->options)); ?></strong></h1>
+      <span class="discription"><?php echo htmlspecialchars(pp_opt('infinitytimeSiteTagline', (string)$this->options->zmkiabouts, $this->options)); ?></span>
     </a>
     <nav>
       <ul class="nav_links">
@@ -101,7 +101,7 @@ if (!headers_sent()) {
           $exif0 = $exifList[0] ?? [];
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
           ?>
-          <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo $firstImage; ?>"
+          <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
              data-images='<?php echo json_encode($images, $__jsonFlags); ?>'
              data-previews='<?php echo json_encode($thumbs ?: $images ?: [], $__jsonFlags); ?>'
              data-exif='<?php echo json_encode($exifList, $__jsonFlags); ?>'
@@ -112,10 +112,10 @@ if (!headers_sent()) {
              data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
               alt="<?php echo htmlspecialchars($this->title()); ?>"
-              src="<?php echo $firstThumb; ?>"
+              src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"
               loading="lazy" decoding="async"
               onerror="this.src='<?php $this->options->themeUrl('assets/img/loading.gif'); ?>';this.onerror=null"
-              data-src="<?php echo $firstThumb; ?>" />
+              data-src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>" />
           </a>
           <h2><?php $this->title() ?></h2>
           <?php if($this->content): ?>

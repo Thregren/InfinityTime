@@ -316,6 +316,13 @@ document.addEventListener('DOMContentLoaded', function() {
             touchStartX = 0;
             touchEndX = 0;
             isTransitioning = false;
+            // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
+            document.querySelectorAll('.poptrox-popup').forEach(function(p) {
+                delete p.__switching;
+                delete p.__panoActive;
+                delete p.__ppIndex;
+                delete p.__ppArticle;
+            });
         },
         onPopupOpen: function() { 
             isPopupActive = true;
@@ -406,6 +413,8 @@ document.addEventListener('DOMContentLoaded', function() {
         lq.style.backgroundImage = 'url("' + pre + '")';
         lq.style.opacity = '1';
         function done() {
+            if (lq && lq.__done) return; // 幂等：防止同一遮罩反复触发淡出/移除
+            if (lq) lq.__done = true;
             if (!lq || !lq.isConnected) return;
             lq.style.opacity = '0';
             setTimeout(function() { if (lq && lq.isConnected) lq.remove(); }, 500);
@@ -430,13 +439,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // ---- 图集内多图切换：上一张/下一张/滑动在“同一图集内”循环，边界再切到相邻图集 ----
     var ALBUMS = [];
     document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
+        function nonEmpty(arr) {
+            return (Array.isArray(arr) ? arr : []).filter(function(v) { return v !== null && v !== undefined && String(v) !== ''; });
+        }
         ALBUMS.push({
-            images: ppParseArr(a.dataset.images),
-            previews: ppParseArr(a.dataset.previews),
-            exifs: ppParseArr(a.dataset.exif),
-            titles: ppParseArr(a.dataset.titles),
-            descs: ppParseArr(a.dataset.descs),
-            addrs: ppParseArr(a.dataset.addresses)
+            images: nonEmpty(ppParseArr(a.dataset.images)),
+            previews: nonEmpty(ppParseArr(a.dataset.previews)),
+            exifs: nonEmpty(ppParseArr(a.dataset.exif)),
+            titles: nonEmpty(ppParseArr(a.dataset.titles)),
+            descs: nonEmpty(ppParseArr(a.dataset.descs)),
+            addrs: nonEmpty(ppParseArr(a.dataset.addresses))
         });
     });
     // 清理 URL 上的缓存/分片参数，避免 src 带 ?v= 或 # 导致精确匹配失败
@@ -444,6 +456,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 在图集列表里找当前 src 的图集：先精确，再退化为前缀匹配（容错相对/绝对路径差异）
     function albumForSrc(src) {
         var s = normUrl(src);
+        if (!s) return null;
         for (var i = 0; i < ALBUMS.length; i++) {
             var imgs = ALBUMS[i].images;
             for (var k = 0; k < imgs.length; k++) {
@@ -454,7 +467,8 @@ document.addEventListener('DOMContentLoaded', function() {
             var imgs2 = ALBUMS[i2].images;
             for (var k2 = 0; k2 < imgs2.length; k2++) {
                 var u = normUrl(imgs2[k2]);
-                if (u && (s.indexOf(u) === 0 || u.indexOf(s) === 0)) return { album: ALBUMS[i2], idx: k2 };
+                // 只对“非空且非极短”的路径做前缀匹配，避免空串或 '/' 误配
+                if (u && u.length > 1 && (s.indexOf(u) === 0 || u.indexOf(s) === 0)) return { album: ALBUMS[i2], idx: k2 };
             }
         }
         return null;
@@ -474,6 +488,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var nextSrc = cur.album.images[ni];
         img.style.opacity = '0';
         setTimeout(function() {
+            // 灯箱可能已关闭 / 图片元素已被移除：此时不再操作 DOM，避免报错
+            if (!img || !img.isConnected || !popup || !popup.isConnected) return;
             img.setAttribute('src', nextSrc);
             img.style.opacity = '1';
         }, 220); // 略大于半程，让淡出先发生，再换图并淡入
