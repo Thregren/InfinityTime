@@ -311,6 +311,7 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
             document.querySelectorAll('.poptrox-popup').forEach(function(p) {
+                clearLqip(p);
                 delete p.__switching;
                 delete p.__panoActive;
                 delete p.__ppIndex;
@@ -320,6 +321,18 @@ document.addEventListener('DOMContentLoaded', function() {
         onPopupOpen: function() { 
             isPopupActive = true;
             $body.addClass('modal-active');
+            // 移动端用原始宽高预置弹窗尺寸，避免首次打开时先闪一个 150×150 的小方块
+            // （桌面端有 EXIF 侧栏让位逻辑，尺寸交给 poptrox 自己算，避免预设偏宽再回缩）
+            try {
+                var popup = document.querySelector('.poptrox-popup');
+                var dims = window.__ppOpenDims;
+                if (popup && dims && dims[0] > 0 && dims[1] > 0 && window.innerWidth <= 900) {
+                    var availW = Math.max(120, window.innerWidth - 2 * PP_CONFIG.windowMargin);
+                    var availH = Math.max(120, window.innerHeight - 2 * PP_CONFIG.windowMargin);
+                    var k = Math.min(1, availW / dims[0], availH / dims[1]);
+                    $(popup).data('width', Math.round(dims[0] * k)).data('height', Math.round(dims[1] * k));
+                }
+            } catch (e) {}
             // 灯箱渐进加载：先铺缩略图模糊预览，全图加载后渐入
             setTimeout(function() {
                 var p = document.querySelector('.poptrox-popup');
@@ -383,6 +396,17 @@ document.addEventListener('DOMContentLoaded', function() {
         var pre = ppParseArr(a.dataset.previews);
         imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
     });
+    // 记录点击的是哪张图（原始宽高），供 onPopupOpen 预置弹窗尺寸。
+    document.addEventListener('click', function(e) {
+        var a = e.target && e.target.closest ? e.target.closest('#main a.image[data-dims]') : null;
+        if (!a) return;
+        try {
+            var dims = JSON.parse(a.dataset.dims || '[]');
+            var m = String(dims[0] || '').split('x');
+            var w = parseInt(m[0], 10), h = parseInt(m[1], 10);
+            window.__ppOpenDims = (w > 0 && h > 0) ? [w, h] : null;
+        } catch (err) { window.__ppOpenDims = null; }
+    }, true);
     function lqipFor(full) { return previewMap[full] || full; }
     function clearLqip(popup) {
         var lq = popup && popup.querySelector('.pp-lqip');
@@ -395,26 +419,43 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!img || !pic) return;
         var full = img.getAttribute('src') || '';
         var pre = lqipFor(full);
-        if (!pre || pre === full) { clearLqip(popup); return; }
+        if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; return; }
+        // 每次切图递增序号：上一张的 onload/decode 回调晚到时会自动作废，
+        // 避免把「已经切走」的图淡入回来或残留透明状态。
+        var seq = popup.__lqipSeq = (popup.__lqipSeq || 0) + 1;
         var lq = popup.querySelector('.pp-lqip');
         if (!lq) {
             lq = document.createElement('div');
             lq.className = 'pp-lqip';
-            pic.appendChild(lq);
+            // 挂在弹窗（而非 .pic）下：poptrox 加载完成会对 .pic 做一次 hide().fadeIn()，
+            // 若遮罩在 .pic 内会跟着一起闪一下；挂在外层则能稳定垫底、让全图在其上柔和淡入。
+            popup.appendChild(lq);
         }
+        // 缩略图立刻垫底：不能从透明淡入，否则切图瞬间会先露出弹窗外面的背景（更生硬）。
         lq.style.backgroundImage = 'url("' + pre + '")';
         lq.style.opacity = '1';
-        function done() {
-            if (lq && lq.__done) return; // 幂等：防止同一遮罩反复触发淡出/移除
-            if (lq) lq.__done = true;
-            if (!lq || !lq.isConnected) return;
-            lq.style.opacity = '0';
-            setTimeout(function() { if (lq && lq.isConnected) lq.remove(); }, 500);
+        // 原图先透明，等完全解码后再淡入覆盖缩略图，避免「模糊 → 清晰」跳变。
+        img.style.opacity = '0';
+        void img.offsetWidth; // 强制 reflow，保证淡入过渡生效
+        function reveal() {
+            if (seq !== popup.__lqipSeq) return; // 已切到下一张，丢弃过期回调
+            img.style.opacity = '1';
+            setTimeout(function() {
+                if (seq !== popup.__lqipSeq) return;
+                clearLqip(popup);
+            }, 1000); // 覆盖 poptrox 的尺寸过渡(420ms) + .pic 淡入(420ms)，避免中途露出背景
         }
-        if (img.complete && img.naturalWidth > 0) { done(); }
-        else {
-            img.onload = done;
-            if (img.complete) { img.onload(); }
+        // 等浏览器把全图解完码再淡入：避免移动端「边解码边变清晰」的逐层跳变。
+        function whenDecoded() {
+            if (img.decode) { img.decode().then(reveal, reveal); }
+            else { reveal(); }
+        }
+        if (img.complete) {
+            if (img.naturalWidth > 0) { whenDecoded(); }
+            else { reveal(); } // 加载失败也恢复可见，避免图片一直透明
+        } else {
+            img.onload = whenDecoded;
+            img.onerror = reveal;
         }
     }
     // 监听灯箱图片 src 变化（上一张/下一张/滑动），重新铺预览

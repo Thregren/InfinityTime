@@ -768,8 +768,8 @@ if (!headers_sent()) {
           const pic = popup.querySelector('.pic');
           if (!pic) return;
           const img = pic.querySelector('img');
-          // 移除 blur 预览遮层（z-index 4）避免盖住 Pannellum
-          const lq = pic.querySelector('.pp-lqip');
+          // 移除 blur 预览遮层，避免盖住 Pannellum（遮层挂在 popup 下，不在 .pic 内）
+          const lq = popup.querySelector('.pp-lqip');
           if (lq && lq.parentNode) lq.parentNode.removeChild(lq);
           const wrap = document.createElement('div');
           wrap.className = 'pp-pano-viewer';

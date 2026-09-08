@@ -1410,7 +1410,7 @@ table.alt tfoot {
   position: absolute;
   top: 0;
   width: 100%;
-  z-index: 1;
+  z-index: 2;
   opacity: 0;
 }
 
@@ -2495,7 +2495,9 @@ span.tag-list a:hover {
 }
 
 .poptrox-popup .pic img {
-  transition: opacity 0.45s cubic-bezier(0.45, 0, 0.55, 1);
+  position: relative;
+  z-index: 1;
+  transition: opacity 0.6s cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 @media screen and (max-width: 736px) {
@@ -2574,6 +2576,9 @@ span.tag-list a:hover {
   width: 100%;
   max-width: 100vw;
   position: relative;
+  /* 主图始终盖在 .pp-lqip（z-index:0）之上：poptrox 加载完成会对 .pic 做
+     opacity 淡入，若 .pic 与遮罩同层，淡入期间遮罩会反过来盖住主图。 */
+  z-index: 1;
 }
 /* 灯箱全景查看器：Pannellum 填充 .pic，位于主图之上、导航按钮(z2)/关闭(z2)之下 */
 .pp-pano-viewer {
@@ -2596,19 +2601,17 @@ span.tag-list a:hover {
   background: rgba(0, 0, 0, .62) !important;
 }
 
-/* 灯箱渐进加载：先用缩略图模糊垫底，全图加载后渐入 */
+/* 灯箱渐进加载：缩略图模糊垫底（在 img 下方），原图解码完成后淡入覆盖，避免「模糊 → 清晰」跳变 */
 .poptrox-popup .pp-lqip {
   position: absolute;
-  inset: 0;
-  z-index: 4;
+  inset: -10px;
+  z-index: 0;
   background-size: cover;
   background-position: center;
-  -webkit-filter: blur(14px) scale(1.08);
-  filter: blur(14px) scale(1.08);
+  -webkit-filter: blur(12px);
+  filter: blur(12px);
   opacity: 1;
-  transition: opacity 0.6s cubic-bezier(0.45, 0, 0.55, 1);
   pointer-events: none;
-  background-color: #1d1e22;
 }
 
   .poptrox-popup .pic img,
@@ -3014,11 +3017,6 @@ span.tag-list a:hover {
   .poptrox-popup.loading .loader {
     opacity: 0 !important;
   }
-}
-
-/* 移动端禁用 blur-up 缩略图占位：避免「先缩略图、后原图」的清晰度跳变；直接原图淡入 */
-@media (max-width: 900px) {
-  .poptrox-popup .pp-lqip { display: none !important; }
 }
 
 /* 移动端图片上方标题：图集标题 + 图片名字，随切图淡入淡出更新 */
