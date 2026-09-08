@@ -364,6 +364,7 @@ if (!headers_sent()) {
           return s;
         }
         let exifDock = null;
+        let dockShownOnce = false; // 本次灯箱会话里 EXIF 侧栏是否已经显示过（切图加载时保持常驻）
         // 获取（或创建）主图外侧的 EXIF 停靠侧栏
         function getExifDock() {
           if (!exifDock) {
@@ -422,6 +423,17 @@ if (!headers_sent()) {
             var sel = btn.classList.contains('pp-mnav-next') ? '.nav-next' : '.nav-previous';
             var target = popup.querySelector(sel);
             if (target) target.click();
+          });
+          // 按压反馈用 JS 类控制：iOS Safari 上 :active 常会卡住不恢复
+          nav.addEventListener('pointerdown', function (e) {
+            var btn = e.target && e.target.closest ? e.target.closest('.pp-mnav-btn') : null;
+            if (btn) btn.classList.add('is-pressed');
+          });
+          function ppClearNavPressed() {
+            document.querySelectorAll('.pp-mnav-btn.is-pressed').forEach(function (b) { b.classList.remove('is-pressed'); });
+          }
+          ['pointerup', 'pointercancel', 'touchend', 'touchcancel'].forEach(function (ev) {
+            document.addEventListener(ev, ppClearNavPressed, true);
           });
         })();
         // 移动端图片上方标题容器（内容由 renderExif 填充）
@@ -991,12 +1003,18 @@ if (!headers_sent()) {
           const overlay = document.querySelector('.poptrox-overlay');
           const vis = overlay && getComputedStyle(overlay).display !== 'none'
             && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden';
-          if (!vis) { getExifDock().classList.remove('show'); return; }
+          const dock = getExifDock();
+          if (!vis) { dock.classList.remove('show'); dockShownOnce = false; return; }
           const popup = currentPopupExif();
-          // 图片未加载完成前不出现侧栏（也不停留旧位置）
-          if (!popup) { getExifDock().classList.remove('show'); return; }
-          const img = popup.querySelector('.pic img');
-          if (!img || !img.complete || img.naturalWidth === 0) { getExifDock().classList.remove('show'); return; }
+          const img = popup ? popup.querySelector('.pic img') : null;
+          const ready = popup && img && img.complete && img.naturalWidth > 0;
+          if (!ready) {
+            // 切图加载中：已显示过就保持常驻，避免底部抽屉每次切图都淡出再淡入
+            if (dockShownOnce) return;
+            dock.classList.remove('show');
+            return;
+          }
+          dockShownOnce = true;
           positionDockExif(popup);
           let article = findArtForPopup(popup) || activeArticle;
           if (!article) return;

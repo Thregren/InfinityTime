@@ -3026,7 +3026,7 @@ body.pp-dock-expanded .pp-mobile-nav {
   -webkit-tap-highlight-color: transparent;
   transition: background .2s ease;
 }
-.pp-mnav-btn:active { background: rgba(0, 0, 0, .62); }
+.pp-mnav-btn.is-pressed { background: rgba(0, 0, 0, .62); }
 /* 全端统一：隐藏 poptrox 的左右箭头与右上角关闭叉 */
 .poptrox-popup .closer,
 .poptrox-popup .nav-previous,
@@ -3035,6 +3035,8 @@ body.pp-dock-expanded .pp-mobile-nav {
 @media (max-width: 900px) {
   /* 移动端等 EXIF 抽屉收起到底后再淡入，避免与抽屉动画打架 */
   body.exif-dock-open .pp-mobile-nav { transition-delay: .45s; }
+  /* 抽屉展开：按下就立刻开始淡出/上移，不要等 .45s */
+  body.pp-dock-expanded .pp-mobile-nav { transition-delay: 0s; }
 }
 @media (min-width: 901px) {
   /* 桌面端等定位完成（pp-nav-placed）再淡入，避免先出现在底部中央再跳到 EXIF 列 */
@@ -3087,13 +3089,25 @@ body.pp-dock-expanded .pp-mobile-nav {
   .pp-mobile-caption { display: block; }
 }
 @media (min-width: 901px) {
-  /* PC：标题放灯箱底部，与照片水平居中对齐 */
+  /* PC：标题与切图按钮平行（同底距、同高度），与照片水平居中对齐 */
   .pp-mobile-caption {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     top: auto;
-    bottom: 0;
-    padding: 40px 20px 10px;
+    bottom: 40px;
+    height: 46px;
+    padding: 0 20px;
     background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, 0));
+  }
+  /* 桌面端灯箱等宽：宽度固定为可用最大宽度（预留 EXIF 侧栏），比例不同只调高度 */
+  .poptrox-popup:not(.pp-pano-mode) {
+    width: calc(100vw - var(--exif-dock-reserve)) !important;
+  }
+  .poptrox-popup:not(.pp-pano-mode) .pic img {
+    width: 100% !important;
+    height: auto !important;
+    object-fit: contain;
   }
 }
 /* 标题显示：由 JS 在「照片淡入完成」后加类淡入；按下切图按钮时立即移除淡出 */

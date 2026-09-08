@@ -323,20 +323,33 @@ document.addEventListener('DOMContentLoaded', function() {
         onPopupOpen: function() { 
             isPopupActive = true;
             $body.addClass('modal-active');
-            // 移动端用原始宽高预置弹窗尺寸，避免首次打开时先闪一个 150×150 的小方块
-            // （桌面端有 EXIF 侧栏让位逻辑，尺寸交给 poptrox 自己算，避免预设偏宽再回缩）
+            // 用原始宽高预置弹窗尺寸：移动端避免首开先闪 150×150 小方块；
+            // 桌面端灯箱等宽，宽度固定、这里预置高度，避免先出现一条很扁的框。
             try {
                 var popup = document.querySelector('.poptrox-popup');
                 var dims = window.__ppOpenDims;
-                if (popup && dims && dims[0] > 0 && dims[1] > 0 && window.innerWidth <= 900) {
-                    // 用 poptrox 实例的实时边距（窄屏时会被 breakpoints 改成 0），
-                    // 不能用 PP_CONFIG.windowMargin——它还是初始的 50，会把宽度算小 100px。
+                if (popup && dims && dims[0] > 0 && dims[1] > 0) {
                     var inst = $main[0] && $main[0]._poptrox;
                     var margin = inst ? inst.windowMargin : PP_CONFIG.windowMargin;
-                    var availW = Math.max(120, window.innerWidth - 2 * margin);
                     var availH = Math.max(120, window.innerHeight - 2 * margin);
-                    var k = Math.min(1, availW / dims[0], availH / dims[1]);
-                    $(popup).data('width', Math.round(dims[0] * k)).data('height', Math.round(dims[1] * k));
+                    if (window.innerWidth <= 900) {
+                        var availW = Math.max(120, window.innerWidth - 2 * margin);
+                        var k = Math.min(1, availW / dims[0], availH / dims[1]);
+                        $(popup).data('width', Math.round(dims[0] * k)).data('height', Math.round(dims[1] * k));
+                    } else {
+                        // 桌面端等宽：宽度固定为可用最大宽度（预留 EXIF 侧栏），高度按比例
+                        var reserve = 0;
+                        try {
+                            var probe = document.createElement('div');
+                            probe.style.cssText = 'position:absolute;visibility:hidden;width:var(--exif-dock-reserve);';
+                            document.body.appendChild(probe);
+                            reserve = probe.offsetWidth || 0;
+                            probe.remove();
+                        } catch (e2) {}
+                        var w = Math.max(120, window.innerWidth - reserve);
+                        var h = Math.min(availH, w * dims[1] / dims[0]);
+                        $(popup).data('width', Math.round(w)).data('height', Math.round(h));
+                    }
                 }
             } catch (e) {}
             // 灯箱渐进加载：先铺缩略图模糊预览，全图加载后渐入
