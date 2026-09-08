@@ -2923,6 +2923,7 @@ span.tag-list a:hover {
   .exif-dock-handle {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 10px;
     height: 50px;
     position: sticky;
@@ -2936,6 +2937,20 @@ span.tag-list a:hover {
     font-size: 13px;
     letter-spacing: .06em;
     color: rgba(255, 255, 255, .72);
+  }
+  /* 抽屉指示箭头：收起态朝上（提示上拉展开），展开后旋转朝下（提示下拉收起） */
+  .exif-dock-arrow {
+    width: 8px;
+    height: 8px;
+    margin-top: 3px;
+    color: rgba(255, 255, 255, .6);
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-135deg);
+    transition: transform .3s cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  .poptrox-exif-dock.expanded .exif-dock-arrow {
+    transform: rotate(45deg);
   }
 }
 
