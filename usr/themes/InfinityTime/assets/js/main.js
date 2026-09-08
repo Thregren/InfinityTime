@@ -288,13 +288,9 @@ $(document).ready(function() {
     );
 });
 
-// 添加触摸滑动支持（多图时支持拖动跟手，分页滚动）
+// 灯箱交互（触摸滚动锁定、EXIF 侧栏、切图）
 document.addEventListener('DOMContentLoaded', function() {
-    let touchStartX = 0;
-    let touchEndX = 0;
-    let isTransitioning = false;
     let isPopupActive = false;
-    const minSwipeDistance = 50;
     const $main = $('#main');
     const $body = $('body');
 
@@ -313,9 +309,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 'height': '',
                 'width': ''
             });
-            touchStartX = 0;
-            touchEndX = 0;
-            isTransitioning = false;
             // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
             document.querySelectorAll('.poptrox-popup').forEach(function(p) {
                 delete p.__switching;
@@ -527,31 +520,13 @@ document.addEventListener('DOMContentLoaded', function() {
         if (inAlbumNav(popup, delta)) { e.preventDefault(); e.stopImmediatePropagation(); }
     }, true);
 
-    // 触摸事件：多图时拖动跟手，松手分页切换
-    document.body.addEventListener('touchstart', function(e) {
-        const popup = e.target.closest('.poptrox-popup');
-        if (!isPopupActive || !popup) return;
-        if (popup.__panoActive) return; // 全景激活：拖动交给 Pannellum 旋转，不做切图
-        touchStartX = e.touches[0].clientX;
-    }, { passive: true });
-
+    // 灯箱内禁止页面滚动（切图改用底部按钮，已移除滑动切图）
     document.body.addEventListener('touchmove', function(e) {
         const popup = e.target.closest('.poptrox-popup');
         if (!isPopupActive || !popup) return;
-        if (popup.__panoActive) return;
-        e.preventDefault(); // 灯箱内禁止触发页面滚动
+        if (popup.__panoActive) return; // 全景激活：拖动交给 Pannellum 旋转
+        e.preventDefault();
     }, { passive: false, capture: true });
-
-    document.body.addEventListener('touchend', function(e) {
-        const popup = e.target.closest('.poptrox-popup');
-        if (!isPopupActive || !popup) return;
-        if (popup.__panoActive) return;
-        touchEndX = e.changedTouches[0].clientX;
-        const moved = Math.abs(touchEndX - touchStartX);
-        if (moved > minSwipeDistance) {
-            handleSwipe(popup);
-        }
-    }, { passive: false });
 
     // 添加图片查看器状态变化监听
     const observer = new MutationObserver(function(mutations) {
@@ -569,24 +544,4 @@ document.addEventListener('DOMContentLoaded', function() {
         attributes: true,
         attributeFilter: ['style', 'class']
     });
-
-    function handleSwipe(popup) {
-        if (isTransitioning) return;
-        if (popup && popup.__panoActive) return;
-
-        const swipeDistance = touchEndX - touchStartX;
-        if (Math.abs(swipeDistance) < minSwipeDistance) return;
-
-        // 图集内优先切换；到边界再交给 poptrox 上一张/下一张（跨图集）
-        if (typeof inAlbumNav === 'function' && inAlbumNav(popup, swipeDistance < 0 ? 1 : -1)) {
-            return;
-        }
-        const prev = popup.querySelector('.nav-previous');
-        const next = popup.querySelector('.nav-next');
-        const btn = swipeDistance > 0 ? prev : next;
-        if (!btn) return;
-        isTransitioning = true;
-        btn.click();
-        setTimeout(function() { isTransitioning = false; }, 400);
-    }
 });

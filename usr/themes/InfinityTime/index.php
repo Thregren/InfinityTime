@@ -382,20 +382,55 @@ if (!headers_sent()) {
               + '<div class="exif-palette"><div class="exif-title">主题色</div><div class="palette-list"></div>'
               + '<canvas class="hist-canvas" width="240" height="88"></canvas></div>';
             // 移动端抽屉：点/回车把手展开或收起（桌面端把手隐藏，不影响布局）
+            var setDockExpanded = function (v) {
+              exifDock.classList.toggle('expanded', !!v);
+              document.body.classList.toggle('pp-dock-expanded', !!v);
+            };
             var toggleDock = function (e) {
               var h = e && e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
-              if (h) exifDock.classList.toggle('expanded');
+              if (h) setDockExpanded(!exifDock.classList.contains('expanded'));
             };
             exifDock.addEventListener('click', toggleDock);
             exifDock.addEventListener('keydown', function (e) {
               if (e.key !== 'Enter' && e.key !== ' ') return;
               var h = e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
-              if (h) { e.preventDefault(); exifDock.classList.toggle('expanded'); }
+              if (h) { e.preventDefault(); setDockExpanded(!exifDock.classList.contains('expanded')); }
             });
             document.body.appendChild(exifDock);
           }
           return exifDock;
         }
+        // 移动端底部切图按钮：灯箱打开时显示，EXIF 抽屉展开时隐藏（替代滑动切图）。
+        (function () {
+          var nav = document.createElement('div');
+          nav.className = 'pp-mobile-nav';
+          nav.innerHTML =
+            '<button type="button" class="pp-mnav-btn pp-mnav-prev" aria-label="上一张">'
+            + '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>'
+            + '</button>'
+            + '<button type="button" class="pp-mnav-btn pp-mnav-next" aria-label="下一张">'
+            + '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>'
+            + '</button>';
+          document.body.appendChild(nav);
+          nav.addEventListener('click', function (e) {
+            var btn = e.target && e.target.closest ? e.target.closest('.pp-mnav-btn') : null;
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var popup = document.querySelector('.poptrox-popup');
+            if (!popup) return;
+            var sel = btn.classList.contains('pp-mnav-next') ? '.nav-next' : '.nav-previous';
+            var target = popup.querySelector(sel);
+            if (target) target.click();
+          });
+        })();
+        // 移动端图片上方标题容器（内容由 renderExif 填充）
+        (function () {
+          var cap = document.createElement('div');
+          cap.className = 'pp-mobile-caption';
+          cap.innerHTML = '<div class="pp-cap-title"></div><div class="pp-cap-sub"></div>';
+          document.body.appendChild(cap);
+        })();
         function rgbToHex(r, g, b) {
           function h(v) {
             var s = Number(v) & 255;
@@ -612,6 +647,17 @@ if (!headers_sent()) {
           if (t) t.textContent = addr;
           const ar = dock.querySelector('.exif-addr');
           if (ar) ar.style.display = addr ? '' : 'none';
+          // 移动端图片上方标题：图集标题 + 图片名字（图片名字与图集标题相同则不重复）
+          var cap = document.querySelector('.pp-mobile-caption');
+          if (cap) {
+            var art = popup && popup.__article;
+            var h2 = art ? art.querySelector('h2') : null;
+            var albumTitle = h2 ? (h2.textContent || '').trim() : '';
+            var ct = cap.querySelector('.pp-cap-title');
+            var cs = cap.querySelector('.pp-cap-sub');
+            if (ct) { ct.textContent = albumTitle; ct.style.display = albumTitle ? '' : 'none'; }
+            if (cs) { cs.textContent = title; cs.style.display = (title && title !== albumTitle) ? '' : 'none'; }
+          }
           renderThemePalette(popup);
         }
 
@@ -962,6 +1008,7 @@ if (!headers_sent()) {
           } else {
             if (document.body.style.overflow !== '') document.body.style.overflow = '';
             if (exifDock) { exifDock.classList.remove('show'); exifDock.classList.remove('expanded'); }
+            document.body.classList.remove('pp-dock-expanded');
             ppDestroyPano();
           }
         }
