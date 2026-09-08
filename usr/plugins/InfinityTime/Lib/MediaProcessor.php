@@ -143,6 +143,7 @@ class MediaProcessor
             $nh = (int)round($height * $scale);
             $scaled = imagescale($img, $nw, $nh, IMG_BILINEAR_FIXED);
             if ($scaled) {
+                imagedestroy($img);
                 $img = $scaled;
                 $width = imagesx($img);
                 $height = imagesy($img);
@@ -182,6 +183,7 @@ class MediaProcessor
                     if ($scale < 1.0) {
                         $resized = imagescale($thumb, (int)round($cropW * $scale), (int)round($cropH * $scale), IMG_BILINEAR_FIXED);
                         if ($resized) {
+                            imagedestroy($thumb);
                             $thumb = $resized;
                         }
                     }
@@ -204,6 +206,12 @@ class MediaProcessor
                 throw new \RuntimeException('缩略图 WebP 写入失败（最常见是目录不可写）: ' . $thumbPath);
             }
         }
+
+        // 显式释放 GD 位图：批量重建时一个请求会处理多张图，不释放会持续堆积内存
+        if (isset($thumb) && $thumb !== $img) {
+            imagedestroy($thumb);
+        }
+        imagedestroy($img);
 
         return [
             'width' => $width,

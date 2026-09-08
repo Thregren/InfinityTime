@@ -46,6 +46,61 @@ function pp_reply_json(bool $ok, string $msg): void
     exit;
 }
 
+/** 后台 CSRF token（绑定当前登录用户，同一会话内稳定）。 */
+function pp_csrf_token(): string
+{
+    try {
+        return (string)\Widget\Security::alloc()->getToken('infinitytime-panel');
+    } catch (\Throwable $e) {
+        return '';
+    }
+}
+
+/** 校验 CSRF：优先比对 token；缺失时回退到“非空且同源 referer”。 */
+function pp_csrf_check(): bool
+{
+    $t = pp_csrf_token();
+    if ($t !== '' && isset($_POST['_']) && hash_equals($t, (string)$_POST['_'])) {
+        return true;
+    }
+    // AJAX 请求必须带有效 token（前端统一附带）；仅原生无 JS 提交才回退到同源 referer
+    if (!empty($_POST['ajax'])) {
+        return false;
+    }
+    $ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    $reqHost = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $refHost = $ref !== '' ? (string)parse_url($ref, PHP_URL_HOST) : '';
+    return $refHost !== '' && strcasecmp($refHost, $reqHost) === 0;
+}
+
+/** 清洗“关于介绍”里的 HTML：保留常规排版标签，去掉脚本/事件/危险协议。 */
+function pp_sanitize_html(string $html): string
+{
+    $html = (string)preg_replace('#<(script|style|iframe|object|embed|link|meta)\b[^>]*>.*?</\1>#is', '', $html);
+    $html = (string)preg_replace('#<(script|style|iframe|object|embed|link|meta)\b[^>]*/?>#is', '', $html);
+    $html = (string)preg_replace('#\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#is', '', $html);
+    // 危险协议：同时覆盖带引号和不带引号的写法
+    $html = (string)preg_replace(
+        '#(href|src)\s*=\s*(?:"\s*(?:javascript|data):[^"]*"|\'\s*(?:javascript|data):[^\']*\'|(?:javascript|data):[^\s>]+)#is',
+        '$1="#"',
+        $html
+    );
+    return trim($html);
+}
+
+/** 只允许 http(s) 绝对地址或站内相对路径作为头像 URL。 */
+function pp_valid_logo_url(string $url): string
+{
+    $url = trim($url);
+    if ($url === '') {
+        return '';
+    }
+    if (preg_match('#^(https?:)?//#i', $url) || (strpos($url, '/') === 0 && strpos($url, '//') !== 0)) {
+        return $url;
+    }
+    return '';
+}
+
 function pp_field(int $cid, string $name): string
 {
     $db = Db::get();
@@ -190,6 +245,25 @@ function pp_exif_summary(array $exif): string
 
 if (!empty($_GET['ajax'])) {
     $job = (string)($_GET['job'] ?? '');
+    // 写操作类 job 需要 CSRF token：否则可被 <img src="...&job=cleanup"> 之类的 GET 请求触发
+    if (in_array($job, ['rebuild', 'cleanup', 'resync'], true)) {
+        $__t = pp_csrf_token();
+        if ($__t === '' || !isset($_GET['_']) || !hash_equals($__t, (string)$_GET['_'])) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '安全校验失败，请刷新后台页面后重试'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        // 简单并发锁：同一时间只允许一个维护任务（不同管理员 90 秒内不能抢跑）
+        $__uid = (int)($user->uid ?? 0);
+        $__lockFile = pp_data_file() . '/job.lock';
+        $__lock = is_file($__lockFile) ? (json_decode((string)@file_get_contents($__lockFile), true) ?: []) : [];
+        if ($__lock && (time() - (int)($__lock['time'] ?? 0)) < 90 && (int)($__lock['uid'] ?? 0) !== $__uid) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '另一个维护任务正在进行，请稍后再试'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        @file_put_contents($__lockFile, json_encode(['uid' => $__uid, 'job' => $job, 'time' => time()]));
+    }
     set_time_limit(60);
     $result = ['finished' => true, 'total' => 0, 'done' => 0, 'current' => ''];
 
@@ -360,9 +434,15 @@ if (!empty($_GET['ajax'])) {
         }
         pp_write_json($jobFile, $state);
         $result = ['finished' => $idx >= $total, 'total' => $total, 'done' => $idx, 'current' => $state['current'], 'failed' => $failed];
+    } elseif ($job === 'albums_html') {
+        // 局部刷新图集列表：只返回卡片 HTML，避免为刷新列表重新渲染整个后台页面
+        header('Content-Type: text/html; charset=utf-8');
+        echo pp_render_albums_card(pp_albums($prefix), $options);
+        exit;
     }
 
     header('Content-Type: application/json');
+    if (!empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
     echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -370,14 +450,9 @@ if (!empty($_GET['ajax'])) {
 /* ---------------------------------- POST 处理 ---------------------------------- */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // CSRF / 同源校验：后台写操作只接受本站后台页面发起的请求，拒绝跨站伪造（删除图集、清文章等）。
-    $__ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
-    if ($__ref !== '') {
-        $__refHost = (string)parse_url($__ref, PHP_URL_HOST);
-        $__reqHost = (string)($_SERVER['HTTP_HOST'] ?? '');
-        if ($__refHost !== '' && strcasecmp($__refHost, $__reqHost) !== 0) {
-            pp_reply_json(false, _t('请求来源不合法（已拦截跨站请求），请刷新后台页面后重试'));
-        }
+    // CSRF：优先校验 Typecho token；旧表单/无 token 时至少要求“非空且同源”的 referer
+    if (!pp_csrf_check()) {
+        pp_reply_json(false, _t('安全校验失败，请刷新后台页面后重试'));
     }
     $action = (string)($_POST['action'] ?? '');
 
@@ -425,12 +500,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $postTitles = (array)($_POST['img_titles'] ?? []);
         $postDescs = (array)($_POST['img_descs'] ?? []);
         $uploadErr = 0;
+        $oversize = 0;
+        $overpx = 0;
+        $maxFileBytes = 64 * 1024 * 1024; // 单文件 64MB 上限
+        $maxPixels = 20000;               // 单边 20000px 上限
         for ($i = 0; $i < $count; $i++) {
             $fe = (int)($_FILES['files']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
             if ($fe !== UPLOAD_ERR_OK) {
                 if ($uploadErr === 0) {
                     $uploadErr = $fe;
                 }
+                $fail++;
+                continue;
+            }
+            // 前置校验：超大文件 / 超大像素直接跳过，避免拖垮 GD 内存
+            if ((int)($_FILES['files']['size'][$i] ?? 0) > $maxFileBytes) {
+                $oversize++;
+                $fail++;
+                continue;
+            }
+            $__dim = @getimagesize((string)($_FILES['files']['tmp_name'][$i] ?? ''));
+            if (is_array($__dim) && (($__dim[0] ?? 0) > $maxPixels || ($__dim[1] ?? 0) > $maxPixels)) {
+                $overpx++;
                 $fail++;
                 continue;
             }
@@ -466,7 +557,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $reason = trim((string)(ImageRepository::$lastError ?? ''));
             $msg = $uploadErr !== 0
                 ? pp_upload_error($uploadErr)
-                : ($reason !== '' ? $reason : _t('没有图片成功入库（可能格式不支持或缺少转换工具）'));
+                : ($oversize > 0
+                    ? sprintf(_t('有 %d 张图片超过 64MB 上限，已跳过'), $oversize)
+                    : ($overpx > 0
+                        ? sprintf(_t('有 %d 张图片单边超过 20000px 上限，已跳过'), $overpx)
+                        : ($reason !== '' ? $reason : _t('没有图片成功入库（可能格式不支持或缺少转换工具）'))));
             if ($ajax) { pp_reply_json(false, $msg); }
             pp_reply($msg, 'error');
         }
@@ -525,6 +620,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         pp_reply(_t('已保存图片信息'));
     }
 
+    if ($action === 'sort_images') {
+        $ajax = !empty($_POST['ajax']);
+        $cid = (int)($_POST['cid'] ?? 0);
+        $rowIds = (array)($_POST['rowIds'] ?? []);
+        $order = 0;
+        foreach ($rowIds as $rid) {
+            $rid = (int)$rid;
+            if ($rid <= 0) {
+                continue;
+            }
+            $db->query($db->update(ImageRepository::table())->rows(['sort' => $order])->where('id = ?', $rid)->where('cid = ?', $cid));
+            $order++;
+        }
+        if ($cid > 0) {
+            ImageRepository::syncPostFields($cid);
+        }
+        if ($ajax) { pp_reply_json(true, _t('已保存图片顺序')); }
+        pp_reply(_t('已保存图片顺序'));
+    }
+
     if ($action === 'delete_image') {
         $ajax = !empty($_POST['ajax']);
         $rowId = (int)($_POST['rowId'] ?? 0);
@@ -551,21 +666,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $rows = $db->fetchAll($db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post'));
         $nonCount = 0;
         $titles = [];
-        foreach ($rows as $r) {
-            $cid = (int)$r['cid'];
-            if (isset($pluginCids[$cid])) {
-                continue;
+        $isDelete = ($action === 'delete_non_plugin');
+        if ($isDelete) { $db->query('START TRANSACTION'); }
+        try {
+            foreach ($rows as $r) {
+                $cid = (int)$r['cid'];
+                if (isset($pluginCids[$cid])) {
+                    continue;
+                }
+                $nonCount++;
+                if ($isDelete) {
+                    $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+                    $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+                } elseif (count($titles) < 20) {
+                    $titles[] = (string)($r['title'] ?? '');
+                }
             }
-            $nonCount++;
-            if ($action === 'delete_non_plugin') {
-                $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
-                $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
-            } elseif (count($titles) < 20) {
-                $titles[] = (string)($r['title'] ?? '');
-            }
+            if ($isDelete) { $db->query('COMMIT'); }
+        } catch (\Throwable $e) {
+            if ($isDelete) { $db->query('ROLLBACK'); }
+            Plugin::log('delete_non_plugin failed: ' . $e->getMessage());
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => false, 'msg' => '清理失败：' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            exit;
         }
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($action === 'delete_non_plugin'
+        echo json_encode($isDelete
             ? ['ok' => true, 'deleted' => $nonCount]
             : ['ok' => true, 'count' => $nonCount, 'titles' => $titles],
             JSON_UNESCAPED_UNICODE);
@@ -604,7 +730,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'save_site') {
         $ajax = !empty($_POST['ajax']);
         $oldLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
-        $logo = trim((string)($_POST['siteLogo'] ?? ''));
+        $logo = pp_valid_logo_url((string)($_POST['siteLogo'] ?? ''));
         $newAvatarAbs = null;
         // 支持直接上传头像：选了文件就转成 WebP 存入独立目录（不参与「清理孤儿文件」），并自动生成链接。
         if (!empty($_FILES['siteLogoFile']['tmp_name'])) {
@@ -639,7 +765,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         Plugin::setOption('infinitytimeSiteLogo', $logo);
         Plugin::setOption('infinitytimeSiteName', trim((string)($_POST['siteName'] ?? '')));
         Plugin::setOption('infinitytimeSiteTagline', trim((string)($_POST['siteTagline'] ?? '')));
-        Plugin::setOption('infinitytimeAbout', trim((string)($_POST['aboutText'] ?? '')));
+        Plugin::setOption('infinitytimeAbout', pp_sanitize_html((string)($_POST['aboutText'] ?? '')));
         if ($ajax) { pp_reply_json(true, _t('已保存站点信息')); }
         pp_reply(_t('已保存站点信息'));
     }
@@ -711,6 +837,83 @@ function pp_albums(string $prefix): array
     return $out;
 }
 
+/** 渲染「已发布图集」卡片：面板主视图与 AJAX 局部刷新共用。 */
+function pp_render_albums_card(array $albums, $options): string
+{
+    ob_start();
+    ?>
+    <div class="pp-card" id="pp-albums-card">
+      <h2>已发布图集 <span class="pp-sub">拖动图片可调整顺序</span></h2>
+      <?php if (!$albums): ?>
+        <div class="pp-meta">暂无图集。</div>
+      <?php else:
+          $imagesByCid = ImageRepository::rowsForCids(array_column($albums, 'cid'));
+          foreach ($albums as $al): $images = $imagesByCid[(int)$al['cid']] ?? []; ?>
+        <details class="pp-album">
+          <summary class="pp-album-summary">
+            <strong><?php echo htmlspecialchars($al['title']); ?>
+              <span class="pp-meta">（<?php echo count($images) ?: $al['img_count']; ?> 张）</span>
+            </strong>
+          </summary>
+          <div class="pp-album-toolbar">
+            <span class="pp-meta">共 <?php echo count($images) ?: $al['img_count']; ?> 张</span>
+            <span class="pp-album-actions">
+              <a class="pp-meta" target="_blank" href="<?php echo htmlspecialchars(Helper::url('index.php', $options->siteUrl)); ?>">前台查看</a>
+              <form method="post" style="display:inline" class="pp-delete-album">
+                <input type="hidden" name="action" value="delete_album">
+                <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
+                <button class="pp-btn red pp-small" type="submit" data-loading="删除中…">删除</button>
+              </form>
+            </span>
+          </div>
+
+          <details class="pp-album-edit">
+            <summary>编辑图集信息</summary>
+            <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+              <input type="hidden" name="action" value="update_album">
+              <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
+              <div class="pp-grid" style="margin-top:10px">
+                <div class="pp-row"><label>标题</label><input type="text" name="title" value="<?php echo htmlspecialchars($al['title']); ?>"></div>
+                <div class="pp-row"><label>设备</label><input type="text" name="device" value="<?php echo htmlspecialchars($al['device']); ?>"></div>
+                <div class="pp-row"><label>标签</label><input type="text" name="tags" value="<?php echo htmlspecialchars($al['tags']); ?>"></div>
+                <div class="pp-row"><label>地点 / 地址</label><input type="text" name="address" value="<?php echo htmlspecialchars($al['location']); ?>"></div>
+              </div>
+              <button class="pp-btn" type="submit" style="margin-top:6px">保存</button>
+            </form>
+          </details>
+
+          <div class="pp-thumbs">
+            <?php foreach ($images as $img): ?>
+              <div class="pp-img">
+                <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
+                <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
+                <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
+                <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+                  <input type="hidden" name="action" value="set_image_meta">
+                  <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
+                  <label class="addr-label">图片标题</label>
+                  <input type="text" name="title" value="<?php echo htmlspecialchars($img['title'] ?? ''); ?>" placeholder="图片标题（可选）">
+                  <label class="addr-label">图片描述</label>
+                  <textarea name="desc" rows="2" placeholder="图片描述（可选）"><?php echo htmlspecialchars($img['desc'] ?? ''); ?></textarea>
+                  <label class="addr-label">拍摄地址</label>
+                  <input type="text" name="address" value="<?php echo htmlspecialchars($img['address']); ?>" placeholder="写地址">
+                  <button class="pp-btn gray" type="submit">保存图片信息</button>
+                </form>
+                <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+                  <input type="hidden" name="action" value="delete_image">
+                  <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
+                  <button class="pp-btn red" type="submit">删除</button>
+                </form>
+              </div>
+            <?php endforeach; ?>
+          </div>
+        </details>
+      <?php endforeach; endif; ?>
+    </div>
+    <?php
+    return (string)ob_get_clean();
+}
+
 $notice = $options->request->get('notice');
 $noticeType = $options->request->get('noticeType', 'success');
 $albums = pp_albums($prefix);
@@ -727,6 +930,10 @@ $siteName = (string)Plugin::opt('infinitytimeSiteName', '');
 $siteTagline = (string)Plugin::opt('infinitytimeSiteTagline', '');
 $aboutText = (string)Plugin::opt('infinitytimeAbout', '');
 $contacts = json_decode((string)Plugin::opt('infinitytimeContacts', '[]'), true) ?: [];
+// 插件目录对应的站点 URL（用于引用 admin.css / admin.js）
+$ppPluginWeb = rtrim((string)$options->siteUrl, '/') . str_replace('\\', '/', substr(__DIR__, strlen(rtrim((string)__TYPECHO_ROOT_DIR__, '/'))));
+$ppCsrf = pp_csrf_token();
+$ppJobState = pp_read_json(pp_data_file() . '/job.json');
 
 /* ---------------------------------- 视图 ---------------------------------- */
 $adminDir = dirname($_SERVER['SCRIPT_FILENAME']);
@@ -742,107 +949,25 @@ include $adminDir . '/menu.php';
     <?php endif; ?>
 
     <link rel="stylesheet" href="<?php echo htmlspecialchars(rtrim((string)$options->siteUrl, '/') . '/usr/themes/' . rawurlencode((string)$options->theme) . '/assets/css/iconfont.css'); ?>">
-    <style>
-      .pp-wrap{max-width:1000px}
-      /* 修复：后台 .container 是 flex 容器，.notice 会被拉成高而窄的竖条。让它占满整行变成正常提示条。 */
-      .container.typecho-page-main > .notice {
-        flex: 0 0 100%;
-        width: 100%;
-        box-sizing: border-box;
-        padding: 10px 12px;
-        border-radius: 2px;
-      }
-      .pp-card{background:#fff;border:1px solid #F0F0EC;border-radius:2px;padding:18px 20px;margin-bottom:18px}
-      .pp-card>h2{font-size:1.14286em;margin:0 0 1em;padding-bottom:.6em;border-bottom:1px solid #F0F0EC;font-weight:bold;color:#444}
-      .pp-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 28px}
-      .pp-meta{font-size:12px;color:#999;line-height:1.7}
-      .pp-row{display:grid;grid-template-columns:150px 1fr;gap:8px 16px;align-items:center;margin:12px 0}
-      .pp-row>label{font-size:13px;color:#444;text-align:left}
-      .pp-group{margin:18px 0 6px;padding:6px 0 6px 10px;border-left:3px solid #467B96;font-size:13px;font-weight:bold;color:#444}
-      .pp-row .pp-col{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-      .pp-row input[type=text],.pp-row input[type=number],.pp-row select,.pp-row textarea{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #D9D9D6;border-radius:2px;font-size:14px;background:#fff;height:34px}
-      .pp-row textarea{min-height:64px;height:auto}
-      .pp-row select{height:34px}
-      .pp-row input:focus,.pp-row select:focus,.pp-row textarea:focus{outline:none;border-color:#467B96;box-shadow:0 0 0 3px rgba(70,123,150,.12)}
-      .pp-row .pp-hint{font-size:12px;color:#999;white-space:nowrap}
-      .pp-row .pp-range{flex:1;min-width:120px;accent-color:#467B96}
-      .pp-row output.pp-hint{flex:0 0 auto;min-width:34px;text-align:right}
-      .pp-btn{display:inline-flex;align-items:center;justify-content:center;background-color:#467B96;color:#fff;border:0;padding:0 14px;height:32px;border-radius:2px;cursor:pointer;font-size:14px;line-height:1.4}
-      .pp-btn:hover{background-color:#3c6a81}
-      .pp-btn.gray{background-color:#E9E9E6;color:#666}
-      .pp-btn.gray:hover{background-color:#dbdbd6}
-      .pp-btn.red{background-color:#B94A48;color:#fff}
-      .pp-btn.red:hover{background-color:#a4403f}
-      .pp-small{height:25px;padding:0 10px;font-size:13px}
-      .pp-note{background:#F6F6F3;border:1px solid #ECECEC;border-radius:2px;padding:12px 16px;margin-top:16px}
-      .pp-note .pp-tools{margin:6px 0}
-      .pp-note .pp-warn{color:#B94A48;margin-top:6px}
-      .pp-tools span{display:inline-flex;align-items:center;gap:4px;background:#D8E7EE;color:#467B96;border-radius:20px;padding:3px 10px;margin:0 6px 6px 0;font-size:12px}
-      .pp-tools .ok{background:#E6EFC2;color:#264409}
-      .pp-tools .no{background:#FBE3E4;color:#8A1F11}
-      .pp-album{border:1px solid #F0F0EC;border-radius:2px;padding:16px;margin-bottom:18px;background:#fff}
-      .pp-album-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
-      .pp-album-head strong{font-size:1.05em;color:#444;font-weight:bold}
-      .pp-album-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-      .pp-album>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:1.05em;font-weight:bold;color:#444}
-      .pp-album>summary::-webkit-details-marker{display:none}
-      .pp-album>summary::after{content:'▸ 展开';font-size:12px;font-weight:normal;color:#467B96;flex:0 0 auto}
-      .pp-album[open]>summary::after{content:'▾ 收起'}
-      .pp-album-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid #F0F0EC;padding-top:12px;margin-top:12px}
-      .pp-album-edit{margin-top:10px}
-      .pp-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:12px}
-      .pp-img{background:#fff;border:1px solid #E9E9E6;border-radius:2px;padding:10px;display:flex;flex-direction:column;gap:6px}
-      .pp-img>img{width:100%;height:200px;object-fit:cover;border-radius:2px;background:#F0F0EC;display:block}
-      .pp-img .cap{font-size:12px;color:#777;line-height:1.6;word-break:break-word;white-space:normal}
-      .pp-img .dims{font-size:11px;color:#999}
-      .pp-img .addr-label{font-size:11px;color:#999}
-      .pp-img input[type=text]{width:100%;box-sizing:border-box;padding:5px 7px;font-size:12px;border:1px solid #D9D9D6;border-radius:2px;margin:2px 0}
-      .pp-img textarea{width:100%;box-sizing:border-box;padding:5px 7px;font-size:12px;border:1px solid #D9D9D6;border-radius:2px;margin:2px 0;resize:vertical;min-height:40px}
-      .pp-img input[type=text]:focus{outline:none;border-color:#467B96;box-shadow:0 0 0 3px rgba(70,123,150,.12)}
-      .pp-img form{margin:0}
-      .pp-img .pp-btn{width:100%}
-      .pp-progress{display:flex;align-items:center;gap:10px;margin-top:12px}
-      .pp-bar-outer{flex:1;height:8px;background:#E9E9E6;border-radius:4px;overflow:hidden}
-      .pp-bar{height:100%;width:0;background:#467B96;transition:width .2s}
-      .pp-msg{font-size:12px;color:#999;min-width:90px}
-      .pp-maintain{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-      .pp-maintain>div{background:#F6F6F3;border:1px solid #ECECEC;border-radius:2px;padding:14px 16px}
-      .pp-maintain .pp-btn{margin-bottom:8px}
-      .pp-foot{margin-top:16px}
-      details{margin-top:12px}
-      summary{cursor:pointer;color:#467B96;font-size:13px;margin-bottom:6px}
-      .pp-contact-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;background:#F6F6F3;border:1px solid #ECECEC;border-radius:2px;padding:8px}
-      .pp-contact-row>input[type=text],.pp-contact-row>input[type=url]{flex:1 1 150px;min-width:120px;box-sizing:border-box;padding:6px 8px;border:1px solid #D9D9D6;border-radius:2px;font-size:13px}
-      .pp-contact-row>select{flex:0 0 80px;height:30px}
-      .pp-contact-row>.pp-btn{flex:0 0 auto}
-      .pp-contact-icon{position:relative;flex:0 0 auto}
-      .pp-icon-trigger{width:32px;height:32px;border:1px solid #D9D9D6;border-radius:2px;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#444;font-size:16px}
-      .pp-icon-trigger:hover{border-color:#467B96}
-      .pp-icon-pop{display:none;position:absolute;top:36px;left:0;z-index:20;width:200px;padding:8px;background:#fff;border:1px solid #D9D9D6;border-radius:4px;box-shadow:0 8px 24px rgba(16,24,32,.18);grid-template-columns:repeat(4,1fr);gap:6px}
-      .pp-icon-pop.open{display:grid}
-      .pp-icon-pop .icn{width:100%;height:34px;border:1px solid transparent;background:#F6F6F3;border-radius:3px;cursor:pointer;color:#444;font-size:15px;display:flex;align-items:center;justify-content:center}
-      .pp-icon-pop .icn:hover{border-color:#467B96;background:#edf1f4}
-      .pp-icon-pop .icn.active{border-color:#467B96;background:#e3eaf0;color:#467B96}
-      /* 上传预览：已选文件卡片（大图预览 + 逐图标题/描述） */
-      #pp-upload-previews{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
-      .pp-up-item{position:relative;background:#fff;border:1px solid #E3E3E0;border-radius:6px;overflow:hidden;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-      .pp-up-thumb{width:100%;height:170px;object-fit:contain;border-radius:4px;background:#F6F6F3}
-      .pp-up-remove{position:absolute;top:6px;right:6px;width:22px;height:22px;border-radius:50%;border:0;background:rgba(0,0,0,.55);color:#fff;font-size:15px;line-height:22px;text-align:center;cursor:pointer;z-index:2}
-      .pp-up-remove:hover{background:#d33}
-      .pp-up-name{font-size:12px;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .pp-up-tit,.pp-up-desc{width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #D9D9D6;border-radius:3px;font-size:13px;font-family:inherit}
-      .pp-up-tit{height:30px}
-      .pp-up-desc{min-height:56px;resize:vertical;line-height:1.5}
-      .pp-up-item.touched .pp-up-tit,.pp-up-item.touched .pp-up-desc{border-color:#467B96}
-    </style>
+    <link rel="stylesheet" href="<?php echo htmlspecialchars($ppPluginWeb . '/assets/admin.css'); ?>">
 
     <div class="pp-wrap">
       <div class="typecho-page-title"><h2>InfinityTime 图片分享</h2></div>
+      <nav class="pp-tabs" role="tablist">
+        <button type="button" class="pp-tab active" data-tab="upload">上传发布</button>
+        <button type="button" class="pp-tab" data-tab="albums">已发布图集</button>
+        <button type="button" class="pp-tab" data-tab="site">站点信息</button>
+        <button type="button" class="pp-tab" data-tab="contacts">联系方式</button>
+        <button type="button" class="pp-tab" data-tab="convert">转换设置</button>
+        <button type="button" class="pp-tab" data-tab="maintain">维护</button>
+      </nav>
       <!-- 上传发布 -->
+      <section class="pp-panel active" data-panel="upload">
       <div class="pp-card">
         <h2>上传并发布图集</h2>
         <form id="pp-upload-form" method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
           <input type="hidden" name="action" value="create_album">
+          <input type="hidden" name="_" value="<?php echo htmlspecialchars($ppCsrf); ?>">
           <div class="pp-grid">
             <div>
               <div class="pp-row"><label>图集标题 *</label><input type="text" name="title" required></div>
@@ -851,176 +976,29 @@ include $adminDir . '/menu.php';
               <div class="pp-row"><label>标签</label><input type="text" name="tags" placeholder="如 城市,夜景"></div>
             </div>
             <div>
-              <div class="pp-row" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px">
-                <label style="flex:0 0 auto;min-width:0">选择图片</label>
-                <input type="file" id="pp-files-input" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required style="flex:0 1 auto">
-                <span class="pp-meta" style="flex-basis:100%">多选即可；每张自动转 WebP 全图 + 缩略图，并按设置保留原图。选择后可逐张填写标题/描述。</span>
+              <div class="pp-row" style="display:block">
+                <label style="display:block;margin-bottom:6px">选择图片</label>
+                <input type="file" id="pp-files-input" name="files[]" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.avif" required>
+                <div id="pp-dropzone" class="pp-dropzone"><strong>拖拽图片到这里</strong>，或点击选择（可多选）</div>
+                <div class="pp-meta" id="pp-upload-summary" style="margin-top:8px"></div>
               </div>
             </div>
           </div>
           <!-- 已选图片预览：整行自适应网格，避免把两列表单撑得高低不平 -->
           <div id="pp-upload-previews"></div>
-          <button class="pp-btn" style="margin-top:10px" type="submit">发布图集</button>
+          <div class="pp-progress" id="pp-upload-progress" style="display:none">
+            <div class="pp-bar-outer"><div class="pp-bar" id="pp-upload-bar"></div></div>
+            <span class="pp-msg">上传中…</span>
+          </div>
+          <div class="pp-foot">
+            <button class="pp-btn" type="submit">发布图集</button>
+            <span class="pp-meta">每张自动转 WebP 全图 + 缩略图，并按设置保留原图；选择后可逐张填写标题/描述，拖动卡片可排序。</span>
+          </div>
         </form>
-        <script>
-        // —— AJAX 上传用到的两个小工具（全局）——
-        function ppShowNotice(msg, type) {
-          var container = document.querySelector('.container.typecho-page-main');
-          if (!container) return;
-          var old = container.querySelector(':scope > .notice');
-          if (old) old.parentNode.removeChild(old);
-          var n = document.createElement('div');
-          n.className = 'notice ' + (type === 'error' ? 'error' : 'success');
-          n.textContent = msg;
-          n.style.margin = '12px 0';
-          container.insertBefore(n, container.firstElementChild);
-          try { n.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-        }
-        function ppRefreshAlbums(url) {
-          fetch(url, { credentials: 'same-origin' })
-            .then(function (r) { return r.text(); })
-            .then(function (html) {
-              try {
-                var doc = new DOMParser().parseFromString(html, 'text/html');
-                var fresh = doc.querySelector('#pp-albums-card');
-                var cur = document.querySelector('#pp-albums-card');
-                if (fresh && cur) cur.outerHTML = fresh.outerHTML;
-              } catch (e) {}
-            })
-            .catch(function () {});
-        }
-        (function () {
-          var form = document.getElementById('pp-upload-form');
-          var input = document.getElementById('pp-files-input');
-          var wrap = document.getElementById('pp-upload-previews');
-          if (!form || !input || !wrap) return;
-
-          // 用 JS 数组持有已选文件与逐图标题/描述，保证移除后与 files[] 严格对齐
-          var sel = [];
-          var submitBtn = form.querySelector('button[type=submit]');
-
-          function render() {
-            wrap.innerHTML = '';
-            sel.forEach(function (item, idx) {
-              var card = document.createElement('div');
-              card.className = 'pp-up-item';
-
-              var thumb = document.createElement('img');
-              thumb.className = 'pp-up-thumb';
-              thumb.alt = item.file.name;
-              thumb.src = URL.createObjectURL(item.file);
-
-              var rm = document.createElement('button');
-              rm.type = 'button';
-              rm.className = 'pp-up-remove';
-              rm.textContent = '×';
-              rm.title = '移除这张图片';
-              rm.addEventListener('click', function () {
-                sel.splice(idx, 1);
-                syncInput();
-                render();
-              });
-
-              var name = document.createElement('div');
-              name.className = 'pp-up-name';
-              name.textContent = item.file.name;
-
-              var tit = document.createElement('input');
-              tit.type = 'text';
-              tit.className = 'pp-up-tit';
-              tit.placeholder = '图片标题（可选）';
-              tit.value = item.title;
-              tit.addEventListener('input', function () {
-                item.title = tit.value;
-                card.classList.add('touched');
-              });
-
-              var desc = document.createElement('textarea');
-              desc.rows = 2;
-              desc.className = 'pp-up-desc';
-              desc.placeholder = '图片描述（可选）';
-              desc.value = item.desc;
-              desc.addEventListener('input', function () {
-                item.desc = desc.value;
-                card.classList.add('touched');
-              });
-
-              card.appendChild(thumb);
-              card.appendChild(rm);
-              card.appendChild(name);
-              card.appendChild(tit);
-              card.appendChild(desc);
-              wrap.appendChild(card);
-            });
-          }
-
-          function fileKey(f) {
-            return f.name + '|' + f.size + '|' + (f.lastModified || 0);
-          }
-          // 把受控的 sel 同步回文件输入，使原生提交发送的就是当前选区（支持删除后仍对齐）。
-          function syncInput() {
-            try {
-              var dt = new DataTransfer();
-              sel.forEach(function (item) { dt.items.add(item.file); });
-              input.files = dt.files;
-            } catch (e) { /* 不支持 DataTransfer 时保持原选择（完整上传） */ }
-          }
-          input.addEventListener('change', function () {
-            // 追加而非替换：后续选择应加进序列，而不是清空前序；同名同尺寸去重
-            var existing = {};
-            sel.forEach(function (item) { existing[fileKey(item.file)] = true; });
-            Array.prototype.forEach.call(input.files, function (f) {
-              var k = fileKey(f);
-              if (existing[k]) return;
-              existing[k] = true;
-              sel.push({ file: f, title: '', desc: '' });
-            });
-            syncInput();
-            render();
-          });
-
-          form.addEventListener('submit', function (e) {
-            // AJAX 提交：不整页刷新；成功后用后台重新渲染的图集列表局部替换。
-            e.preventDefault();
-            var olds = form.querySelectorAll('input[name="img_titles[]"], textarea[name="img_descs[]"]');
-            for (var i = 0; i < olds.length; i++) { olds[i].parentNode.removeChild(olds[i]); }
-            sel.forEach(function (item) {
-              var t = document.createElement('input');
-              t.type = 'hidden'; t.name = 'img_titles[]'; t.value = item.title || '';
-              form.appendChild(t);
-              var d = document.createElement('textarea');
-              d.name = 'img_descs[]'; d.value = item.desc || ''; d.style.display = 'none';
-              form.appendChild(d);
-            });
-            syncInput();
-            if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '发布中…'; }
-            var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
-            var fd = new FormData(form);
-            fd.set('ajax', '1');
-            fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
-              .then(function (r) { return r.json().catch(function () { return { ok: false, msg: '服务器返回异常' }; }); })
-              .then(function (d) {
-                if (d && d.ok) {
-                  ppRefreshAlbums(url);
-                  ppShowNotice(d.msg || '已发布图集', 'success');
-                  // 清空已选文件与表单，方便继续发布
-                  sel.length = 0;
-                  form.reset();
-                  try { input.value = ''; } catch (e) {}
-                  render();
-                } else {
-                  ppShowNotice((d && d.msg) ? d.msg : '发布失败', 'error');
-                }
-              })
-              .catch(function () { ppShowNotice('网络/上传出错，请重试', 'error'); })
-              .finally(function () {
-                if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '发布图集'; }
-              });
-          });
-        })();
-        </script>
       </div>
+      </section>
       <!-- 站点信息 / 关于 -->
+      <section class="pp-panel" data-panel="site">
       <div class="pp-card">
         <h2>站点信息 / 关于</h2>
         <form method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
@@ -1039,7 +1017,9 @@ include $adminDir . '/menu.php';
           <div class="pp-foot"><button class="pp-btn" type="submit">保存站点信息</button></div>
         </form>
       </div>
+      </section>
       <!-- 联系方式 / 联系我 -->
+      <section class="pp-panel" data-panel="contacts">
       <div class="pp-card">
         <h2>联系方式 / 联系我</h2>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
@@ -1070,7 +1050,9 @@ include $adminDir . '/menu.php';
           <div class="pp-foot"><button class="pp-btn" type="submit">保存联系方式</button></div>
         </form>
       </div>
+      </section>
       <!-- 转换设置 -->
+      <section class="pp-panel" data-panel="convert">
       <div class="pp-card">
         <h2>WebP 转换设置</h2>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
@@ -1128,8 +1110,10 @@ include $adminDir . '/menu.php';
           </div>
         </form>
       </div>
+      </section>
 
       <!-- 维护 -->
+      <section class="pp-panel" data-panel="maintain">
       <div class="pp-card">
         <h2>维护</h2>
         <div class="pp-maintain">
@@ -1154,343 +1138,35 @@ include $adminDir . '/menu.php';
           </div>
         </div>
       </div>
+      </section>
 
-      <!-- 图集列表 -->
-      <div class="pp-card" id="pp-albums-card">
-        <h2>已发布图集</h2>
-        <?php if (!$albums): ?>
-          <div class="pp-meta">暂无图集。</div>
-        <?php else:
-            $imagesByCid = ImageRepository::rowsForCids(array_column($albums, 'cid'));
-            foreach ($albums as $al): $images = $imagesByCid[(int)$al['cid']] ?? []; ?>
-          <details class="pp-album">
-            <summary class="pp-album-summary">
-              <strong><?php echo htmlspecialchars($al['title']); ?>
-                <span class="pp-meta">（<?php echo count($images) ?: $al['img_count']; ?> 张）</span>
-              </strong>
-            </summary>
-            <div class="pp-album-toolbar">
-              <span class="pp-meta">共 <?php echo count($images) ?: $al['img_count']; ?> 张</span>
-              <span class="pp-album-actions">
-                <a class="pp-meta" target="_blank" href="<?php echo htmlspecialchars(Helper::url('index.php', $options->siteUrl)); ?>">前台查看</a>
-                <form method="post" style="display:inline" class="pp-delete-album">
-                  <input type="hidden" name="action" value="delete_album">
-                  <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
-                  <button class="pp-btn red pp-small" type="submit" data-loading="删除中…">删除</button>
-                </form>
-              </span>
-            </div>
-
-            <details class="pp-album-edit">
-              <summary>编辑图集信息</summary>
-              <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
-                <input type="hidden" name="action" value="update_album">
-                <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
-                <div class="pp-grid" style="margin-top:10px">
-                  <div class="pp-row"><label>标题</label><input type="text" name="title" value="<?php echo htmlspecialchars($al['title']); ?>"></div>
-                  <div class="pp-row"><label>设备</label><input type="text" name="device" value="<?php echo htmlspecialchars($al['device']); ?>"></div>
-                  <div class="pp-row"><label>标签</label><input type="text" name="tags" value="<?php echo htmlspecialchars($al['tags']); ?>"></div>
-                  <div class="pp-row"><label>地点 / 地址</label><input type="text" name="address" value="<?php echo htmlspecialchars($al['location']); ?>"></div>
-                </div>
-                <button class="pp-btn" type="submit" style="margin-top:6px">保存</button>
-              </form>
-            </details>
-
-            <div class="pp-thumbs">
-              <?php foreach ($images as $img): ?>
-                <div class="pp-img">
-                  <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="">
-                  <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
-                  <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
-                  <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
-                    <input type="hidden" name="action" value="set_image_meta">
-                    <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
-                    <label class="addr-label">图片标题</label>
-                    <input type="text" name="title" value="<?php echo htmlspecialchars($img['title'] ?? ''); ?>" placeholder="图片标题（可选）">
-                    <label class="addr-label">图片描述</label>
-                    <textarea name="desc" rows="2" placeholder="图片描述（可选）"><?php echo htmlspecialchars($img['desc'] ?? ''); ?></textarea>
-                    <label class="addr-label">拍摄地址</label>
-                    <input type="text" name="address" value="<?php echo htmlspecialchars($img['address']); ?>" placeholder="写地址">
-                    <button class="pp-btn gray" type="submit">保存图片信息</button>
-                  </form>
-                  <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
-                    <input type="hidden" name="action" value="delete_image">
-                    <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
-                    <button class="pp-btn red" type="submit">删除</button>
-                  </form>
-                </div>
-              <?php endforeach; ?>
-            </div>
-          </details>
-        <?php endforeach; endif; ?>
-      </div>
+      <section class="pp-panel" data-panel="albums">
+      <?php echo pp_render_albums_card($albums, $options); ?>
+      </section>
 
     </div>
   </div>
+    <script>
+    window.PP_ADMIN = <?php echo json_encode([
+      'url' => Helper::url('InfinityTime/panel.php'),
+      'token' => $ppCsrf,
+      'defaults' => [
+        'quality' => Plugin::DEFAULT_QUALITY,
+        'thumbMax' => Plugin::DEFAULT_THUMB_MAX,
+        'maxWidth' => Plugin::DEFAULT_MAX_WIDTH,
+        'keepOriginal' => Plugin::DEFAULT_KEEP_ORIGINAL,
+        'fullQuality' => Plugin::DEFAULT_FULL_QUALITY,
+        'panoWidth' => Plugin::DEFAULT_PANO_WIDTH,
+        'panoQuality' => Plugin::DEFAULT_PANO_QUALITY,
+      ],
+      'job' => [
+        'job' => (string)($ppJobState['job'] ?? ''),
+        'total' => (int)($ppJobState['total'] ?? 0),
+        'done' => (int)($ppJobState['done'] ?? 0),
+        'finished' => !empty($ppJobState['finished']),
+      ],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+    </script>
+    <script src="<?php echo htmlspecialchars($ppPluginWeb . '/assets/admin.js'); ?>"></script>
 </main>
-<script>
-function runJob(job) {
-  var bar = document.getElementById('pp-bar-' + job);
-  var msg = document.getElementById('pp-msg-' + job);
-  var btn = document.querySelector('[data-run="' + job + '"]');
-  if (btn) btn.disabled = true;
-  var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?> + '&ajax=1&job=' + job;
-  function tick() {
-    fetch(url, {credentials:'same-origin'})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        var pct = d.total ? Math.round(d.done * 100 / d.total) : 100;
-        if (bar) bar.style.width = pct + '%';
-        if (d.total > 0) {
-          if (msg) msg.textContent = d.done + ' / ' + d.total + (d.current ? ' — ' + d.current : '');
-          if (d.failed > 0) {
-            if (msg) msg.textContent += '（失败 ' + d.failed + '）';
-          }
-        } else {
-          var noJob = { cleanup: '没有需要清理的孤儿文件', rebuild: '没有需要重建的图片', resync: '没有需要重建字段的图集' };
-          if (msg) msg.textContent = noJob[job] || '没有需要处理的项目';
-        }
-        if (!d.finished) {
-          setTimeout(tick, 300);
-        }
-        else {
-          if (d.failed > 0) {
-            if (msg) msg.textContent += ' ✓ 完成（' + d.failed + ' 张失败，请查看日志）';
-          } else {
-            if (msg) msg.textContent += ' ✓ 完成';
-          }
-          if (btn) btn.disabled = false;
-        }
-      })
-      .catch(function(){
-        if (msg) msg.textContent = '出错，请重试';
-        if (btn) btn.disabled = false;
-      });
-  }
-  tick();
-}
-document.querySelectorAll('[data-run]').forEach(function(b){
-  b.addEventListener('click', function(){ runJob(this.getAttribute('data-run')); });
-});
-
-// 清理非插件文章：先预览数量，确认后再删除
-var cleanPosts = document.getElementById('pp-clean-posts');
-if (cleanPosts) {
-  cleanPosts.addEventListener('click', function () {
-    var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
-    function post(act) {
-      var fd = new FormData();
-      fd.set('ajax', '1'); fd.set('action', act);
-      return fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' }).then(function (r) { return r.json(); });
-    }
-    cleanPosts.disabled = true;
-    post('preview_non_plugin')
-      .then(function (d) {
-        cleanPosts.disabled = false;
-        if (d && d.ok && d.count > 0) {
-          var titleStr = (d.titles && d.titles.length) ? '（如：' + d.titles.join('、') + (d.count > d.titles.length ? '…' : '') + '）' : '';
-          if (confirm('将删除 ' + d.count + ' 篇不是 InfinityTime 发布的文章' + titleStr + '。确认删除？此操作不可恢复！')) {
-            cleanPosts.disabled = true;
-            post('delete_non_plugin').then(function (r2) {
-              cleanPosts.disabled = false;
-              ppShowNotice((r2 && r2.ok) ? ('已清理 ' + (r2.deleted || 0) + ' 篇非插件文章') : '清理失败', (r2 && r2.ok) ? 'success' : 'error');
-            }).catch(function () { cleanPosts.disabled = false; ppShowNotice('清理出错，请重试', 'error'); });
-          }
-        } else if (d && d.ok) {
-          ppShowNotice('没有发现非插件文章', 'success');
-        } else {
-          ppShowNotice((d && d.msg) ? d.msg : '查询失败', 'error');
-        }
-      })
-      .catch(function () { cleanPosts.disabled = false; ppShowNotice('查询出错，请重试', 'error'); });
-  });
-}
-
-// 删除图集：AJAX 局部删除，整页不跳转（事件委托，卡片局部刷新后仍生效）
-document.addEventListener('submit', function (e) {
-  var form = e.target && e.target.closest ? e.target.closest('form.pp-delete-album') : null;
-  if (!form) return;
-  e.preventDefault();
-  if (!confirm('删除整组图集及其文件？')) return;
-  var btn = form.querySelector('button[type="submit"]');
-  if (btn) { btn.disabled = true; if (btn.dataset.loading) btn.textContent = btn.dataset.loading; }
-  var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
-  var fd = new FormData(form);
-  fd.set('ajax', '1');
-  fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d && d.ok) {
-        var card = form.closest('.pp-card');
-        var details = form.closest('details.pp-album');
-        if (details && details.parentNode) details.parentNode.removeChild(details);
-        // 若已无图集，补一个空态提示
-        if (card && !card.querySelector('details.pp-album') && card.textContent.indexOf('暂无图集') === -1) {
-          var empty = document.createElement('div');
-          empty.className = 'pp-meta';
-          empty.textContent = '暂无图集。';
-          var h2 = card.querySelector('h2');
-          if (h2 && h2.nextSibling) card.insertBefore(empty, h2.nextSibling);
-          else card.appendChild(empty);
-        }
-      } else {
-        if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
-        alert((d && d.msg) ? d.msg : '删除失败');
-      }
-    })
-    .catch(function () {
-      if (btn) { btn.disabled = false; if (btn.dataset.loading) btn.textContent = '删除'; }
-      alert('删除失败，请重试');
-    });
-});
-
-// 各表单 / 设置保存：AJAX 提交，整页不刷新
-document.addEventListener('submit', function (e) {
-  var form = e.target && e.target.closest ? e.target.closest('form') : null;
-  if (!form) return;
-  var actEl = form.querySelector('input[name="action"]');
-  var act = actEl ? actEl.value : '';
-  var actions = ['save_site', 'save_contacts', 'save_settings', 'update_album', 'set_image_meta', 'delete_image'];
-  if (actions.indexOf(act) === -1) return;
-  if (act === 'delete_image' && !confirm('删除这张图片及其文件？')) return;
-  e.preventDefault();
-  var btn = form.querySelector('button[type="submit"]');
-  if (btn) btn.disabled = true;
-  var url = <?php echo json_encode(Helper::url('InfinityTime/panel.php')); ?>;
-  var fd = new FormData(form);
-  fd.set('ajax', '1');
-  fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
-    .then(function (r) { return r.json().catch(function () { return { ok: false, msg: '服务器返回异常' }; }); })
-    .then(function (d) {
-      if (d && d.ok) {
-        if (act === 'delete_image') {
-          var pic = form.closest('.pp-img');
-          if (pic && pic.parentNode) pic.parentNode.removeChild(pic);
-        } else if (act === 'update_album') {
-          var ab = form.closest('.pp-album');
-          if (ab) {
-            var t = form.querySelector('[name="title"]');
-            var titleEl = ab.querySelector('summary strong');
-            if (titleEl && t) titleEl.textContent = t.value;
-          }
-        }
-      }
-      ppShowNotice((d && d.msg) ? d.msg : '已保存', (d && d.ok) ? 'success' : 'error');
-      if (btn) btn.disabled = false;
-    })
-    .catch(function () {
-      ppShowNotice('网络/保存出错，请重试', 'error');
-      if (btn) btn.disabled = false;
-    });
-});
-
-// 联系方式：添加 / 删除行
-function ppAddContactRow() {
-  var empty = document.getElementById('pp-contact-empty');
-  if (empty) empty.parentNode.removeChild(empty);
-  var row = document.createElement('div');
-  row.className = 'pp-contact-row';
-  row.innerHTML =
-    '<input type="text" name="contactName[]" placeholder="名称（如 微博）">' +
-    '<input type="url" name="contactUrl[]" placeholder="链接">' +
-    '<div class="pp-contact-icon">' +
-      '<input type="hidden" name="contactIcon[]" value="icon-github">' +
-      '<button type="button" class="pp-icon-trigger" data-icon="icon-github" title="选择图标"><i class="iconfont icon-github"></i></button>' +
-      '<div class="pp-icon-pop"></div>' +
-    '</div>' +
-    '<select name="contactStatus[]"><option value="1" selected>启用</option><option value="0">停用</option></select>' +
-    '<button type="button" class="pp-btn red pp-small pp-remove-contact">删除</button>';
-  document.getElementById('pp-contact-rows').appendChild(row);
-  setupIconPicker(row.querySelector('.pp-contact-icon'));
-}
-var addBtn = document.getElementById('pp-add-contact');
-if (addBtn) addBtn.addEventListener('click', ppAddContactRow);
-document.addEventListener('click', function (e) {
-  if (e.target && e.target.classList && e.target.classList.contains('pp-remove-contact')) {
-    var row = e.target.closest('.pp-contact-row');
-    if (row) row.parentNode.removeChild(row);
-  }
-});
-
-// 联系方式图标：可视化选择
-var PP_ICONS = [
-  ['icon-shouye', '主页'], ['icon-weibo', '微博'], ['icon-github', 'GitHub'], ['icon-gengduo', '更多'],
-  ['icon-map-pin-2-line', '地点'], ['icon-camera-lens-line', '相机'], ['icon-time-line', '时间'], ['icon-quanping', '全屏']
-];
-function setupIconPicker(box) {
-  if (!box || box.__ppIcons) return;
-  box.__ppIcons = true;
-  var hidden = box.querySelector('input[name="contactIcon[]"]');
-  var trig = box.querySelector('.pp-icon-trigger');
-  var pop = box.querySelector('.pp-icon-pop');
-  if (!hidden || !trig || !pop) return;
-  PP_ICONS.forEach(function (pair) {
-    var b = document.createElement('button');
-    b.type = 'button'; b.className = 'icn'; b.dataset.icon = pair[0]; b.title = pair[1];
-    b.innerHTML = '<i class="iconfont ' + pair[0] + '"></i>';
-    pop.appendChild(b);
-  });
-  function sync() {
-    Array.from(pop.querySelectorAll('.icn')).forEach(function (b) {
-      b.classList.toggle('active', b.dataset.icon === hidden.value);
-    });
-  }
-  trig.addEventListener('click', function (e) {
-    e.stopPropagation();
-    if (pop.classList.toggle('open')) sync();
-  });
-  Array.from(pop.querySelectorAll('.icn')).forEach(function (b) {
-    b.addEventListener('click', function (e) {
-      e.stopPropagation();
-      hidden.value = b.dataset.icon;
-      trig.dataset.icon = b.dataset.icon;
-      var i = trig.querySelector('i');
-      if (i) i.className = 'iconfont ' + b.dataset.icon;
-      pop.classList.remove('open');
-      sync();
-    });
-  });
-  sync();
-}
-document.querySelectorAll('.pp-contact-icon').forEach(setupIconPicker);
-document.addEventListener('click', function () {
-  document.querySelectorAll('.pp-icon-pop.open').forEach(function (p) { p.classList.remove('open'); });
-});
-
-// 质量滑块：实时显示数值（缩略图 / 普通图 / 全景图）
-document.querySelectorAll('.pp-range').forEach(function (r) {
-  var out = document.querySelector('output[for="' + r.id + '"]');
-  if (!out) return;
-  var sync = function () { out.textContent = r.value; };
-  r.addEventListener('input', sync);
-  sync();
-});
-
-// 恢复默认最佳设置：填回默认值并保存
-var resetBtn = document.getElementById('pp-reset-webp');
-if (resetBtn) {
-  resetBtn.addEventListener('click', function () {
-    var f = resetBtn.closest('form');
-    if (!f) return;
-    var DEFAULTS = <?php echo json_encode([
-      'quality' => Plugin::DEFAULT_QUALITY,
-      'thumbMax' => Plugin::DEFAULT_THUMB_MAX,
-      'maxWidth' => Plugin::DEFAULT_MAX_WIDTH,
-      'keepOriginal' => Plugin::DEFAULT_KEEP_ORIGINAL,
-      'fullQuality' => Plugin::DEFAULT_FULL_QUALITY,
-      'panoWidth' => Plugin::DEFAULT_PANO_WIDTH,
-      'panoQuality' => Plugin::DEFAULT_PANO_QUALITY,
-    ], JSON_UNESCAPED_UNICODE); ?>;
-    var set = function (name, val) { var el = f.querySelector('[name="' + name + '"]'); if (el) el.value = val; };
-    set('quality', String(DEFAULTS.quality)); set('thumbMax', String(DEFAULTS.thumbMax)); set('maxWidth', String(DEFAULTS.maxWidth)); set('keepOriginal', String(DEFAULTS.keepOriginal));
-    set('fullQuality', String(DEFAULTS.fullQuality)); set('panoWidth', String(DEFAULTS.panoWidth)); set('panoQuality', String(DEFAULTS.panoQuality));
-    // 同步滑块输出
-    document.querySelectorAll('.pp-range').forEach(function (r) {
-      var out = document.querySelector('output[for="' + r.id + '"]');
-      if (out) out.textContent = r.value;
-    });
-    f.submit();
-  });
-}
-</script>
 <?php include $adminDir . '/footer.php'; ?>
