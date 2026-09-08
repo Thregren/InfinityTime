@@ -312,6 +312,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
             document.querySelectorAll('.poptrox-popup').forEach(function(p) {
                 clearLqip(p);
+                p.classList.remove('pp-pano-mode');
                 delete p.__switching;
                 delete p.__panoActive;
                 delete p.__ppIndex;
@@ -395,11 +396,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // ---- 灯箱渐进加载（blur-up）：用缩略图当作模糊预览，全图加载后淡出 ----
     var previewMap = {};
+    var panoMap = {};
     document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
         var imgs = ppParseArr(a.dataset.images);
         var pre = ppParseArr(a.dataset.previews);
+        var panos = ppParseArr(a.dataset.panos);
         imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
+        imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
     });
+    // 判断某张图是不是全景（用于切到全景时立刻切成 4:3 视窗，避免挂载后再跳尺寸）
+    function isPanoUrl(u) {
+        if (!u) return false;
+        return !!panoMap[u] || !!panoMap[normUrl(u)];
+    }
     // 记录点击的是哪张图（原始宽高），供 onPopupOpen 预置弹窗尺寸。
     document.addEventListener('click', function(e) {
         var a = e.target && e.target.closest ? e.target.closest('#main a.image[data-dims]') : null;
@@ -499,7 +508,12 @@ document.addEventListener('DOMContentLoaded', function() {
             if (m.type === 'attributes' && m.attributeName === 'src') {
                 var img = m.target;
                 var popup = img.closest ? img.closest('.poptrox-popup') : null;
-                if (popup) { applyLqip(popup); preloadNeighbors(popup); }
+                if (popup) {
+                    // 全景统一 4:3 视窗：在 src 变化当下就切换类，LQIP 盖着时完成尺寸变化，不会挂载后再跳
+                    popup.classList.toggle('pp-pano-mode', isPanoUrl(img.getAttribute('src')));
+                    applyLqip(popup);
+                    preloadNeighbors(popup);
+                }
             }
         });
     }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['src'] });

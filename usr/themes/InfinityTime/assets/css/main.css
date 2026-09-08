@@ -2514,6 +2514,34 @@ span.tag-list a:hover {
   pointer-events: none;
 }
 
+/* 全景浏览器：移动端 4:3，桌面端 16:9。
+   桌面端预留 EXIF 侧栏宽度，避免视窗和侧栏互相遮挡。 */
+.poptrox-popup.pp-pano-mode {
+  aspect-ratio: 16 / 9 !important;
+  width: min(calc(100vw - var(--exif-dock-reserve)), calc((100vh - 100px) * 16 / 9)) !important;
+  height: auto !important;
+}
+.poptrox-popup.pp-pano-mode .pic {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  position: relative;
+}
+.poptrox-popup.pp-pano-mode .pic img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: cover;
+  visibility: hidden;
+}
+@media (max-width: 900px) {
+  .poptrox-popup.pp-pano-mode {
+    aspect-ratio: 4 / 3 !important;
+    width: min(100vw, calc(100vh * 4 / 3)) !important;
+  }
+}
+
 @media screen and (max-width: 736px) {
   .poptrox-popup .tag-info-bottom {
     flex-direction: column;
