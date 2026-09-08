@@ -301,6 +301,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fadeSpeed: 420,
         onPopupClose: function() { 
             isPopupActive = false;
+            captionFadeOut();
             $body.removeClass('modal-active');
             document.querySelectorAll('.pic-swipe-wrapper').forEach(function(w) { w.remove(); });
             $('html, body').css({
@@ -425,6 +426,23 @@ document.addEventListener('DOMContentLoaded', function() {
         var lq = popup && popup.querySelector('.pp-lqip');
         if (lq) lq.remove();
     }
+    // ---- 灯箱标题（.pp-mobile-caption）：照片淡入完成后才淡入；按下切图按钮时立即淡出 ----
+    var captionSeq = 0;
+    function captionFadeOut() {
+        captionSeq++;
+        var c = document.querySelector('.pp-mobile-caption');
+        if (c) c.classList.remove('pp-cap-show');
+    }
+    function captionFadeInAfterImage() {
+        var seq = ++captionSeq;
+        setTimeout(function() {
+            if (seq !== captionSeq || !isPopupActive) return;
+            var p = document.querySelector('.poptrox-popup');
+            if (!p || getComputedStyle(p).display === 'none') return;
+            var c = document.querySelector('.pp-mobile-caption');
+            if (c) c.classList.add('pp-cap-show');
+        }, 440); // 等 poptrox 的 .pic 淡入（420ms）完成后再显示标题
+    }
     function applyLqip(popup) {
         if (!popup) return;
         var pic = popup.querySelector('.pic');
@@ -432,7 +450,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!img || !pic) return;
         var full = img.getAttribute('src') || '';
         var pre = lqipFor(full);
-        if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; return; }
+        if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; captionFadeInAfterImage(); return; }
         // 每次切图递增序号：上一张的 onload/decode 回调晚到时会自动作废，
         // 避免把「已经切走」的图淡入回来或残留透明状态。
         var seq = popup.__lqipSeq = (popup.__lqipSeq || 0) + 1;
@@ -457,6 +475,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function reveal() {
             if (seq !== popup.__lqipSeq) return; // 已切到下一张，丢弃过期回调
             img.style.opacity = '1';
+            captionFadeInAfterImage();
             // 把弹窗尺寸回写为实际渲染尺寸：poptrox 在加载阶段量到的宽度受上一帧的
             // 弹窗尺寸影响（移动端 img 是 width:100%），会把它当作下一张的起始尺寸，
             // 于是切图先缩成小框再放大。这里在稳定后用真实尺寸覆盖，切图只保留高度方向的柔和变化。
@@ -511,6 +530,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (popup) {
                     // 全景统一 4:3 视窗：在 src 变化当下就切换类，LQIP 盖着时完成尺寸变化，不会挂载后再跳
                     popup.classList.toggle('pp-pano-mode', isPanoUrl(img.getAttribute('src')));
+                    captionFadeOut();
                     applyLqip(popup);
                     preloadNeighbors(popup);
                 }
@@ -605,6 +625,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('click', function(e) {
         var t = e.target && e.target.closest ? e.target.closest('.poptrox-popup .nav-previous, .poptrox-popup .nav-next') : null;
         if (!t) return;
+        captionFadeOut(); // 按下切图按钮：标题立即淡出
         var popup = t.closest('.poptrox-popup');
         var delta = t.classList.contains('nav-next') ? 1 : -1;
         if (inAlbumNav(popup, delta)) { e.preventDefault(); e.stopImmediatePropagation(); }
