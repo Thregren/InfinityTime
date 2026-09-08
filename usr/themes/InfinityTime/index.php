@@ -949,7 +949,7 @@ if (!headers_sent()) {
             return;
           }
           nav.style.left = 'auto';
-          nav.style.right = '12px';
+          nav.style.right = '40px';
           nav.style.width = 'auto';
           nav.style.top = 'auto';
           nav.style.bottom = '40px';
