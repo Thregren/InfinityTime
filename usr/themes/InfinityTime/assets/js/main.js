@@ -7,8 +7,7 @@
 (function($) {
 
 	var	$window = $(window),
-		$body = $('body'),
-		$wrapper = $('#wrapper');
+		$body = $('body');
 
 	// Breakpoints.
 		breakpoints({
@@ -160,88 +159,10 @@
 
 				});
 
-	// Header.
-		var $header = $('#header');
-
-		// Links.
-			$header.find('a').each(function() {
-
-				var $this = $(this),
-					href = $this.attr('href');
-
-				// Internal link? Skip.
-					if (!href
-					||	href.charAt(0) == '#')
-						return;
-
-				// Redirect on click.
-					$this
-						.removeAttr('href')
-						.css('cursor', 'pointer')
-						.on('click', function(event) {
-
-							event.preventDefault();
-							event.stopPropagation();
-
-							window.location.href = href;
-
-						});
-
-			});
-
-	// Footer.
-		var $footer = $('#footer');
-
-		// Copyright.
-		// This basically just moves the copyright line to the end of the *last* sibling of its current parent
-		// when the "medium" breakpoint activates, and moves it back when it deactivates.
-			$footer.find('.copyright').each(function() {
-
-				var $this = $(this),
-					$parent = $this.parent(),
-					$lastParent = $parent.parent().children().last();
-
-				breakpoints.on('<=medium', function() {
-					$this.appendTo($lastParent);
-				});
-
-				breakpoints.on('>medium', function() {
-					$this.appendTo($parent);
-				});
-
-			});
-
-	// Main.
-		var $main = $('#main');
-
-		// Thumbs.
-			$main.children('.thumb').each(function() {
-
-				var $this = $(this),
-					$image = $this.find('.image'), 
-					$image_img = $image.children('img');
-
-				// 如果没有图片则返回
-				if ($image.length === 0) return;
-
-				// 使用 loading="lazy" 属性实现懒加载
-				$image_img
-					.attr('loading', 'lazy')
-					.css('display', 'block') // 确保图片显示
-					.on('load', function() {
-						// 图片加载完成后的处理
-						$(this).css('opacity', '1');
-					});
-
-				// 如果有背景位置数据，设置它
-				var position = $image_img.data('position');
-				if (position) {
-					$image.css('background-position', position);
-				}
-
-			});
-
 })(jQuery);
+
+// ---- InfinityTime 自定义逻辑（收敛到独立作用域，避免往 window 上挂多余全局）----
+(function () {
 
 // 安全解析 JSON 数组：非法/缺失时回退为空数组，避免一个脏 data-* 弄瘫整站灯箱
 function ppParseArr(s) { try { var v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
@@ -265,9 +186,11 @@ function toggleFullscreen() {
 						document.msFullscreenElement;
 	
 	if (!isFullscreen) {
+		if (!fullscreenAPI.enter) return; // 浏览器不支持元素全屏：直接忽略，避免抛错
 		$("#fullscreen").html("退出全屏");
 		fullscreenAPI.enter.call(document.documentElement);
 	} else {
+		if (!fullscreenAPI.exit) return;
 		$("#fullscreen").html('<i class="iconfont icon-quanping"></i><use xlink:href="#icon-zmki-ziyuan-copy"></use></svg>');
 		fullscreenAPI.exit.call(document);
 	}
@@ -275,18 +198,6 @@ function toggleFullscreen() {
 
 // 简化全屏切换事件监听
 $('#fullscreen').on('click', toggleFullscreen);
-
-// 为分页按钮添加动画效果
-$(document).ready(function() {
-    $('.next-page-btn').hover(
-        function() {
-            $(this).addClass('btn-hover');
-        },
-        function() {
-            $(this).removeClass('btn-hover');
-        }
-    );
-});
 
 // 灯箱交互（触摸滚动锁定、EXIF 侧栏、切图）
 document.addEventListener('DOMContentLoaded', function() {
@@ -641,3 +552,5 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
     }, { passive: false, capture: true });
 });
+
+})();
