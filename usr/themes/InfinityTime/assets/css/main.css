@@ -2497,7 +2497,7 @@ span.tag-list a:hover {
 .poptrox-popup .pic img {
   position: relative;
   z-index: 1;
-  transition: opacity 0.6s cubic-bezier(0.45, 0, 0.55, 1);
+  transition: opacity 0.4s cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 /* 灯箱渐进加载：缩略图模糊垫底（在 img 下方），原图解码完成后淡入覆盖，避免「模糊 → 清晰」跳变。
