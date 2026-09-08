@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.13.0
+ * @version 1.13.1
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.13.0';
+    public const VERSION = '1.13.1';
     public const MENU_NAME = 'InfinityTime';
     // 统一默认（“恢复默认/写入”）配置，避免各处写死不同数值
     public const DEFAULT_QUALITY      = 76;   // 缩略图质量

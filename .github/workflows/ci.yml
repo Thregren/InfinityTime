@@ -31,6 +31,9 @@ jobs:
             node --check "$f"
           done
 
+      - name: Unit tests
+        run: php tests/test.php
+
       - name: Version consistency
         run: |
           THEME_V=$(sed -n 's/.*@version \([0-9][0-9.]*\).*/\1/p' usr/themes/InfinityTime/index.php | head -1)

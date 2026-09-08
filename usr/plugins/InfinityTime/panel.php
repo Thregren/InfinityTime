@@ -76,29 +76,13 @@ function pp_csrf_check(): bool
 /** 清洗“关于介绍”里的 HTML：保留常规排版标签，去掉脚本/事件/危险协议。 */
 function pp_sanitize_html(string $html): string
 {
-    $html = (string)preg_replace('#<(script|style|iframe|object|embed|link|meta)\b[^>]*>.*?</\1>#is', '', $html);
-    $html = (string)preg_replace('#<(script|style|iframe|object|embed|link|meta)\b[^>]*/?>#is', '', $html);
-    $html = (string)preg_replace('#\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#is', '', $html);
-    // 危险协议：同时覆盖带引号和不带引号的写法
-    $html = (string)preg_replace(
-        '#(href|src)\s*=\s*(?:"\s*(?:javascript|data):[^"]*"|\'\s*(?:javascript|data):[^\']*\'|(?:javascript|data):[^\s>]+)#is',
-        '$1="#"',
-        $html
-    );
-    return trim($html);
+    return \TypechoPlugin\InfinityTime\Lib\Sanitizer::sanitize($html);
 }
 
 /** 只允许 http(s) 绝对地址或站内相对路径作为头像 URL。 */
 function pp_valid_logo_url(string $url): string
 {
-    $url = trim($url);
-    if ($url === '') {
-        return '';
-    }
-    if (preg_match('#^(https?:)?//#i', $url) || (strpos($url, '/') === 0 && strpos($url, '//') !== 0)) {
-        return $url;
-    }
-    return '';
+    return \TypechoPlugin\InfinityTime\Lib\Sanitizer::validUrl($url);
 }
 
 function pp_field(int $cid, string $name): string

@@ -1,5 +1,13 @@
 # 更新日志
 
+## 1.13.1
+
+### 工程化 / 测试
+
+- 新增 `tests/test.php`（30 项纯逻辑单测：HTML / URL 清洗、全景判定、支持格式），CI 每次 push / PR 自动运行。
+- HTML / URL 清洗逻辑抽到 `Lib/Sanitizer.php`，可脱离 Typecho 直接单测，行为不变。
+- 仓库根目录补充 `LICENSE`（MIT，并保留 Multiverse CC BY 3.0 等第三方声明）。
+
 ## 1.13.0
 
 ### 上传与性能
