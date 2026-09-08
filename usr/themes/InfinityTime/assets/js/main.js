@@ -327,8 +327,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 var popup = document.querySelector('.poptrox-popup');
                 var dims = window.__ppOpenDims;
                 if (popup && dims && dims[0] > 0 && dims[1] > 0 && window.innerWidth <= 900) {
-                    var availW = Math.max(120, window.innerWidth - 2 * PP_CONFIG.windowMargin);
-                    var availH = Math.max(120, window.innerHeight - 2 * PP_CONFIG.windowMargin);
+                    // 用 poptrox 实例的实时边距（窄屏时会被 breakpoints 改成 0），
+                    // 不能用 PP_CONFIG.windowMargin——它还是初始的 50，会把宽度算小 100px。
+                    var inst = $main[0] && $main[0]._poptrox;
+                    var margin = inst ? inst.windowMargin : PP_CONFIG.windowMargin;
+                    var availW = Math.max(120, window.innerWidth - 2 * margin);
+                    var availH = Math.max(120, window.innerHeight - 2 * margin);
                     var k = Math.min(1, availW / dims[0], availH / dims[1]);
                     $(popup).data('width', Math.round(dims[0] * k)).data('height', Math.round(dims[1] * k));
                 }
@@ -444,6 +448,17 @@ document.addEventListener('DOMContentLoaded', function() {
         function reveal() {
             if (seq !== popup.__lqipSeq) return; // 已切到下一张，丢弃过期回调
             img.style.opacity = '1';
+            // 把弹窗尺寸回写为实际渲染尺寸：poptrox 在加载阶段量到的宽度受上一帧的
+            // 弹窗尺寸影响（移动端 img 是 width:100%），会把它当作下一张的起始尺寸，
+            // 于是切图先缩成小框再放大。这里在稳定后用真实尺寸覆盖，切图只保留高度方向的柔和变化。
+            if (!popup.classList.contains('loading')) {
+                try {
+                    var r = popup.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        $(popup).data('width', r.width).data('height', r.height);
+                    }
+                } catch (e) {}
+            }
             setTimeout(function() {
                 if (seq !== popup.__lqipSeq) return;
                 clearLqip(popup);
