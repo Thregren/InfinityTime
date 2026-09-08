@@ -3036,6 +3036,13 @@ body.pp-dock-expanded .pp-mobile-nav {
   /* 移动端等 EXIF 抽屉收起到底后再淡入，避免与抽屉动画打架 */
   body.exif-dock-open .pp-mobile-nav { transition-delay: .45s; }
 }
+@media (min-width: 901px) {
+  /* 桌面端等定位完成（pp-nav-placed）再淡入，避免先出现在底部中央再跳到 EXIF 列 */
+  body.exif-dock-open .pp-mobile-nav:not(.pp-nav-placed) {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
 
 /* 移动端切图加载态：隐藏深色小框与 loader，避免「黑色小块 → 大图」的突兀感 */
 @media (max-width: 900px) {
