@@ -1009,8 +1009,9 @@ if (!headers_sent()) {
           const img = popup ? popup.querySelector('.pic img') : null;
           const ready = popup && img && img.complete && img.naturalWidth > 0;
           if (!ready) {
-            // 切图加载中：已显示过就保持常驻，避免底部抽屉每次切图都淡出再淡入
-            if (dockShownOnce) return;
+            // 移动端：切图加载时保持常驻，避免底部抽屉反复淡入淡出；
+            // 桌面端：整块面板淡出，等新图就绪后再带新内容淡入（保留淡入淡出质感）
+            if (window.innerWidth <= 900 && dockShownOnce) return;
             dock.classList.remove('show');
             return;
           }
