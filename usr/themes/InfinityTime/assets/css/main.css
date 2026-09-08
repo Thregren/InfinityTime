@@ -3069,7 +3069,7 @@ body.pp-dock-expanded .pp-mobile-nav {
   background: linear-gradient(to bottom, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0));
   opacity: 0;
   pointer-events: none;
-  transition: opacity .45s cubic-bezier(0.45, 0, 0.55, 1);
+  transition: opacity .42s cubic-bezier(0.45, 0, 0.55, 1);
 }
 .pp-mobile-caption .pp-cap-title {
   font-size: 16px;
@@ -3085,7 +3085,8 @@ body.pp-dock-expanded .pp-mobile-nav {
 }
 @media (max-width: 900px) {
   .pp-mobile-caption { display: block; }
-  body.exif-dock-open .pp-mobile-caption { opacity: 1; }
+  /* 跟随灯箱 overlay 的淡入淡出（modal-active 与 poptrox 的 fadeTo/fadeOut 同一时刻切换） */
+  body.modal-active .pp-mobile-caption { opacity: 1; }
 }
 @media (min-width: 901px) {
   /* PC：标题放灯箱底部，与照片水平居中对齐 */
@@ -3096,7 +3097,7 @@ body.pp-dock-expanded .pp-mobile-nav {
     padding: 40px 20px 10px;
     background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, 0));
   }
-  body.exif-dock-open .pp-mobile-caption { opacity: 1; }
+  body.modal-active .pp-mobile-caption { opacity: 1; }
 }
 
 /* ==== 首页瀑布流（JS 弹性列 + 自然高度，保证首行顶对齐） ==== */
