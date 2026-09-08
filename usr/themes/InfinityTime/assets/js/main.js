@@ -303,7 +303,6 @@ document.addEventListener('DOMContentLoaded', function() {
             isPopupActive = false;
             captionFadeOut();
             $body.removeClass('modal-active');
-            document.querySelectorAll('.pic-swipe-wrapper').forEach(function(w) { w.remove(); });
             $('html, body').css({
                 'overflow': '',
                 'position': '',
@@ -384,6 +383,7 @@ document.addEventListener('DOMContentLoaded', function() {
         $('.poptrox-popup').remove();
         $main.find('.thumb > a.image').off('click');
         $main.poptrox(PP_CONFIG);
+        rebuildLightboxData(); // 新卡片加入后重建 blur-up/全景/图集数据
         if (typeof ensureExifObserver === 'function') ensureExifObserver();
     };
 
@@ -395,16 +395,33 @@ document.addEventListener('DOMContentLoaded', function() {
         if ($main[0]._poptrox) { $main[0]._poptrox.windowMargin = 50; }
     });
 
-    // ---- 灯箱渐进加载（blur-up）：用缩略图当作模糊预览，全图加载后淡出 ----
-    var previewMap = {};
-    var panoMap = {};
-    document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
-        var imgs = ppParseArr(a.dataset.images);
-        var pre = ppParseArr(a.dataset.previews);
-        var panos = ppParseArr(a.dataset.panos);
-        imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
-        imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
-    });
+    // ---- 灯箱数据（blur-up 预览 / 全景标记 / 图集索引）----
+    // 无限瀑布流翻页会新增卡片，重绑 poptrox 时同步重建这些数据，否则新图没有 blur-up / 全景识别。
+    var previewMap = {}, panoMap = {}, ALBUMS = [];
+    function rebuildLightboxData() {
+        previewMap = {};
+        panoMap = {};
+        ALBUMS = [];
+        function nonEmpty(arr) {
+            return (Array.isArray(arr) ? arr : []).filter(function(v) { return v !== null && v !== undefined && String(v) !== ''; });
+        }
+        document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
+            var imgs = ppParseArr(a.dataset.images);
+            var pre = ppParseArr(a.dataset.previews);
+            var panos = ppParseArr(a.dataset.panos);
+            imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
+            imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
+            ALBUMS.push({
+                images: nonEmpty(imgs),
+                previews: nonEmpty(pre),
+                exifs: nonEmpty(ppParseArr(a.dataset.exif)),
+                titles: nonEmpty(ppParseArr(a.dataset.titles)),
+                descs: nonEmpty(ppParseArr(a.dataset.descs)),
+                addrs: nonEmpty(ppParseArr(a.dataset.addresses))
+            });
+        });
+    }
+    rebuildLightboxData();
     // 判断某张图是不是全景（用于切到全景时立刻切成 4:3 视窗，避免挂载后再跳尺寸）
     function isPanoUrl(u) {
         if (!u) return false;
@@ -526,6 +543,7 @@ document.addEventListener('DOMContentLoaded', function() {
         muts.forEach(function(m) {
             if (m.type === 'attributes' && m.attributeName === 'src') {
                 var img = m.target;
+                if (!img || img.tagName !== 'IMG') return; // 只关心图片 src，忽略其它元素的 src 变化
                 var popup = img.closest ? img.closest('.poptrox-popup') : null;
                 if (popup) {
                     // 全景统一 4:3 视窗：在 src 变化当下就切换类，LQIP 盖着时完成尺寸变化，不会挂载后再跳
@@ -538,21 +556,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['src'] });
 
-    // ---- 图集内多图切换：上一张/下一张/滑动在“同一图集内”循环，边界再切到相邻图集 ----
-    var ALBUMS = [];
-    document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
-        function nonEmpty(arr) {
-            return (Array.isArray(arr) ? arr : []).filter(function(v) { return v !== null && v !== undefined && String(v) !== ''; });
-        }
-        ALBUMS.push({
-            images: nonEmpty(ppParseArr(a.dataset.images)),
-            previews: nonEmpty(ppParseArr(a.dataset.previews)),
-            exifs: nonEmpty(ppParseArr(a.dataset.exif)),
-            titles: nonEmpty(ppParseArr(a.dataset.titles)),
-            descs: nonEmpty(ppParseArr(a.dataset.descs)),
-            addrs: nonEmpty(ppParseArr(a.dataset.addresses))
-        });
-    });
     // 清理 URL 上的缓存/分片参数，避免 src 带 ?v= 或 # 导致精确匹配失败
     function normUrl(u) { return String(u || '').split('#')[0].split('?')[0]; }
     // 在图集列表里找当前 src 的图集：先精确，再退化为前缀匹配（容错相对/绝对路径差异）
@@ -595,7 +598,6 @@ document.addEventListener('DOMContentLoaded', function() {
             img.setAttribute('src', nextSrc);
             img.style.opacity = '1';
         }, 220); // 略大于半程，让淡出先发生，再换图并淡入
-        if (typeof applyLqip === 'function' && !cur.album.previews[ni]) { /* 预览依赖 src 变化触发的 observer */ }
         if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
         return true;
     }
@@ -633,26 +635,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 灯箱内禁止页面滚动（切图改用底部按钮，已移除滑动切图）
     document.body.addEventListener('touchmove', function(e) {
-        const popup = e.target.closest('.poptrox-popup');
+        const popup = e.target && e.target.closest ? e.target.closest('.poptrox-popup') : null;
         if (!isPopupActive || !popup) return;
         if (popup.__panoActive) return; // 全景激活：拖动交给 Pannellum 旋转
         e.preventDefault();
     }, { passive: false, capture: true });
-
-    // 添加图片查看器状态变化监听
-    const observer = new MutationObserver(function(mutations) {
-        mutations.forEach(function(mutation) {
-            if (mutation.target.classList.contains('poptrox-popup')) {
-                isPopupActive = mutation.target.style.display !== 'none';
-            }
-        });
-    });
-
-    // 开始观察 body 的变化
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['style', 'class']
-    });
 });

@@ -618,6 +618,8 @@ if (!headers_sent()) {
           if (histCv) histCv.style.display = '';
           list.innerHTML = '<span class="palette-loading">提取中…</span>';
           analyzePhoto(src, function (res) {
+            // 快速切图时旧图的采样回调可能晚到：确认当前主图仍是这张，避免把旧主题色刷到新图上
+            if (!img || (img.getAttribute('src') || '').split('?')[0] !== src) return;
             if (!res || !res.colors || !res.colors.length) { box.style.display = 'none'; if (histCv) histCv.style.display = 'none'; return; }
             list.innerHTML = res.colors.map(function (hex) {
               return '<span class="palette-item"><span class="palette-swatch" style="background:' + hex + '"></span><span class="palette-hex">' + hex + '</span></span>';

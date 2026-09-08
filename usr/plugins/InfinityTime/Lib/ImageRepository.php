@@ -66,6 +66,11 @@ class ImageRepository
     public static function toAbs(string $web): string
     {
         $web = '/' . ltrim(str_replace('\\', '/', $web), '/');
+        // 防御路径穿越：先剥掉 .. 段，数据库/字段里的路径若被写脏也不能越过上传根/站点根读写外部文件
+        $clean = preg_replace('#(?:^|/)\.\.(?=/|$)#', '', $web);
+        if (is_string($clean)) {
+            $web = $clean;
+        }
         $uploadWebRoot = self::uploadWebRoot();
         if ($web === $uploadWebRoot || strpos($web, $uploadWebRoot . '/') === 0) {
             return self::uploadRoot() . substr($web, strlen($uploadWebRoot));
@@ -95,10 +100,11 @@ class ImageRepository
         ], $opts);
 
         if (empty($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) {
-            if (empty($file['tmp_name'])) {
-                self::$lastError = '没有收到图片文件（tmp_name 为空）';
-                return null;
-            }
+            // 注意：tmp_name 非空但 is_uploaded_file=false 时也必须拒绝，避免把任意本地路径当上传图处理
+            self::$lastError = empty($file['tmp_name'])
+                ? '没有收到图片文件（tmp_name 为空）'
+                : '非法上传：临时文件校验失败';
+            return null;
         }
         $src = $file['tmp_name'];
         if (!is_file($src)) {
@@ -113,7 +119,6 @@ class ImageRepository
         }
 
         try {
-            $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($src) ?: '';
             $hash = hash_file('sha256', $src);
 
             $y = date('Y');
@@ -415,8 +420,11 @@ class ImageRepository
     public static function unlinkFiles(?string ...$rels): void
     {
         foreach ($rels as $rel) {
-            if ($rel) {
+            if (!$rel) continue;
+            try {
                 @unlink(self::toAbs($rel));
+            } catch (\Throwable $e) {
+                Plugin::log('unlinkFiles skipped: ' . $e->getMessage());
             }
         }
     }

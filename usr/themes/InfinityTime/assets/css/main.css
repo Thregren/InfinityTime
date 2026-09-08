@@ -2640,27 +2640,10 @@ span.tag-list a:hover {
   background: rgba(0, 0, 0, .62) !important;
 }
 
-  .poptrox-popup .pic img,
-  .poptrox-popup .pic-swipe-slide img {
+  .poptrox-popup .pic img {
     width: 100%;
     max-width: 100vw;
     object-fit: contain;
-  }
-
-  .poptrox-popup .pic-swipe-wrapper {
-    width: 100%;
-  }
-
-  .poptrox-popup .pic-swipe-track {
-    width: 100%;
-  }
-
-  .poptrox-popup .pic-swipe-slide {
-    width: 100%;
-  }
-
-  .poptrox-popup .pic-swipe-wrapper {
-    touch-action: none;
   }
 
   .poptrox-popup:before {
@@ -2814,8 +2797,7 @@ span.tag-list a:hover {
   --exif-dock-reserve: calc((218px + 16px + 12px) * 2);
 }
 @media (min-width: 901px) {
-  body.exif-dock-open .poptrox-popup .pic img,
-  body.exif-dock-open .poptrox-popup .pic-swipe-slide img {
+  body.exif-dock-open .poptrox-popup .pic img {
     max-width: calc(100vw - var(--exif-dock-reserve)) !important;
   }
 }
