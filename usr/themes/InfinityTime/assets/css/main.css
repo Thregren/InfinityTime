@@ -3005,6 +3005,17 @@ span.tag-list a:hover {
   .poptrox-popup .nav-next { display: none !important; }
 }
 
+/* 移动端切图加载态：隐藏深色小框与 loader，避免「黑色小块 → 大图」的突兀感 */
+@media (max-width: 900px) {
+  .poptrox-popup.loading {
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  .poptrox-popup.loading .loader {
+    opacity: 0 !important;
+  }
+}
+
 /* 移动端图片上方标题：图集标题 + 图片名字，随切图淡入淡出更新 */
 .pp-mobile-caption {
   position: fixed;
