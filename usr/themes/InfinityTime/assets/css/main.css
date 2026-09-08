@@ -2924,6 +2924,8 @@ span.tag-list a:hover {
   background: rgba(255, 255, 255, .03);
 }
 @media (max-width: 900px) {
+  /* 移动端标题走顶部标题栏，EXIF 抽屉里不再重复显示图片标题 */
+  .poptrox-exif-dock .exif-imgtitle { display: none; }
   .poptrox-exif-dock {
     left: 10px !important;
     right: 10px !important;
@@ -3087,19 +3089,6 @@ body.pp-dock-expanded .pp-mobile-nav {
 }
 @media (max-width: 900px) {
   .pp-mobile-caption { display: block; }
-}
-@media (min-width: 901px) {
-  /* PC：标题与切图按钮平行（同底距、同高度），与照片水平居中对齐 */
-  .pp-mobile-caption {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    top: auto;
-    bottom: 40px;
-    height: 46px;
-    padding: 0 20px;
-    background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, 0));
-  }
 }
 /* 标题显示：由 JS 在「照片淡入完成」后加类淡入；按下切图按钮时立即移除淡出 */
 .pp-mobile-caption.pp-cap-show { opacity: 1; }
