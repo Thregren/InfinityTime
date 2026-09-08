@@ -4,7 +4,7 @@
    ============================================================ */
 .pp-wrap {
   max-width: 1120px;
-  margin: 0 auto;
+  margin: 0;
   color: #1f2933;
   --pp-brand: #467b96;
   --pp-brand-dark: #3a667e;

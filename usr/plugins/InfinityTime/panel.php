@@ -283,7 +283,7 @@ if (!empty($_GET['ajax'])) {
             $list = [];
             foreach ($rows as $r) {
                 if (!empty($r['original'])) {
-                    $list[] = [$r['id'], $r['original'], $r['full'], $r['thumb']];
+                    $list[] = [$r['id'], $r['original'], $r['full'], $r['thumb'], (int)($r['cid'] ?? 0)];
                 }
             }
             pp_write_json($listFile, $list);
@@ -303,6 +303,7 @@ if (!empty($_GET['ajax'])) {
         $started = microtime(true);
         $budget = 25; // 单次 AJAX 最多秒数，避免重建拖着后台页面
         $total = count($list);
+        $syncedCids = [];
         for ($i = 0; $i < $batch && $idx < $total; $i++) {
             // 预算不足时立即返回，让下一轮 poll 继续，保证每轮请求都在短时间内完成
             if ((microtime(true) - $started) > $budget) {
@@ -320,7 +321,11 @@ if (!empty($_GET['ajax'])) {
                     $fq = $panoQuality;
                 }
                 try {
-                    MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $mw, $fq);
+                    $res = MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $mw, $fq);
+                    ImageRepository::updateVariants((int)$item[0], $res);
+                    if (!empty($item[4])) {
+                        $syncedCids[(int)$item[4]] = true;
+                    }
                 } catch (\Throwable $e) {
                     Plugin::log('rebuild ajax: id=' . $item[0] . ' ' . $e->getMessage());
                     $failed++;
@@ -332,6 +337,9 @@ if (!empty($_GET['ajax'])) {
                 $state['current'] = basename($src) . '（缺原图）';
             }
             $idx++;
+        }
+        foreach (array_keys($syncedCids) as $__c) {
+            try { ImageRepository::syncPostFields((int)$__c); } catch (\Throwable $e) {}
         }
         $state['done'] = $idx;
         $state['failed'] = $failed;
@@ -349,7 +357,7 @@ if (!empty($_GET['ajax'])) {
             $rows = $db->fetchAll($db->select()->from(ImageRepository::table()));
             $ref = [];
             foreach ($rows as $r) {
-                foreach (['original', 'full', 'thumb'] as $k) {
+                foreach (['original', 'full', 'mid', 'avif', 'mid_avif', 'thumb'] as $k) {
                     if (!empty($r[$k])) {
                         $ref[ImageRepository::toAbs($r[$k])] = true;
                     }
@@ -653,7 +661,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($rowId > 0) {
             $row = $db->fetchRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
             if ($row) {
-                ImageRepository::unlinkFiles($row['original'], $row['full'], $row['thumb']);
+                ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
                 $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
             }
         }

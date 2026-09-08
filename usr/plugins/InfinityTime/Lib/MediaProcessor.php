@@ -143,7 +143,6 @@ class MediaProcessor
             $nh = (int)round($height * $scale);
             $scaled = imagescale($img, $nw, $nh, IMG_BILINEAR_FIXED);
             if ($scaled) {
-                imagedestroy($img);
                 $img = $scaled;
                 $width = imagesx($img);
                 $height = imagesy($img);
@@ -183,7 +182,6 @@ class MediaProcessor
                     if ($scale < 1.0) {
                         $resized = imagescale($thumb, (int)round($cropW * $scale), (int)round($cropH * $scale), IMG_BILINEAR_FIXED);
                         if ($resized) {
-                            imagedestroy($thumb);
                             $thumb = $resized;
                         }
                     }
@@ -207,11 +205,8 @@ class MediaProcessor
             }
         }
 
-        // 显式释放 GD 位图：批量重建时一个请求会处理多张图，不释放会持续堆积内存
-        if (isset($thumb) && $thumb !== $img) {
-            imagedestroy($thumb);
-        }
-        imagedestroy($img);
+        // 响应式变体：中间尺寸 WebP + AVIF（Imagick 可用时）。失败不影响主流程。
+        $variants = self::generateVariants($fullPath, $fullQuality);
 
         return [
             'width' => $width,
@@ -219,7 +214,74 @@ class MediaProcessor
             'size' => filesize($fullPath),
             'mime' => 'image/webp',
             'exif' => $exif,
+            'mid' => $variants['mid'] ?? null,
+            'avif' => $variants['avif'] ?? null,
+            'mid_avif' => $variants['mid_avif'] ?? null,
         ];
+    }
+
+    /**
+     * 生成响应式变体（Imagick 优先）：
+     *   base@1600.webp  中间尺寸 WebP（手机/平板用）
+     *   base.avif       全尺寸 AVIF
+     *   base@1600.avif  中间尺寸 AVIF
+     * 任一变体失败只跳过该变体，不影响主图。
+     *
+     * @return array{mid:?string,avif:?string,mid_avif:?string} 绝对路径
+     */
+    private static function generateVariants(string $fullPath, int $fullQuality): array
+    {
+        $out = ['mid' => null, 'avif' => null, 'mid_avif' => null];
+        if (!extension_loaded('imagick') || !class_exists('\Imagick')) {
+            return $out;
+        }
+        $dir = dirname($fullPath);
+        $base = pathinfo($fullPath, PATHINFO_FILENAME);
+        $midWidth = 1600;
+        try {
+            // 以已经「纠正方向 + 限宽」的 full WebP 为源，保证变体与主图方向/比例完全一致
+            $im = new \Imagick($fullPath);
+            $w = $im->getImageWidth();
+            $h = $im->getImageHeight();
+            if ($w < 1 || $h < 1) {
+                return $out;
+            }
+
+            $mid = clone $im;
+            if ($w > $midWidth) {
+                $mid->scaleImage($midWidth, max(1, (int)round($h * $midWidth / $w)));
+            }
+            $midPath = $dir . '/' . $base . '@' . $midWidth . '.webp';
+            $mid->setImageFormat('webp');
+            $mid->setImageCompressionQuality($fullQuality);
+            if ($mid->writeImage($midPath)) {
+                $out['mid'] = $midPath;
+            }
+
+            $formats = array_map('strtoupper', \Imagick::queryFormats());
+            if (in_array('AVIF', $formats, true)) {
+                $avif = clone $im;
+                $avif->setImageFormat('avif');
+                $avif->setImageCompressionQuality($fullQuality);
+                $avifPath = $dir . '/' . $base . '.avif';
+                if ($avif->writeImage($avifPath)) {
+                    $out['avif'] = $avifPath;
+                }
+                $midAvif = clone $mid;
+                $midAvif->setImageFormat('avif');
+                $midAvif->setImageCompressionQuality($fullQuality);
+                $midAvifPath = $dir . '/' . $base . '@' . $midWidth . '.avif';
+                if ($midAvif->writeImage($midAvifPath)) {
+                    $out['mid_avif'] = $midAvifPath;
+                }
+                $avif->clear(); $midAvif->clear();
+            }
+            $im->clear(); $mid->clear();
+        } catch (\Throwable $e) {
+            // 变体是增强项：失败只记日志，主图仍然可用
+            \TypechoPlugin\InfinityTime\Plugin::log('generateVariants failed: ' . $e->getMessage());
+        }
+        return $out;
     }
 
     /**
@@ -290,7 +352,7 @@ class MediaProcessor
                 $im->destroy();
                 return imagecreatefromstring($data);
             } catch (\Throwable $e) {
-                Plugin::log('Imagick 解码 HEIC/HEIF 失败，尝试外部工具：' . $e->getMessage());
+                \TypechoPlugin\InfinityTime\Plugin::log('Imagick 解码 HEIC/HEIF 失败，尝试外部工具：' . $e->getMessage());
             }
         }
 

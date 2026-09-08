@@ -171,6 +171,9 @@ class ImageRepository
             return [
                 'original' => $origRel,
                 'full'     => $fullWebDir . '/' . $base . '.webp',
+                'mid'      => !empty($result['mid']) ? self::toWeb((string)$result['mid']) : null,
+                'avif'     => !empty($result['avif']) ? self::toWeb((string)$result['avif']) : null,
+                'mid_avif' => !empty($result['mid_avif']) ? self::toWeb((string)$result['mid_avif']) : null,
                 'thumb'    => $thumbWebDir . '/' . $base . '.webp',
                 'width'    => $result['width'],
                 'height'   => $result['height'],
@@ -213,6 +216,9 @@ class ImageRepository
             'cid' => $cid,
             'original' => $meta['original'],
             'full' => $meta['full'],
+            'mid' => $meta['mid'] ?? null,
+            'avif' => $meta['avif'] ?? null,
+            'mid_avif' => $meta['mid_avif'] ?? null,
             'thumb' => $meta['thumb'],
             'width' => $meta['width'],
             'height' => $meta['height'],
@@ -269,9 +275,16 @@ class ImageRepository
     private static $schemaEnsured = false;
     public static function ensureSchema(): void
     {
-        // title/desc 列已由 Plugin::activate() -> createTables()（含旧表升级）补好。
-        // 运行期无需再重复 ALTER，避免每个请求多跑 2 条 DDL。
+        if (self::$schemaEnsured) {
+            return;
+        }
         self::$schemaEnsured = true;
+        // 按 schema 版本补齐缺失列（幂等；版本一致时 Plugin::migrateSchema 直接返回，不跑 DDL）
+        try {
+            Plugin::migrateSchema();
+        } catch (\Throwable $e) {
+            Plugin::log('migrateSchema failed: ' . $e->getMessage());
+        }
     }
 
     /** 更新单张图片的标题/描述/地址。 */
@@ -282,6 +295,17 @@ class ImageRepository
             'title' => $title,
             'desc' => $desc,
             'address' => $address,
+        ])->where('id = ?', $rowId));
+    }
+
+    /** 重建后更新某张图的响应式变体路径（mid / avif / mid_avif）。 */
+    public static function updateVariants(int $rowId, array $result): void
+    {
+        $db = \Typecho\Db::get();
+        $db->query($db->update(self::table())->rows([
+            'mid' => !empty($result['mid']) ? self::toWeb((string)$result['mid']) : null,
+            'avif' => !empty($result['avif']) ? self::toWeb((string)$result['avif']) : null,
+            'mid_avif' => !empty($result['mid_avif']) ? self::toWeb((string)$result['mid_avif']) : null,
         ])->where('id = ?', $rowId));
     }
 
@@ -296,6 +320,7 @@ class ImageRepository
         $descs = [];
         $panos = [];
         $dims = [];
+        $variants = [];
         foreach ($rows as $r) {
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
@@ -307,12 +332,26 @@ class ImageRepository
             $dims[] = ($w > 0 && $h > 0) ? ($w . 'x' . $h) : '';
             // 长宽比 ≥ 2 视为全景（equirectangular 360 照片，如 8192×4096）
             $panos[] = self::isPano($w, $h) ? 1 : 0;
+            // 响应式变体：webp=[full, mid]，avif=[full, mid]（缺失的自动过滤）
+            $variants[] = [
+                'w' => $w,
+                'webp' => array_values(array_filter([(string)($r['full'] ?? ''), (string)($r['mid'] ?? '')])),
+                'avif' => array_values(array_filter([(string)($r['avif'] ?? ''), (string)($r['mid_avif'] ?? '')])),
+            ];
         }
-        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims];
-        foreach (['addresses', 'titles', 'descs', 'panos', 'dims'] as $f) {
+        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants];
+        foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants'] as $f) {
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
-            if (count(array_filter($val, 'strlen')) > 0) {
+            // 注意：variants 的元素是数组，不能直接用 array_filter($val, 'strlen')（PHP 8 会对数组调 strlen 报错）
+            $nonEmpty = false;
+            foreach ($val as $item) {
+                if (is_array($item) ? count($item) > 0 : (string)$item !== '') {
+                    $nonEmpty = true;
+                    break;
+                }
+            }
+            if ($nonEmpty) {
                 $db->query($db->insert($prefix . 'fields')->rows([
                     'cid' => $cid, 'name' => $f, 'type' => 'str',
                     'str_value' => json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
@@ -326,7 +365,7 @@ class ImageRepository
     {
         $rows = self::rowsFor($cid);
         foreach ($rows as $r) {
-            self::unlinkFiles($r['original'], $r['full'], $r['thumb']);
+            self::unlinkFiles($r['original'], $r['full'], $r['mid'] ?? null, $r['avif'] ?? null, $r['mid_avif'] ?? null, $r['thumb']);
         }
         $db = \Typecho\Db::get();
         $db->query($db->delete(self::table())->where('cid = ?', $cid));
@@ -386,6 +425,7 @@ class ImageRepository
         $rows = $db->fetchAll($db->select()->from(self::table()));
         $rebuilt = 0;
         $failed = 0;
+        $syncedCids = [];
         foreach ($rows as $r) {
             if (empty($r['original'])) {
                 continue;
@@ -406,12 +446,19 @@ class ImageRepository
                 }
             }
             try {
-                MediaProcessor::process($src, self::toAbs($r['full']), self::toAbs($r['thumb']), $opts['thumb_max'], $opts['quality'], $opts['max_width'] ?? 0, $opts['full_quality']);
+                $res = MediaProcessor::process($src, self::toAbs($r['full']), self::toAbs($r['thumb']), $opts['thumb_max'], $opts['quality'], $opts['max_width'] ?? 0, $opts['full_quality']);
+                self::updateVariants((int)$r['id'], $res);
+                if ((int)($r['cid'] ?? 0) > 0) {
+                    $syncedCids[(int)$r['cid']] = true;
+                }
                 $rebuilt++;
             } catch (\Throwable $e) {
                 Plugin::log('rebuild failed for id=' . $r['id'] . ': ' . $e->getMessage());
                 $failed++;
             }
+        }
+        foreach (array_keys($syncedCids) as $c) {
+            try { self::syncPostFields((int)$c); } catch (\Throwable $e) {}
         }
         return ['rebuilt' => $rebuilt, 'failed' => $failed];
     }

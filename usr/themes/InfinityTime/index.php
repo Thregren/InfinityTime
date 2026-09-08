@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.10.0
+ * @version 1.11.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -88,12 +88,14 @@ if (!headers_sent()) {
           $imgDescs = json_decode($this->fields->descs, true);
           $panoList = json_decode($this->fields->panos, true);
           $dimsList = json_decode($this->fields->dims, true);
+          $variantsList = json_decode($this->fields->variants, true);
           if (!is_array($exifList)) { $exifList = []; }
           if (!is_array($addrList)) { $addrList = []; }
           if (!is_array($imgTitles)) { $imgTitles = []; }
           if (!is_array($imgDescs)) { $imgDescs = []; }
           if (!is_array($panoList)) { $panoList = []; }
           if (!is_array($dimsList)) { $dimsList = []; }
+          if (!is_array($variantsList)) { $variantsList = []; }
           // 去掉 null/空 字段，压缩内嵌 JSON；前端对缺失字段同样按“无”处理，展示不受影响。
           $exifList = array_map(function ($e) {
               return is_array($e) ? array_filter($e, function ($v) { return $v !== null && $v !== ''; }) : $e;
@@ -109,7 +111,8 @@ if (!headers_sent()) {
              data-titles='<?php echo json_encode($imgTitles, $__jsonFlags); ?>'
              data-descs='<?php echo json_encode($imgDescs, $__jsonFlags); ?>'
              data-panos='<?php echo json_encode($panoList, $__jsonFlags); ?>'
-             data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'>
+             data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'
+             data-variants='<?php echo json_encode($variantsList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
               alt="<?php echo htmlspecialchars($this->title()); ?>"
               src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"

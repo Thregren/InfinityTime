@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.10.0
+ * @version 1.11.0
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.10.0';
+    public const VERSION = '1.11.0';
     public const MENU_NAME = 'InfinityTime';
     // 统一默认（“恢复默认/写入”）配置，避免各处写死不同数值
     public const DEFAULT_QUALITY      = 76;   // 缩略图质量
@@ -358,6 +358,9 @@ class Plugin implements \Typecho_Plugin_Interface
             {$q}cid{$q} integer NOT NULL DEFAULT 0,
             {$q}original{$q} text,
             {$q}full{$q} text,
+            {$q}mid{$q} text,
+            {$q}avif{$q} text,
+            {$q}mid_avif{$q} text,
             {$q}thumb{$q} text,
             {$q}width{$q} integer DEFAULT 0,
             {$q}height{$q} integer DEFAULT 0,
@@ -377,14 +380,8 @@ class Plugin implements \Typecho_Plugin_Interface
         }
         $db->query($sql);
 
-        // 兼容已存在的旧表：补充 title/desc 列
-        foreach (['title', 'desc'] as $col) {
-            try {
-                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} text");
-            } catch (\Throwable $e) {
-                // 列已存在则忽略
-            }
-        }
+        // 旧表升级：按 schema 版本补齐缺失列
+        self::migrateSchema();
 
         // 索引（跨库兼容：SQLite 支持 IF NOT EXISTS；MySQL/MariaDB 需 try/catch 忽略已存在）
         try {
@@ -396,6 +393,40 @@ class Plugin implements \Typecho_Plugin_Interface
         } catch (\Throwable $e) {
             // 已存在或不受支持时忽略
         }
+    }
+
+    /** 当前 schema 版本。新增列时 +1，并在 migrateSchema 里补对应 ALTER。 */
+    private const SCHEMA_VERSION = 2;
+
+    /** 按版本补齐旧表缺失的列（幂等；每进程/每次激活最多跑一次 DDL）。 */
+    public static function migrateSchema(): void
+    {
+        $db = \Typecho\Db::get();
+        $prefix = $db->getPrefix();
+        $table = $prefix . 'infinitytime_images';
+        $q = stripos($db->getAdapterName(), 'mysql') !== false ? '`' : '"';
+        $current = (int)self::opt('infinitytimeSchemaVersion', 0);
+        if ($current >= self::SCHEMA_VERSION) {
+            return;
+        }
+        $cols = [];
+        if ($current < 1) {
+            $cols[] = 'title';
+            $cols[] = 'desc';
+        }
+        if ($current < 2) {
+            $cols[] = 'mid';
+            $cols[] = 'avif';
+            $cols[] = 'mid_avif';
+        }
+        foreach ($cols as $col) {
+            try {
+                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} text");
+            } catch (\Throwable $e) {
+                // 列已存在则忽略
+            }
+        }
+        self::setOption('infinitytimeSchemaVersion', (string)self::SCHEMA_VERSION);
     }
 
     private static function safeName(string $name): string

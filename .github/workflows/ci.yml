@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: PHP syntax
+        run: find usr -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: JS syntax
+        run: |
+          for f in $(find usr -name '*.js' ! -name '*.min.js'); do
+            node --check "$f"
+          done
+
+      - name: Version consistency
+        run: |
+          THEME_V=$(sed -n 's/.*@version \([0-9][0-9.]*\).*/\1/p' usr/themes/InfinityTime/index.php | head -1)
+          PLUGIN_V=$(sed -n "s/.*const VERSION = '\([0-9][0-9.]*\)'.*/\1/p" usr/plugins/InfinityTime/Plugin.php | head -1)
+          REL_V=$(sed -n 's/.*"tag_name": "\([0-9][0-9.]*\)".*/\1/p' usr/themes/InfinityTime/releases.json | head -1)
+          echo "theme=$THEME_V plugin=$PLUGIN_V releases=$REL_V"
+          test "$THEME_V" = "$PLUGIN_V"
+          test "$THEME_V" = "$REL_V"
+
+      - name: Changelog has current version
+        run: |
+          THEME_V=$(sed -n 's/.*@version \([0-9][0-9.]*\).*/\1/p' usr/themes/InfinityTime/index.php | head -1)
+          grep -q "^## $THEME_V$" usr/themes/InfinityTime/update.md

@@ -1395,6 +1395,9 @@ table.alt tfoot {
 }
 
 .poptrox-popup:before {
+  /* 旧的悬停渐变（左右两侧暗角）已无用：底部按钮取代了箭头，
+     且它会在切图加载时隐藏、加载完又淡入，看起来像旧控件的阴影闪一下。 */
+  display: none !important;
   -moz-transition: opacity 0.2s ease-in-out;
   -webkit-transition: opacity 0.2s ease-in-out;
   -ms-transition: opacity 0.2s ease-in-out;

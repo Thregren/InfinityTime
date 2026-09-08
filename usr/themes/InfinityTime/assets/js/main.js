@@ -308,11 +308,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // ---- 灯箱数据（blur-up 预览 / 全景标记 / 图集索引）----
     // 无限瀑布流翻页会新增卡片，重绑 poptrox 时同步重建这些数据，否则新图没有 blur-up / 全景识别。
-    var previewMap = {}, panoMap = {}, ALBUMS = [];
+    var previewMap = {}, panoMap = {}, ALBUMS = [], variantMap = {};
     function rebuildLightboxData() {
         previewMap = {};
         panoMap = {};
         ALBUMS = [];
+        variantMap = {};
         function nonEmpty(arr) {
             return (Array.isArray(arr) ? arr : []).filter(function(v) { return v !== null && v !== undefined && String(v) !== ''; });
         }
@@ -320,8 +321,10 @@ document.addEventListener('DOMContentLoaded', function() {
             var imgs = ppParseArr(a.dataset.images);
             var pre = ppParseArr(a.dataset.previews);
             var panos = ppParseArr(a.dataset.panos);
+            var variants = ppParseArr(a.dataset.variants);
             imgs.forEach(function(u, i) { previewMap[u] = pre[i] || u; });
             imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
+            imgs.forEach(function(u, i) { variantMap[u] = variants[i] || null; });
             ALBUMS.push({
                 images: nonEmpty(imgs),
                 previews: nonEmpty(pre),
@@ -371,11 +374,65 @@ document.addEventListener('DOMContentLoaded', function() {
             if (c) c.classList.add('pp-cap-show');
         }, 440); // 等 poptrox 的 .pic 淡入（420ms）完成后再显示标题
     }
+    // ---- 响应式图片：给灯箱主图设置 WebP srcset，并在有 AVIF 变体时用 <picture> 包一层 ----
+    function applyResponsive(popup, img) {
+        if (!popup || !img) return;
+        var src = img.getAttribute('src') || '';
+        var v = variantMap[src] || variantMap[normUrl(src)] || null;
+        var pic = popup.querySelector('.pic');
+        // 清理上一张切走后遗留的 <picture>（poptrox 会 detach 旧 img，留下空包装）
+        if (pic) pic.querySelectorAll('picture.pp-picture').forEach(function (p) { if (!p.contains(img)) p.remove(); });
+        if (!v) {
+            img.removeAttribute('srcset');
+            img.removeAttribute('sizes');
+            return;
+        }
+        var webp = v.webp || [];
+        var avif = v.avif || [];
+        var w = parseInt(v.w, 10) || img.naturalWidth || 0;
+        var midW = Math.min(1600, w);
+        var sizes = '(max-width: 900px) 100vw, min(1400px, calc(100vw - 100px))';
+        var webpSet = [];
+        if (webp[0] && w) webpSet.push(webp[0] + ' ' + w + 'w');
+        if (webp[1] && midW && midW < w) webpSet.push(webp[1] + ' ' + midW + 'w');
+        if (webpSet.length) {
+            img.setAttribute('srcset', webpSet.join(', '));
+            img.setAttribute('sizes', sizes);
+        } else {
+            img.removeAttribute('srcset');
+            img.removeAttribute('sizes');
+        }
+        var avifSet = [];
+        if (avif[0] && w) avifSet.push(avif[0] + ' ' + w + 'w');
+        if (avif[1] && midW && midW < w) avifSet.push(avif[1] + ' ' + midW + 'w');
+        if (avifSet.length) {
+            var picture = (img.parentNode && img.parentNode.tagName === 'PICTURE') ? img.parentNode : null;
+            if (!picture) {
+                picture = document.createElement('picture');
+                picture.className = 'pp-picture';
+                img.parentNode.insertBefore(picture, img);
+                picture.appendChild(img);
+            }
+            var source = picture.querySelector('source[type="image/avif"]');
+            if (!source) {
+                source = document.createElement('source');
+                source.type = 'image/avif';
+                picture.insertBefore(source, img);
+            }
+            source.setAttribute('srcset', avifSet.join(', '));
+            source.setAttribute('sizes', sizes);
+        } else if (img.parentNode && img.parentNode.tagName === 'PICTURE') {
+            var p = img.parentNode;
+            p.parentNode.insertBefore(img, p);
+            p.remove();
+        }
+    }
     function applyLqip(popup) {
         if (!popup) return;
         var pic = popup.querySelector('.pic');
         var img = pic ? pic.querySelector('img') : null;
         if (!img || !pic) return;
+        applyResponsive(popup, img);
         var full = img.getAttribute('src') || '';
         var pre = lqipFor(full);
         if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; captionFadeInAfterImage(); return; }
