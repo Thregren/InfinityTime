@@ -63,8 +63,8 @@ function pp_csrf_check(): bool
     if ($t !== '' && isset($_POST['_']) && hash_equals($t, (string)$_POST['_'])) {
         return true;
     }
-    // AJAX 请求必须带有效 token（前端统一附带）；仅原生无 JS 提交才回退到同源 referer
-    if (!empty($_POST['ajax'])) {
+    // AJAX 请求必须带有效 token（前端统一附带）；token 不可用/原生提交时回退到同源 referer
+    if (!empty($_POST['ajax']) && $t !== '') {
         return false;
     }
     $ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
@@ -248,7 +248,14 @@ if (!empty($_GET['ajax'])) {
     // 写操作类 job 需要 CSRF token：否则可被 <img src="...&job=cleanup"> 之类的 GET 请求触发
     if (in_array($job, ['rebuild', 'cleanup', 'resync'], true)) {
         $__t = pp_csrf_token();
-        if ($__t === '' || !isset($_GET['_']) || !hash_equals($__t, (string)$_GET['_'])) {
+        $__ok = $__t !== '' && isset($_GET['_']) && hash_equals($__t, (string)$_GET['_']);
+        if (!$__ok && $__t === '') {
+            // token 不可用时回退到同源 referer（GET 由前端同源 fetch 发起）
+            $__ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
+            $__refHost = $__ref !== '' ? (string)parse_url($__ref, PHP_URL_HOST) : '';
+            $__ok = $__refHost !== '' && strcasecmp($__refHost, (string)($_SERVER['HTTP_HOST'] ?? '')) === 0;
+        }
+        if (!$__ok) {
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '安全校验失败，请刷新后台页面后重试'], JSON_UNESCAPED_UNICODE);
             exit;
@@ -730,7 +737,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'save_site') {
         $ajax = !empty($_POST['ajax']);
         $oldLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
-        $logo = pp_valid_logo_url((string)($_POST['siteLogo'] ?? ''));
+        $logoInput = trim((string)($_POST['siteLogo'] ?? ''));
+        $logo = pp_valid_logo_url($logoInput);
+        if ($logoInput !== '' && $logo === '') {
+            if ($ajax) { pp_reply_json(false, _t('头像链接只支持 http(s) 或站内相对路径')); }
+            pp_reply(_t('头像链接只支持 http(s) 或站内相对路径'), 'error');
+        }
         $newAvatarAbs = null;
         // 支持直接上传头像：选了文件就转成 WebP 存入独立目录（不参与「清理孤儿文件」），并自动生成链接。
         if (!empty($_FILES['siteLogoFile']['tmp_name'])) {
@@ -931,7 +943,9 @@ $siteTagline = (string)Plugin::opt('infinitytimeSiteTagline', '');
 $aboutText = (string)Plugin::opt('infinitytimeAbout', '');
 $contacts = json_decode((string)Plugin::opt('infinitytimeContacts', '[]'), true) ?: [];
 // 插件目录对应的站点 URL（用于引用 admin.css / admin.js）
-$ppPluginWeb = rtrim((string)$options->siteUrl, '/') . str_replace('\\', '/', substr(__DIR__, strlen(rtrim((string)__TYPECHO_ROOT_DIR__, '/'))));
+$ppRel = str_replace('\\', '/', substr(__DIR__, strlen(rtrim((string)__TYPECHO_ROOT_DIR__, '/'))));
+if (strpos($ppRel, '/') !== 0) { $ppRel = '/usr/plugins/InfinityTime'; }
+$ppPluginWeb = rtrim((string)$options->siteUrl, '/') . $ppRel;
 $ppCsrf = pp_csrf_token();
 $ppJobState = pp_read_json(pp_data_file() . '/job.json');
 
