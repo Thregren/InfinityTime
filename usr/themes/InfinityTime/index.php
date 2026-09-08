@@ -926,6 +926,24 @@ if (!headers_sent()) {
         }
         // 定位并显示侧栏：灯箱开着就显示，放到主图外侧。
         // 当主图太宽、左右都放不下侧栏时，收缩主图宽度，保证 EXIF 面板不遮挡照片。
+        // 桌面端底部切图按钮：跟随 EXIF 侧栏放到其正下方，避免压在照片上；窄屏恢复 CSS 默认的底部居中。
+        function ppPlaceDockNav(dock, on) {
+          const nav = document.querySelector('.pp-mobile-nav');
+          if (!nav) return;
+          if (!on) {
+            nav.style.left = ''; nav.style.top = ''; nav.style.right = ''; nav.style.bottom = ''; nav.style.width = '';
+            return;
+          }
+          const dr = dock.getBoundingClientRect();
+          const navH = nav.offsetHeight || 46;
+          let top = dr.bottom + 14;
+          if (top + navH > window.innerHeight - 12) top = Math.max(12, window.innerHeight - navH - 12);
+          nav.style.left = Math.round(dr.left) + 'px';
+          nav.style.top = Math.round(top) + 'px';
+          nav.style.right = 'auto';
+          nav.style.bottom = 'auto';
+          nav.style.width = Math.round(dr.width) + 'px';
+        }
         function positionDockExif(popupArg) {
           const dock = getExifDock();
           const overlay = document.querySelector('.poptrox-overlay');
@@ -940,7 +958,7 @@ if (!headers_sent()) {
           const popup = popupArg || currentPopupExif();
           if (!popup) return;
           const vw = window.innerWidth;
-          if (vw <= 900) return;
+          if (vw <= 900) { ppPlaceDockNav(dock, false); return; }
           const img = popup.querySelector('.pic img');
           const dw = dock.offsetWidth || 250;
           const gap = 16;
@@ -966,6 +984,7 @@ if (!headers_sent()) {
           if (left < edge) left = Math.max(edge, vw - dw - edge);
           dock.style.left = left + 'px';
           dock.style.top = Math.max(12, rect.top) + 'px';
+          ppPlaceDockNav(dock, true);
         }
         // 根据当前显示的主图 src 反查所属相册并刷新侧栏
         function syncDockExif() {
