@@ -373,7 +373,6 @@ document.addEventListener('DOMContentLoaded', function() {
         $main.find('.thumb > a.image').off('click');
         $main.poptrox(PP_CONFIG);
         if (typeof ensureExifObserver === 'function') ensureExifObserver();
-        if (typeof checkImgs === 'function') checkImgs();
     };
 
     // 适配窄屏：xsmall 时把弹窗边距归零（对第二个（当前）poptrox 实例生效，带守卫防未初始化时报错）。
@@ -431,7 +430,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (m.type === 'attributes' && m.attributeName === 'src') {
                 var img = m.target;
                 var popup = img.closest ? img.closest('.poptrox-popup') : null;
-                if (popup) applyLqip(popup);
+                if (popup) { applyLqip(popup); preloadNeighbors(popup); }
             }
         });
     }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['src'] });
@@ -496,6 +495,28 @@ document.addEventListener('DOMContentLoaded', function() {
         if (typeof applyLqip === 'function' && !cur.album.previews[ni]) { /* 预览依赖 src 变化触发的 observer */ }
         if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
         return true;
+    }
+    // 预加载当前图的相邻图（同图集前后 + 相邻图集首图），让键盘/按钮/滑动切换更跟手。
+    // 每张只预加载一次；用 new Image() 走浏览器缓存，不阻塞主线程。
+    var __preloaded = {};
+    function preloadUrl(u) {
+        if (!u || __preloaded[u]) return;
+        __preloaded[u] = true;
+        try { var im = new Image(); im.decoding = 'async'; im.src = u; } catch (e) {}
+    }
+    function preloadNeighbors(popup) {
+        try {
+            var img = popup && popup.querySelector('.pic img');
+            var src = img && img.getAttribute('src');
+            var cur = albumForSrc(src);
+            if (!cur) return;
+            var album = cur.album, idx = cur.idx;
+            preloadUrl(album.images[idx - 1]);
+            preloadUrl(album.images[idx + 1]);
+            var ai = ALBUMS.indexOf(album);
+            if (ai > 0) preloadUrl(ALBUMS[ai - 1].images[0]);
+            if (ai >= 0 && ai + 1 < ALBUMS.length) preloadUrl(ALBUMS[ai + 1].images[0]);
+        } catch (e) {}
     }
     // 捕获阶段拦截上一张/下一张按钮，避免 poptrox 直接跳到相邻图集
     document.addEventListener('click', function(e) {

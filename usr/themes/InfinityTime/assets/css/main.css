@@ -2778,6 +2778,15 @@ span.tag-list a:hover {
   transform: translateY(0);
   pointer-events: auto;
 }
+/* EXIF 抽屉把手：桌面端隐藏，仅移动端作为抽屉开关显示 */
+.exif-dock-handle { display: none; }
+.exif-dock-grip {
+  display: block;
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .28);
+}
 /* 灯箱主图：桌面端为 EXIF 停靠栏预留宽度（在渲染时就限宽，避免切图时先闪原尺寸再收缩） */
 :root {
   --exif-dock-reserve: calc((218px + 16px + 12px) * 2);
@@ -2897,9 +2906,36 @@ span.tag-list a:hover {
     left: 10px !important;
     right: 10px !important;
     top: auto !important;
-    bottom: 10px !important;
+    bottom: 0 !important;
     width: auto;
-    max-height: 38vh;
+    max-height: 62vh;
+    padding: 0 18px 16px;
+    border-radius: 14px 14px 0 0;
+    /* 抽屉默认收起：只露出把手；.expanded 时滑出 */
+    transform: translateY(calc(100% - 50px));
+  }
+  .poptrox-exif-dock.show {
+    transform: translateY(calc(100% - 50px));
+  }
+  .poptrox-exif-dock.expanded {
+    transform: translateY(0);
+  }
+  .exif-dock-handle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 50px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #191c1e;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .exif-dock-handle-text {
+    font-size: 13px;
+    letter-spacing: .06em;
+    color: rgba(255, 255, 255, .72);
   }
 }
 
@@ -2933,8 +2969,22 @@ span.tag-list a:hover {
   display: block;
   width: 100%;
   height: auto;
-  background: none;
+  /* 图片加载前的 shimmer 骨架占位；加载完成（img-loaded）后移除 */
+  background: linear-gradient(100deg, #23262a 30%, #2c3036 50%, #23262a 70%);
+  background-size: 220% 100%;
+  animation: ppSkeleton 1.4s ease-in-out infinite;
   border: 0;
+}
+#main > #waterfall .thumb.img-loaded > .image {
+  background: none;
+  animation: none;
+}
+@keyframes ppSkeleton {
+  from { background-position: 220% 0; }
+  to   { background-position: -220% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #main > #waterfall .thumb > .image { animation: none; }
 }
 #main > #waterfall .thumb > .image img.zmki_px {
   position: static;

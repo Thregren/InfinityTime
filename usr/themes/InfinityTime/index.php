@@ -224,27 +224,25 @@ if (!headers_sent()) {
                 </div>
       </footer>
       <script type="text/javascript">
-        function isInSight(el) {
-          const bound = el.getBoundingClientRect();
-          return bound.top <= window.innerHeight + 100;
-        }
-        function loadImg(el) {
-          if (!el.src && el.dataset.src) {
-            el.src = el.dataset.src;
-          }
-        }
-        function checkImgs() {
-          // 每次全量检查：已加载的图片（有 src）会被 loadImg 跳过，避免 index 跳过导致的漏加载
-          document.querySelectorAll('.my-photo').forEach(function (el) {
-            if (isInSight(el)) loadImg(el);
-          });
-        }
+        // 缩略图懒加载已交给原生 loading="lazy"（模板里 src 与 data-src 相同），
+        // 原来的 checkImgs/loadImg 滚动监听因条件永不成立而成为冗余，已移除。
         // 用插件写入的 data-dims 给缩略图预占位（aspect-ratio），
         // 让 CSS 多列布局在图片加载前就有确定高度，避免加载后高度突变导致图片顺序跳变。
         function applyDims(scope) {
           (scope || document).querySelectorAll('a.image.my-photo').forEach(function (a) {
             var host = a.querySelector('img');
             if (!host) return;
+            // 骨架屏：图片加载完成（或失败）后给卡片加 img-loaded，移除 shimmer 占位
+            var thumb = a.closest ? a.closest('.thumb') : null;
+            if (thumb && !host.__ppLoadedBound) {
+              host.__ppLoadedBound = true;
+              var markLoaded = function () { thumb.classList.add('img-loaded'); };
+              if (host.complete && host.naturalWidth > 0) { markLoaded(); }
+              else {
+                host.addEventListener('load', markLoaded, { once: true });
+                host.addEventListener('error', markLoaded, { once: true });
+              }
+            }
             var dims = [];
             try { dims = JSON.parse(a.dataset.dims || '[]'); } catch (e) {}
             if (!dims.length) return;
@@ -262,20 +260,6 @@ if (!headers_sent()) {
         applyDims(document);
         // 无限瀑布流翻页后要重新给新卡片占位，暴露给其它内联脚本调用。
         window.applyDims = applyDims;
-        function throttle(fn, mustRun = 16) {
-          var last = 0;
-          return function () {
-            var now = Date.now();
-            if (now - last >= mustRun) {
-              last = now;
-              fn.apply(this, arguments);
-            }
-          };
-        }
-      </script>
-      <script>
-        window.addEventListener('load', checkImgs);
-        window.addEventListener('scroll', throttle(checkImgs), { passive: true });
       </script>
       <script>
       // 瀑布流：按响应式列数把卡片分配到弹性列，保证首行完全顶对齐
@@ -308,7 +292,6 @@ if (!headers_sent()) {
                   if (typeof window.__rebindPoptrox === 'function') {
                     try { window.__rebindPoptrox(); } catch (e) {}
                   }
-                  if (typeof checkImgs === 'function') checkImgs();
                   if (typeof window.applyDims === 'function') window.applyDims(document);
                 }
               } catch (e) {}
@@ -386,13 +369,28 @@ if (!headers_sent()) {
           if (!exifDock) {
             exifDock = document.createElement('div');
             exifDock.className = 'poptrox-exif-dock';
-            exifDock.innerHTML = '<div class="exif-imgtitle"></div>'
+            exifDock.innerHTML =
+              '<div class="exif-dock-handle" role="button" tabindex="0" aria-label="展开或收起拍摄参数">'
+              + '<span class="exif-dock-grip"></span><span class="exif-dock-handle-text">拍摄参数</span>'
+              + '</div>'
+              + '<div class="exif-imgtitle"></div>'
               + '<div class="exif-imgdesc"></div>'
               + '<div class="exif-title">拍摄参数</div>'
               + '<div class="exif-grid"></div>'
               + '<div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"></span></div>'
               + '<div class="exif-palette"><div class="exif-title">主题色</div><div class="palette-list"></div>'
               + '<canvas class="hist-canvas" width="240" height="88"></canvas></div>';
+            // 移动端抽屉：点/回车把手展开或收起（桌面端把手隐藏，不影响布局）
+            var toggleDock = function (e) {
+              var h = e && e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
+              if (h) exifDock.classList.toggle('expanded');
+            };
+            exifDock.addEventListener('click', toggleDock);
+            exifDock.addEventListener('keydown', function (e) {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              var h = e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
+              if (h) { e.preventDefault(); exifDock.classList.toggle('expanded'); }
+            });
             document.body.appendChild(exifDock);
           }
           return exifDock;
@@ -406,13 +404,26 @@ if (!headers_sent()) {
           return '#' + h(r) + h(g) + h(b);
         }
         // 单次采样照片：返回 3 个真实存在的代表性颜色 + RGB 直方图 + 主色（用于氛围光）。
+        // 结果按 src 缓存，并合并同一张图的并发请求：来回切图不再重复解码 + 采样。
+        var __photoCache = {};   // src -> result
+        var __photoPending = {}; // src -> [cb, ...]
         function analyzePhoto(src, cb) {
+          if (!src) { cb({ colors: [], hist: null, top: null }); return; }
+          if (__photoCache[src]) { cb(__photoCache[src]); return; }
+          if (__photoPending[src]) { __photoPending[src].push(cb); return; }
+          __photoPending[src] = [cb];
+          function finish(res) {
+            __photoCache[src] = res;
+            var list = __photoPending[src] || [];
+            delete __photoPending[src];
+            for (var i = 0; i < list.length; i++) { try { list[i](res); } catch (e) {} }
+          }
           var img = new Image();
           img.crossOrigin = 'anonymous';
           img.onload = function () {
             try {
               var w = img.naturalWidth, h = img.naturalHeight;
-              if (!w || !h) return cb({ colors: [], hist: null, top: null });
+              if (!w || !h) return finish({ colors: [], hist: null, top: null });
               var maxDim = 300;
               var scale = Math.min(1, maxDim / Math.max(w, h));
               var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
@@ -501,13 +512,13 @@ if (!headers_sent()) {
                   picked.push(selected);
                 }
               }
-              cb({
+              finish({
                 colors: picked.slice(0, 3).map(function (e) { return rgbToHex(e.r, e.g, e.b); }),
                 hist: [histR, histG, histB]
               });
-            } catch (e) { cb({ colors: [], hist: null, top: null }); }
+            } catch (e) { finish({ colors: [], hist: null, top: null }); }
           };
-          img.onerror = function () { cb({ colors: [], hist: null, top: null }); };
+          img.onerror = function () { finish({ colors: [], hist: null, top: null }); };
           img.src = src;
         }
         // 画 RGB 直方图（三条半透明色带）
@@ -949,7 +960,7 @@ if (!headers_sent()) {
             if (document.body.style.overflow !== 'hidden') document.body.style.overflow = 'hidden';
           } else {
             if (document.body.style.overflow !== '') document.body.style.overflow = '';
-            if (exifDock) exifDock.classList.remove('show');
+            if (exifDock) { exifDock.classList.remove('show'); exifDock.classList.remove('expanded'); }
             ppDestroyPano();
           }
         }
