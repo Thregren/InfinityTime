@@ -273,8 +273,24 @@
   /* ---------- 已发布图集 ---------- */
   var Albums = {
     bind: function () {
+      // 图集展开时才拉取图片列表（避免图集多时首屏 DOM 过大）
+      $$('details.pp-album').forEach(function (d) {
+        if (d.__ppLazyBound) return;
+        d.__ppLazyBound = true;
+        d.addEventListener('toggle', function () {
+          if (!d.open) return;
+          var box = d.querySelector('.pp-thumbs[data-cid]');
+          if (!box || box.getAttribute('data-loaded') === '1') return;
+          var cid = box.getAttribute('data-cid');
+          box.setAttribute('data-loaded', '1');
+          fetch(URL + (URL.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=album_images&cid=' + encodeURIComponent(cid), { credentials: 'same-origin' })
+            .then(function (r) { return r.text(); })
+            .then(function (html) { box.innerHTML = html; Albums.bind(); })
+            .catch(function () { box.setAttribute('data-loaded', '0'); box.innerHTML = '<div class="pp-meta">加载失败，请重试</div>'; });
+        });
+      });
       $$('.pp-thumbs').forEach(function (box) {
-        if (box.__ppSortBound) return;
+        if (box.__ppSortBound || !box.querySelector('.pp-img')) return;
         box.__ppSortBound = true;
         Albums.bindSort(box);
       });

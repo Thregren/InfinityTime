@@ -454,6 +454,12 @@ if (!empty($_GET['ajax'])) {
         header('Content-Type: text/html; charset=utf-8');
         echo pp_render_albums_card(pp_albums($prefix), $options);
         exit;
+    } elseif ($job === 'album_images') {
+        // 图集图片按需加载：展开某个图集时才拉取它的图片列表
+        header('Content-Type: text/html; charset=utf-8');
+        $cid = (int)($_GET['cid'] ?? 0);
+        echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : []);
+        exit;
     }
 
     header('Content-Type: application/json');
@@ -902,34 +908,43 @@ function pp_render_albums_card(array $albums, $options): string
             </form>
           </details>
 
-          <div class="pp-thumbs">
-            <?php foreach ($images as $img): ?>
-              <div class="pp-img">
-                <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
-                <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
-                <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
-                <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
-                  <input type="hidden" name="action" value="set_image_meta">
-                  <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
-                  <label class="addr-label">图片标题</label>
-                  <input type="text" name="title" value="<?php echo htmlspecialchars($img['title'] ?? ''); ?>" placeholder="图片标题（可选）">
-                  <label class="addr-label">图片描述</label>
-                  <textarea name="desc" rows="2" placeholder="图片描述（可选）"><?php echo htmlspecialchars($img['desc'] ?? ''); ?></textarea>
-                  <label class="addr-label">拍摄地址</label>
-                  <input type="text" name="address" value="<?php echo htmlspecialchars($img['address']); ?>" placeholder="写地址">
-                  <button class="pp-btn gray" type="submit">保存图片信息</button>
-                </form>
-                <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
-                  <input type="hidden" name="action" value="delete_image">
-                  <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
-                  <button class="pp-btn red" type="submit">删除</button>
-                </form>
-              </div>
-            <?php endforeach; ?>
-          </div>
+          <!-- 图片列表按需加载：展开时才 AJAX 拉取，避免图集多时首屏 DOM 过大 -->
+          <div class="pp-thumbs" data-cid="<?php echo (int)$al['cid']; ?>" data-loaded="0"><div class="pp-meta">展开后加载图片…</div></div>
         </details>
       <?php endforeach; endif; ?>
     </div>
+    <?php
+    return (string)ob_get_clean();
+}
+
+/** 渲染单个图集的图片列表（展开时 AJAX 按需加载）。 */
+function pp_render_album_thumbs(array $images): string
+{
+    ob_start();
+    ?>
+    <?php foreach ($images as $img): ?>
+      <div class="pp-img">
+        <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
+        <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
+        <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
+        <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <input type="hidden" name="action" value="set_image_meta">
+          <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
+          <label class="addr-label">图片标题</label>
+          <input type="text" name="title" value="<?php echo htmlspecialchars($img['title'] ?? ''); ?>" placeholder="图片标题（可选）">
+          <label class="addr-label">图片描述</label>
+          <textarea name="desc" rows="2" placeholder="图片描述（可选）"><?php echo htmlspecialchars($img['desc'] ?? ''); ?></textarea>
+          <label class="addr-label">拍摄地址</label>
+          <input type="text" name="address" value="<?php echo htmlspecialchars($img['address']); ?>" placeholder="写地址">
+          <button class="pp-btn gray" type="submit">保存图片信息</button>
+        </form>
+        <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <input type="hidden" name="action" value="delete_image">
+          <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
+          <button class="pp-btn red" type="submit">删除</button>
+        </form>
+      </div>
+    <?php endforeach; ?>
     <?php
     return (string)ob_get_clean();
 }
