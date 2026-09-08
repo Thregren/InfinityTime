@@ -3063,7 +3063,7 @@ body.pp-dock-expanded .pp-mobile-nav {
   right: 0;
   z-index: 20011;
   display: none;
-  padding: 14px 20px 44px;
+  padding: 44px 20px 44px;
   text-align: center;
   color: #fff;
   background: linear-gradient(to bottom, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0));
@@ -3085,6 +3085,17 @@ body.pp-dock-expanded .pp-mobile-nav {
 }
 @media (max-width: 900px) {
   .pp-mobile-caption { display: block; }
+  body.exif-dock-open .pp-mobile-caption { opacity: 1; }
+}
+@media (min-width: 901px) {
+  /* PC：标题放灯箱底部，与照片水平居中对齐 */
+  .pp-mobile-caption {
+    display: block;
+    top: auto;
+    bottom: 0;
+    padding: 40px 20px 10px;
+    background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, 0));
+  }
   body.exif-dock-open .pp-mobile-caption { opacity: 1; }
 }
 
