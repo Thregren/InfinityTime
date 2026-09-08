@@ -371,7 +371,7 @@ if (!headers_sent()) {
             exifDock.className = 'poptrox-exif-dock';
             exifDock.innerHTML =
               '<div class="exif-dock-handle" role="button" tabindex="0" aria-label="展开或收起拍摄参数">'
-              + '<span class="exif-dock-grip"></span><span class="exif-dock-handle-text">拍摄参数</span>'
+              + '<span class="exif-dock-handle-text">拍摄参数</span>'
               + '<span class="exif-dock-arrow" aria-hidden="true"></span>'
               + '</div>'
               + '<div class="exif-imgtitle"></div>'

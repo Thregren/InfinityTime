@@ -2780,13 +2780,6 @@ span.tag-list a:hover {
 }
 /* EXIF 抽屉把手：桌面端隐藏，仅移动端作为抽屉开关显示 */
 .exif-dock-handle { display: none; }
-.exif-dock-grip {
-  display: block;
-  width: 38px;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, .28);
-}
 /* 灯箱主图：桌面端为 EXIF 停靠栏预留宽度（在渲染时就限宽，避免切图时先闪原尺寸再收缩） */
 :root {
   --exif-dock-reserve: calc((218px + 16px + 12px) * 2);
@@ -2962,18 +2955,33 @@ span.tag-list a:hover {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 62px;
+  bottom: 92px;
   z-index: 20012;
   display: none;
   justify-content: center;
   gap: 18px;
   opacity: 0;
+  transform: translateY(-24px);
   pointer-events: none;
-  transition: opacity .45s cubic-bezier(0.45, 0, 0.55, 1);
+  transition: opacity .45s cubic-bezier(0.45, 0, 0.55, 1),
+              transform .45s cubic-bezier(0.45, 0, 0.55, 1);
 }
 @media (max-width: 900px) {
   .pp-mobile-nav { display: flex; }
-  body.exif-dock-open:not(.pp-dock-expanded) .pp-mobile-nav { opacity: 1; pointer-events: auto; }
+  /* 显示态：灯箱打开且抽屉收起；等抽屉收起到底后再向下淡入 */
+  body.exif-dock-open .pp-mobile-nav {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+    transition-delay: .45s;
+  }
+  /* 抽屉展开：同速向上移动淡出 */
+  body.pp-dock-expanded .pp-mobile-nav {
+    opacity: 0;
+    transform: translateY(-24px);
+    pointer-events: none;
+    transition-delay: 0s;
+  }
   .pp-mnav-btn {
     width: 46px;
     height: 46px;
