@@ -3100,15 +3100,6 @@ body.pp-dock-expanded .pp-mobile-nav {
     padding: 0 20px;
     background: linear-gradient(to top, rgba(0, 0, 0, .5), rgba(0, 0, 0, 0));
   }
-  /* 桌面端灯箱等宽：宽度固定为可用最大宽度（预留 EXIF 侧栏），比例不同只调高度 */
-  .poptrox-popup:not(.pp-pano-mode) {
-    width: calc(100vw - var(--exif-dock-reserve)) !important;
-  }
-  .poptrox-popup:not(.pp-pano-mode) .pic img {
-    width: 100% !important;
-    height: auto !important;
-    object-fit: contain;
-  }
 }
 /* 标题显示：由 JS 在「照片淡入完成」后加类淡入；按下切图按钮时立即移除淡出 */
 .pp-mobile-caption.pp-cap-show { opacity: 1; }
