@@ -3016,6 +3016,11 @@ span.tag-list a:hover {
   }
 }
 
+/* 移动端禁用 blur-up 缩略图占位：避免「先缩略图、后原图」的清晰度跳变；直接原图淡入 */
+@media (max-width: 900px) {
+  .poptrox-popup .pp-lqip { display: none !important; }
+}
+
 /* 移动端图片上方标题：图集标题 + 图片名字，随切图淡入淡出更新 */
 .pp-mobile-caption {
   position: fixed;
