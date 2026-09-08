@@ -434,9 +434,12 @@ document.addEventListener('DOMContentLoaded', function() {
         // 缩略图立刻垫底：不能从透明淡入，否则切图瞬间会先露出弹窗外面的背景（更生硬）。
         lq.style.backgroundImage = 'url("' + pre + '")';
         lq.style.opacity = '1';
-        // 原图先透明，等完全解码后再淡入覆盖缩略图，避免「模糊 → 清晰」跳变。
+        // 原图先透明：这里必须临时关掉过渡，否则新 <img> 的默认 opacity:1 会先
+        // 「反向淡出」一段，等于加载期间把下一张照片提前露出来。
+        img.style.transition = 'none';
         img.style.opacity = '0';
-        void img.offsetWidth; // 强制 reflow，保证淡入过渡生效
+        void img.offsetWidth; // 强制 reflow，确保下一帧从 opacity:0 起步
+        img.style.transition = ''; // 恢复 CSS 里的柔和淡入过渡
         function reveal() {
             if (seq !== popup.__lqipSeq) return; // 已切到下一张，丢弃过期回调
             img.style.opacity = '1';
@@ -445,10 +448,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 clearLqip(popup);
             }, 1000); // 覆盖 poptrox 的尺寸过渡(420ms) + .pic 淡入(420ms)，避免中途露出背景
         }
-        // 等浏览器把全图解完码再淡入：避免移动端「边解码边变清晰」的逐层跳变。
+        // 两个条件都满足才显示原图：①浏览器已解码完成（避免边解码边变清晰）；
+        // ②poptrox 已结束 loading（此时它会对 .pic 做淡入）。这样缩略图会一直垫在下面，
+        // 原图是随 .pic 的淡入柔和盖上去，不会先整张弹出、再被 .pic 的淡入闪一下。
         function whenDecoded() {
-            if (img.decode) { img.decode().then(reveal, reveal); }
-            else { reveal(); }
+            var gate = function() {
+                if (seq !== popup.__lqipSeq) return;
+                if (!popup.classList.contains('loading')) { reveal(); return; }
+                var mo = new MutationObserver(function() {
+                    if (popup.classList.contains('loading')) return;
+                    mo.disconnect();
+                    if (seq === popup.__lqipSeq) reveal();
+                });
+                mo.observe(popup, { attributes: true, attributeFilter: ['class'] });
+                setTimeout(function() { // 兜底：极端情况下 class 未变化也要显示
+                    mo.disconnect();
+                    if (seq === popup.__lqipSeq) reveal();
+                }, 2000);
+            };
+            if (img.decode) { img.decode().then(gate, gate); }
+            else { gate(); }
         }
         if (img.complete) {
             if (img.naturalWidth > 0) { whenDecoded(); }
