@@ -167,6 +167,9 @@ class ImageRepository
             $result = MediaProcessor::process($src, $fullPath, $thumbPath, $opts['thumb_max'], $opts['quality'], $opts['max_width'], $opts['full_quality']);
 
             $gps = $result['exif']['gps'] ?? null;
+            // GPS 只保留在私有列 gps_lat/gps_lng（后台/未来反向地理编码用），
+            // 不写进会被前台 data-exif 原样输出的 exif JSON，避免精确坐标公开。
+            unset($result['exif']['gps']);
 
             return [
                 'original' => $origRel,
@@ -321,6 +324,7 @@ class ImageRepository
         $panos = [];
         $dims = [];
         $variants = [];
+        $exifs = [];
         foreach ($rows as $r) {
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
@@ -338,9 +342,13 @@ class ImageRepository
                 'webp' => array_values(array_filter([(string)($r['full'] ?? ''), (string)($r['mid'] ?? '')])),
                 'avif' => array_values(array_filter([(string)($r['avif'] ?? ''), (string)($r['mid_avif'] ?? '')])),
             ];
+            // 重建文章里的 exif 字段时同样剔除 gps（历史数据也据此清掉）
+            $e = is_array($r['exif'] ?? null) ? $r['exif'] : [];
+            unset($e['gps']);
+            $exifs[] = $e;
         }
-        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants];
-        foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants'] as $f) {
+        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs];
+        foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif'] as $f) {
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
             // 注意：variants 的元素是数组，不能直接用 array_filter($val, 'strlen')（PHP 8 会对数组调 strlen 报错）

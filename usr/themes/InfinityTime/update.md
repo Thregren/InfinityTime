@@ -1,5 +1,18 @@
 # 更新日志
 
+## 1.13.2
+
+### 安全修复（依据线上体检报告）
+
+- **修复标题属性注入**：Typecho 的 `title()` 是直接 echo 且返回 `null`，原来的 `htmlspecialchars($this->title())` 实际输出的是**未转义标题**；现改用 `$this->title` 属性 + `htmlspecialchars(..., ENT_QUOTES)`，`<h2>` 也改为转义输出。
+- **不再公开 GPS 坐标**：入库时把 `gps` 从会被前台 `data-exif` 原样输出的 EXIF JSON 中剔除（坐标仍保留在私有 `gps_lat / gps_lng` 列）；`syncPostFields` 重建 `exif` 字段时同样剔除，历史数据重建后清除。
+- 服务器 nginx 已加 `deny all`：`/usr/uploads/original/` 与 `/usr/plugins/InfinityTime/data/` 外部访问返回 403（原图含完整 EXIF/GPS 且文件名可枚举）。
+
+### 验证
+
+- 首页 `data-exif` 已无 `gps` / `lat`；`aria-label`、`alt`、`<h2>` 正常且转义。
+- 外部请求 `original/`、`data/` → 403，`full/` 与首页 → 200。
+
 ## 1.13.1
 
 ### 工程化 / 测试

@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.13.1
+ * @version 1.13.2
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -103,7 +103,7 @@ if (!headers_sent()) {
           $exif0 = $exifList[0] ?? [];
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
           ?>
-          <a class="image my-photo" aria-label="<?php echo htmlspecialchars($this->title()); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
+          <a class="image my-photo" aria-label="<?php echo htmlspecialchars((string)$this->title, ENT_QUOTES); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
              data-images='<?php echo json_encode($images, $__jsonFlags); ?>'
              data-previews='<?php echo json_encode($thumbs ?: $images ?: [], $__jsonFlags); ?>'
              data-exif='<?php echo json_encode($exifList, $__jsonFlags); ?>'
@@ -114,13 +114,13 @@ if (!headers_sent()) {
              data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'
              data-variants='<?php echo json_encode($variantsList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
-              alt="<?php echo htmlspecialchars($this->title()); ?>"
+              alt="<?php echo htmlspecialchars((string)$this->title, ENT_QUOTES); ?>"
               src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"
               loading="lazy" decoding="async"
               onerror="this.src='<?php $this->options->themeUrl('assets/img/loading.gif'); ?>';this.onerror=null"
               data-src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>" />
           </a>
-          <h2><?php $this->title() ?></h2>
+          <h2><?php echo htmlspecialchars((string)$this->title); ?></h2>
           <?php if($this->content): ?>
           <div class="content-wrapper">
             <p><?php $this->content('内容加载中...'); ?></p>
