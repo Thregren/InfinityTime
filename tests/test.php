@@ -27,19 +27,31 @@ function check(string $name, bool $cond): void
     }
 }
 
-echo "Sanitizer::sanitize\n";
-$cases = [
-    ['<p>hi <b>there</b></p>', '<p>hi <b>there</b></p>'],
-    ['<script>alert(1)</script><p>ok</p>', '<p>ok</p>'],
-    ['<img src=x onerror=alert(1)>', '<img src=x>'],
-    ['<a href="javascript:alert(1)">x</a>', '<a href="#">x</a>'],
-    ["<a href='javascript:alert(1)'>x</a>", '<a href="#">x</a>'],
-    ['<a href=javascript:alert(1)>x</a>', '<a href="#">x</a>'],
-    ['<a href="data:text/html,x">x</a>', '<a href="#">x</a>'],
-    ['<iframe src="https://evil"></iframe>', ''],
+echo "Sanitizer::sanitize — 安全内容保留\n";
+check('段落 + 加粗', Sanitizer::sanitize('<p>hi <b>there</b></p>') === '<p>hi <b>there</b></p>');
+check('http 链接保留', strpos(Sanitizer::sanitize('<a href="https://example.com">x</a>'), 'https://example.com') !== false);
+check('mailto 链接保留', strpos(Sanitizer::sanitize('<a href="mailto:a@b.c">x</a>'), 'mailto:a@b.c') !== false);
+
+echo "Sanitizer::sanitize — 危险 payload 必须被中和\n";
+$payloads = [
+    '<script>alert(1)</script><p>ok</p>',
+    '<img src=x onerror=alert(1)>',
+    '<svg/onload=alert(1)>',
+    '<img/src="x"/onerror=alert(1)>',
+    '<a href="javascript:alert(1)">x</a>',
+    '<a href="&#x6a;avascript:alert(1)">x</a>',
+    '<a href="&#106;avascript:alert(1)">x</a>',
+    "<a href=\"java\nscript:alert(1)\">x</a>",
+    '<form action="javascript:alert(1)">x</form>',
+    '<iframe src="https://evil"></iframe>',
+    '<a href="data:text/html,x">x</a>',
 ];
-foreach ($cases as $i => $pair) {
-    check('case #' . $i, Sanitizer::sanitize($pair[0]) === $pair[1]);
+foreach ($payloads as $i => $payload) {
+    $out = Sanitizer::sanitize($payload);
+    $bad = preg_match('/javascript\s*:/i', $out)
+        || preg_match('/\bon[a-z]+\s*=/i', $out)
+        || preg_match('#<\s*(script|svg|iframe|img|form|object|embed|math)\b#i', $out);
+    check('payload #' . $i . ' 已中和', $bad === false);
 }
 
 echo "Sanitizer::validUrl\n";
@@ -50,6 +62,16 @@ check('relative', Sanitizer::validUrl('/usr/uploads/a.png') === '/usr/uploads/a.
 check('javascript rejected', Sanitizer::validUrl('javascript:alert(1)') === '');
 check('data rejected', Sanitizer::validUrl('data:text/html,x') === '');
 check('empty', Sanitizer::validUrl('   ') === '');
+
+echo "Sanitizer::safeLink\n";
+check('http', Sanitizer::safeLink('https://x/y') === 'https://x/y');
+check('mailto', Sanitizer::safeLink('mailto:a@b.c') === 'mailto:a@b.c');
+check('relative', Sanitizer::safeLink('/a/b') === '/a/b');
+check('protocol-relative', Sanitizer::safeLink('//cdn/x') === '//cdn/x');
+check('javascript rejected', Sanitizer::safeLink('javascript:alert(1)') === '');
+check('entity-encoded javascript rejected', Sanitizer::safeLink('&#x6a;avascript:alert(1)') === '');
+check('newline-in-scheme javascript rejected', Sanitizer::safeLink("java\nscript:alert(1)") === '');
+check('data rejected', Sanitizer::safeLink('data:text/html,x') === '');
 
 echo "ImageRepository::isPano\n";
 check('2:1', ImageRepository::isPano(8192, 4096) === true);

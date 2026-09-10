@@ -46,6 +46,44 @@ function pp_reply_json(bool $ok, string $msg): void
     exit;
 }
 
+/** 是否管理员。 */
+function pp_is_admin(): bool
+{
+    global $user;
+    return $user->pass('administrator', true);
+}
+
+/** 统一权限拒绝：AJAX 返回 JSON，普通请求跳回面板提示。 */
+function pp_deny(string $msg): void
+{
+    if (!empty($_POST['ajax']) || !empty($_GET['ajax'])) {
+        pp_reply_json(false, _t($msg));
+    }
+    pp_reply(_t($msg), 'error');
+}
+
+/** 需要管理员权限（站点信息 / 转换设置 / 维护 / 联系方式）。 */
+function pp_require_admin(): void
+{
+    if (!pp_is_admin()) {
+        pp_deny('需要管理员权限');
+    }
+}
+
+/** 当前用户能否编辑指定图集：管理员，或该图集的作者本人。 */
+function pp_can_edit_cid(int $cid): bool
+{
+    global $user, $db, $prefix;
+    if ($cid <= 0) {
+        return false;
+    }
+    if (pp_is_admin()) {
+        return true;
+    }
+    $r = $db->fetchRow($db->select('authorId')->from($prefix . 'contents')->where('cid = ?', $cid)->limit(1));
+    return $r && (int)$r['authorId'] === (int)$user->uid;
+}
+
 /** 后台 CSRF token（绑定当前登录用户，同一会话内稳定）。 */
 function pp_csrf_token(): string
 {
@@ -231,6 +269,12 @@ if (!empty($_GET['ajax'])) {
     $job = (string)($_GET['job'] ?? '');
     // 写操作类 job 需要 CSRF token：否则可被 <img src="...&job=cleanup"> 之类的 GET 请求触发
     if (in_array($job, ['rebuild', 'cleanup', 'resync'], true)) {
+        // 维护任务会批量改动全站文件：仅管理员
+        if (!$user->pass('administrator', true)) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '需要管理员权限'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
         $__t = pp_csrf_token();
         $__ok = $__t !== '' && isset($_GET['_']) && hash_equals($__t, (string)$_GET['_']);
         if (!$__ok && $__t === '') {
@@ -436,12 +480,16 @@ if (!empty($_GET['ajax'])) {
     } elseif ($job === 'albums_html') {
         // 局部刷新图集列表：只返回卡片 HTML，避免为刷新列表重新渲染整个后台页面
         header('Content-Type: text/html; charset=utf-8');
-        echo pp_render_albums_card(pp_albums($prefix), $options);
+        echo pp_render_albums_card(pp_albums($prefix, pp_is_admin() ? 0 : (int)$user->uid), $options);
         exit;
     } elseif ($job === 'album_images') {
         // 图集图片按需加载：展开某个图集时才拉取它的图片列表
         header('Content-Type: text/html; charset=utf-8');
         $cid = (int)($_GET['cid'] ?? 0);
+        if (!pp_can_edit_cid($cid)) {
+            echo '<div class="pp-meta">没有权限查看该图集</div>';
+            exit;
+        }
         echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : []);
         exit;
     }
@@ -595,6 +643,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'update_album') {
         $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
+        if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
         if ($cid > 0) {
             $title = trim((string)($_POST['title'] ?? ''));
             if ($title !== '') {
@@ -616,10 +665,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $addr = trim((string)($_POST['address'] ?? ''));
         if ($rowId > 0) {
             $row = $db->fetchRow($db->select('cid')->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
+            if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限修改该图片'); }
             ImageRepository::setImageMeta($rowId, $title, $desc, $addr);
             if ($row && (int)$row['cid'] > 0) {
                 ImageRepository::syncPostFields((int)$row['cid']);
             }
+        } else {
+            pp_deny('没有权限修改该图片');
         }
         if ($ajax) { pp_reply_json(true, _t('已保存图片信息')); }
         pp_reply(_t('已保存图片信息'));
@@ -628,6 +680,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'sort_images') {
         $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
+        if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
         $rowIds = (array)($_POST['rowIds'] ?? []);
         $order = 0;
         foreach ($rowIds as $rid) {
@@ -650,16 +703,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $rowId = (int)($_POST['rowId'] ?? 0);
         if ($rowId > 0) {
             $row = $db->fetchRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
-            if ($row) {
-                ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
-                $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
-            }
+            if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限删除该图片'); }
+            ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
+            $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
+        } else {
+            pp_deny('没有权限删除该图片');
         }
         if ($ajax) { pp_reply_json(true, _t('已删除该图片')); }
         pp_reply(_t('已删除该图片'));
     }
 
     if ($action === 'preview_non_plugin' || $action === 'delete_non_plugin') {
+        pp_require_admin(); // 一键清理全站非插件文章：仅管理员
         // 汇总“本插件发布的图集”cid：有 img 自定义字段 或 在 infinitytime_images 表里
         $pluginCids = [];
         foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img')) as $f) {
@@ -705,6 +760,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_settings') {
+        pp_require_admin(); // 全站图片处理参数：仅管理员
         $ajax = !empty($_POST['ajax']);
         Plugin::setOption('infinitytimeQuality', max(1, min(100, (int)($_POST['quality'] ?? Plugin::DEFAULT_QUALITY))));
         Plugin::setOption('infinitytimeThumbMax', max(200, min(4096, (int)($_POST['thumbMax'] ?? Plugin::DEFAULT_THUMB_MAX))));
@@ -720,6 +776,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'delete_album') {
         $cid = (int)($_POST['cid'] ?? 0);
         $ajax = !empty($_POST['ajax']);
+        if (!pp_can_edit_cid($cid)) { pp_deny('没有权限删除该图集'); }
         if ($cid > 0) {
             ImageRepository::removeFor($cid);
             $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
@@ -734,6 +791,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_site') {
+        pp_require_admin(); // 站点信息 / 关于：仅管理员
         $ajax = !empty($_POST['ajax']);
         $oldLogo = (string)Plugin::opt('infinitytimeSiteLogo', '');
         $logoInput = trim((string)($_POST['siteLogo'] ?? ''));
@@ -782,6 +840,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'save_contacts') {
+        pp_require_admin(); // 联系方式：仅管理员
         $ajax = !empty($_POST['ajax']);
         $names = (array)($_POST['contactName'] ?? []);
         $urls = (array)($_POST['contactUrl'] ?? []);
@@ -790,9 +849,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $contacts = [];
         foreach ($names as $i => $name) {
             $name = trim((string)$name);
-            $url = trim((string)($urls[$i] ?? ''));
-            if ($name === '' && $url === '') {
+            $urlRaw = trim((string)($urls[$i] ?? ''));
+            if ($name === '' && $urlRaw === '') {
                 continue;
+            }
+            // 联系方式是前台 href，必须校验协议（否则可存 javascript: 链接）
+            $url = \TypechoPlugin\InfinityTime\Lib\Sanitizer::safeLink($urlRaw);
+            if ($urlRaw !== '' && $url === '') {
+                if ($ajax) { pp_reply_json(false, _t('联系方式链接只支持 http(s) / mailto / tel / 站内相对路径')); }
+                pp_reply(_t('联系方式链接只支持 http(s) / mailto / tel / 站内相对路径'), 'error');
             }
             $contacts[] = [
                 'name' => $name,
@@ -811,11 +876,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ---------------------------------- 数据准备 ---------------------------------- */
 
-function pp_albums(string $prefix): array
+function pp_albums(string $prefix, int $authorId = 0): array
 {
     $db = Db::get();
-    $rows = $db->fetchAll($db->select('cid', 'title')->from($prefix . 'contents')
-        ->where('type = ?', 'post')->where('status = ?', 'publish')->order('created', Db::SORT_DESC));
+    $q = $db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post')->where('status = ?', 'publish');
+    if ($authorId > 0) {
+        // 贡献者只看到自己的图集（写操作已按作者校验，读取同样隔离）
+        $q->where('authorId = ?', $authorId);
+    }
+    $rows = $db->fetchAll($q->order('created', Db::SORT_DESC));
     if (!$rows) {
         return [];
     }
@@ -872,7 +941,7 @@ function pp_render_albums_card(array $albums, $options): string
               <a class="pp-meta" target="_blank" href="<?php echo htmlspecialchars(Helper::url('index.php', $options->siteUrl)); ?>">前台查看</a>
               <form method="post" style="display:inline" class="pp-delete-album">
                 <input type="hidden" name="action" value="delete_album">
-                <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
+                <input type="hidden" name="cid" value="<?php echo (int)$al['cid']; ?>">
                 <button class="pp-btn red pp-small" type="submit" data-loading="删除中…">删除</button>
               </form>
             </span>
@@ -882,7 +951,7 @@ function pp_render_albums_card(array $albums, $options): string
             <summary>编辑图集信息</summary>
             <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
               <input type="hidden" name="action" value="update_album">
-              <input type="hidden" name="cid" value="<?php echo $al['cid']; ?>">
+              <input type="hidden" name="cid" value="<?php echo (int)$al['cid']; ?>">
               <div class="pp-grid" style="margin-top:10px">
                 <div class="pp-row"><label>标题</label><input type="text" name="title" value="<?php echo htmlspecialchars($al['title']); ?>"></div>
                 <div class="pp-row"><label>设备</label><input type="text" name="device" value="<?php echo htmlspecialchars($al['device']); ?>"></div>
@@ -936,7 +1005,7 @@ function pp_render_album_thumbs(array $images): string
 
 $notice = $options->request->get('notice');
 $noticeType = $options->request->get('noticeType', 'success');
-$albums = pp_albums($prefix);
+$albums = pp_albums($prefix, pp_is_admin() ? 0 : (int)$user->uid);
 $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
 $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
 $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);

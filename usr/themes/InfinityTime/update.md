@@ -1,5 +1,22 @@
 # 更新日志
 
+## 1.13.3
+
+### 安全修复（依据漏洞分析报告）
+
+- **V1 存储型 XSS**：`Sanitizer` 从正则黑名单改为 **DOM 白名单**——只保留 `p / br / strong / em / b / i / ul / ol / li / blockquote / h2-h4 / a`，其它标签丢弃（保留文字），所有属性只保留白名单（`a` 仅 `href / title`），`href` 走协议校验。修复 `<svg/onload>`、`<img/src=…/onerror>`、HTML 实体 / 换行编码的 `javascript:`、`<form action=…>` 等 6 个绕过。
+- **V2 联系方式 `javascript:` 链接**：`save_contacts` 复用 `Sanitizer::safeLink()` 校验协议（仅 `http(s) / mailto / tel / 相对路径`）。
+- **V3 权限分层**：新增管理员与作者校验——
+  - 仅管理员：站点信息 / 关于、转换设置、联系方式、清理非插件文章、维护任务（`rebuild / cleanup / resync`）；
+  - 需为图集作者本人或管理员：`delete_album / delete_image / update_album / set_image_meta / sort_images`；
+  - 贡献者只看到自己的图集（列表与图片按需加载均按作者过滤）。
+- **V5**：`pp_render_albums_card()` 的 `cid` 隐藏域统一 `(int)` 输出。
+- **V4 测试**：`tests/test.php` 增加 6 个绕过 payload 与 `safeLink` 用例（共 44 项，CI 运行）。
+
+### 服务器加固（本次一并生效）
+
+- 新增 CSP：`default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'`；无头浏览器回归灯箱 / 全景 / EXIF 均正常、无违规。
+
 ## 1.13.2
 
 ### 安全修复（依据线上体检报告）
