@@ -9,7 +9,7 @@
 ?>
 <?php
 // 静态资源版本号（以文件 mtime 生成，改动即失效缓存，避免改后还看到旧的 CSS/JS）
-$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js')), 0, 8);
+$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js') . (string)@filemtime(__DIR__ . '/assets/js/init.js')), 0, 8);
 // JSON 嵌入 HTML 属性时的安全标志：把 ' " & < > 转成 \uXXXX，
 // 防止用户标题/描述/文件名等含引号或尖括号时破坏属性或注入脚本（存储型 XSS）。
 $__jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG;
@@ -117,7 +117,7 @@ if (!headers_sent()) {
               alt="<?php echo htmlspecialchars((string)$this->title, ENT_QUOTES); ?>"
               src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"
               loading="lazy" decoding="async"
-              onerror="this.src='<?php $this->options->themeUrl('assets/img/loading.gif'); ?>';this.onerror=null"
+              data-fallback="<?php $this->options->themeUrl('assets/img/loading.gif'); ?>"
               data-src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>" />
           </a>
           <h2><?php echo htmlspecialchars((string)$this->title); ?></h2>
@@ -178,7 +178,10 @@ if (!headers_sent()) {
       ?>
 
       <!-- 原有的 load-more div -->
-      <div id="load-more" data-page="1" data-total-pages="<?php echo $total; ?>"></div>
+      <div id="load-more" data-page="1" data-total-pages="<?php echo $total; ?>"
+           data-pager-base="<?php echo htmlspecialchars($this->is('category')
+               ? (rtrim((string)$this->options->siteUrl, '/') . '/index.php/category/' . $this->getArchiveSlug() . '/')
+               : (rtrim((string)$this->options->siteUrl, '/') . '/index.php/page/'), ENT_QUOTES); ?>"></div>
     </div>
 
     <body>
@@ -226,115 +229,7 @@ if (!headers_sent()) {
                     <span class="theme"><a href="https://github.com/Thregren/InfinityTime" target="_blank" rel="noopener nofollow">InfinityTime Theme</a></span>
                 </div>
       </footer>
-      <script type="text/javascript">
-        // 缩略图懒加载已交给原生 loading="lazy"（模板里 src 与 data-src 相同），
-        // 原来的 checkImgs/loadImg 滚动监听因条件永不成立而成为冗余，已移除。
-        // 用插件写入的 data-dims 给缩略图预占位（aspect-ratio），
-        // 让 CSS 多列布局在图片加载前就有确定高度，避免加载后高度突变导致图片顺序跳变。
-        function applyDims(scope) {
-          (scope || document).querySelectorAll('a.image.my-photo').forEach(function (a) {
-            var host = a.querySelector('img');
-            if (!host) return;
-            // 骨架屏：图片加载完成（或失败）后给卡片加 img-loaded，移除 shimmer 占位
-            var thumb = a.closest ? a.closest('.thumb') : null;
-            if (thumb && !host.__ppLoadedBound) {
-              host.__ppLoadedBound = true;
-              var markLoaded = function () { thumb.classList.add('img-loaded'); };
-              if (host.complete && host.naturalWidth > 0) { markLoaded(); }
-              else {
-                host.addEventListener('load', markLoaded, { once: true });
-                host.addEventListener('error', markLoaded, { once: true });
-              }
-            }
-            var dims = [];
-            try { dims = JSON.parse(a.dataset.dims || '[]'); } catch (e) {}
-            if (!dims.length) return;
-            var m = String(dims[0] || '').split('x');
-            var w = parseInt(m[0], 10), h = parseInt(m[1], 10);
-            if (w > 0 && h > 0) {
-              // 宽高百分比回退：height:auto 会被 aspect-ratio + width 推出来；
-              // 这里同时给 width/height 属性，让现代浏览器在图片解码前也能按比例占空间。
-              host.style.aspectRatio = w + ' / ' + h;
-              host.setAttribute('width', String(w));
-              host.setAttribute('height', String(h));
-            }
-          });
-        }
-        applyDims(document);
-        // 无限瀑布流翻页后要重新给新卡片占位，暴露给其它内联脚本调用。
-        window.applyDims = applyDims;
-      </script>
-      <script>
-      // 瀑布流：按响应式列数把卡片分配到弹性列，保证首行完全顶对齐
-      (function () {
-        var wf = document.getElementById('waterfall');
-        if (!wf) return;
-        // 列布局交给 CSS column 实现，DOM 保持源码顺序（灯箱 poptrox 因此按源码顺序切图）。
-        // 无限瀑布流：滚动到底自动加载下一页并追加到容器。
-        var lm = document.getElementById('load-more');
-        var PAGER_BASE = <?php echo json_encode($this->is('category')
-            ? (rtrim((string)$this->options->siteUrl, '/') . '/index.php/category/' . $this->getArchiveSlug() . '/')
-            : (rtrim((string)$this->options->siteUrl, '/') . '/index.php/page/')); ?>;
-        var curPage = lm ? (parseInt(lm.getAttribute('data-page'), 10) || 1) : 1;
-        var totPages = lm ? (parseInt(lm.getAttribute('data-total-pages'), 10) || 1) : 1;
-        var loadingMore = false;
-        function loadMore() {
-          if (!lm || loadingMore || curPage >= totPages) return;
-          loadingMore = true;
-          fetch(PAGER_BASE + (curPage + 1), { credentials: 'same-origin' })
-            .then(function (r) { return r.text(); })
-            .then(function (html) {
-              try {
-                var doc = new DOMParser().parseFromString(html, 'text/html');
-                var cards = Array.prototype.slice.call(doc.querySelectorAll('#waterfall > .thumb'));
-                if (cards.length) {
-                  cards.forEach(function (card) { wf.appendChild(card); });
-                  curPage += 1;
-                  if (lm) lm.setAttribute('data-page', String(curPage));
-                  // 新卡片需绑定灯箱（poptrox 只在初始化时逐个绑定），否则点击会直接跳原图
-                  if (typeof window.__rebindPoptrox === 'function') {
-                    try { window.__rebindPoptrox(); } catch (e) {}
-                  }
-                  if (typeof window.applyDims === 'function') window.applyDims(document);
-                }
-              } catch (e) {}
-              loadingMore = false;
-            })
-            .catch(function () { loadingMore = false; });
-        }
-        window.addEventListener('scroll', function () {
-          if ((window.innerHeight + window.scrollY) >= (document.documentElement.offsetHeight - 600)) loadMore();
-        }, { passive: true });
-        if (document.documentElement.offsetHeight <= window.innerHeight + 600) loadMore();
-      })();
-      </script>
-      <script>
-      // 为灯箱控制按钮补无障碍 aria-label / title（poptrox 生成的弹窗）
-      (function () {
-        var map = { '.closer': '关闭', '.nav-previous': '上一张', '.nav-next': '下一张' };
-        function labelPopup(popup) {
-          Object.keys(map).forEach(function (sel) {
-            var el = popup.querySelector(sel);
-            if (el) {
-              if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', map[sel]);
-              if (!el.getAttribute('title')) el.setAttribute('title', map[sel]);
-            }
-          });
-        }
-        document.querySelectorAll('.poptrox-popup').forEach(labelPopup);
-        var obs = new MutationObserver(function (muts) {
-          muts.forEach(function (m) {
-            m.addedNodes.forEach(function (n) {
-              if (n.nodeType !== 1) return;
-              if (n.classList && n.classList.contains('poptrox-popup')) labelPopup(n);
-              var p = n.querySelector && n.querySelector('.poptrox-popup');
-              if (p) labelPopup(p);
-            });
-          });
-        });
-        obs.observe(document.body, { childList: true, subtree: true });
-      })();
-      </script>
+      <script src="<?php $this->options->themeUrl('assets/js/init.js?v=' . $__assetVer); ?>"></script>
   </div>
   <!-- Scripts -->
   <script src="<?php $this->options->themeUrl('assets/js/jquery.min.js'); ?>"></script>
