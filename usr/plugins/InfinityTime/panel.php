@@ -706,6 +706,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限删除该图片'); }
             ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
             $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
+            ImageRepository::syncPostFields((int)$row['cid'], true);
         } else {
             pp_deny('没有权限删除该图片');
         }
@@ -829,9 +830,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $logo = rtrim((string)$options->siteUrl, '/') . $meta['full'];
             $newAvatarAbs = ImageRepository::toAbs($meta['full']);
         }
-        // 上传新头像成功后，清理上一次由本插件生成的旧头像文件（不误删本次新文件）。
-        pp_clear_site_avatar($oldLogo, $newAvatarAbs);
         Plugin::setOption('infinitytimeSiteLogo', $logo);
+        // 先保存新引用；仅实际上传替换成功时清理旧头像，普通设置保存不触碰文件。
+        if ($newAvatarAbs !== null && $logo !== $oldLogo) {
+            pp_clear_site_avatar($oldLogo, $newAvatarAbs);
+        }
         Plugin::setOption('infinitytimeSiteName', trim((string)($_POST['siteName'] ?? '')));
         Plugin::setOption('infinitytimeSiteTagline', trim((string)($_POST['siteTagline'] ?? '')));
         Plugin::setOption('infinitytimeAbout', pp_sanitize_html((string)($_POST['aboutText'] ?? '')));

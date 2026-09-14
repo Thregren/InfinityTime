@@ -32,7 +32,13 @@ jobs:
           done
 
       - name: Unit tests
-        run: php tests/test.php
+        run: |
+          php tests/test.php
+          php tests/sanitizer-fallback.php
+          php tests/repository.php
+          php tests/upload-fallback.php
+          php tests/theme-output.php
+          node tests/admin-upload.cjs
 
       - name: Version consistency
         run: |

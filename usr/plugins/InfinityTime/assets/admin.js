@@ -6,7 +6,7 @@
   'use strict';
 
   var CFG = window.PP_ADMIN || {};
-  var URL = CFG.url || '';
+  var ENDPOINT = CFG.url || '';
   var TOKEN = CFG.token || '';
   var JOB = CFG.job || null;
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -39,12 +39,12 @@
     fd.set('ajax', '1');
     if (action) fd.set('action', action);
     if (TOKEN) fd.set('_', TOKEN);
-    return fetch(URL, { method: 'POST', body: fd, credentials: 'same-origin' })
+    return fetch(ENDPOINT, { method: 'POST', body: fd, credentials: 'same-origin' })
       .then(function (r) { return r.json().catch(function () { return { ok: false, msg: '服务器返回异常' }; }); });
   }
 
   function refreshAlbums() {
-    fetch(URL + (URL.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=albums_html', { credentials: 'same-origin' })
+    fetch(ENDPOINT + (ENDPOINT.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=albums_html', { credentials: 'same-origin' })
       .then(function (r) { return r.text(); })
       .then(function (html) {
         var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('#pp-albums-card');
@@ -88,6 +88,8 @@
       var input = $('#pp-files-input');
       var wrap = $('#pp-upload-previews');
       if (!form || !input || !wrap) return;
+      // JS 按选中队列校验；拖入文件的浏览器不一定支持回写 input.files。
+      input.required = false;
       var submitBtn = form.querySelector('button[type=submit]');
       var dropzone = $('#pp-dropzone');
       var bar = $('#pp-upload-bar');
@@ -211,10 +213,13 @@
         if (bar) bar.style.width = '0%';
 
         var fd = new FormData(form);
+        // 以预览队列为唯一顺序来源，不依赖 DataTransfer 回写是否成功。
+        fd.delete(input.name);
+        Upload.sel.forEach(function (item) { fd.append(input.name, item.file, item.file.name); });
         fd.set('ajax', '1');
         if (TOKEN) fd.set('_', TOKEN);
         var xhr = new XMLHttpRequest();
-        xhr.open('POST', URL, true);
+        xhr.open('POST', ENDPOINT, true);
         xhr.withCredentials = true;
         xhr.upload.onprogress = function (ev) {
           if (!ev.lengthComputable) return;
@@ -226,7 +231,6 @@
           try { d = JSON.parse(xhr.responseText); } catch (e) { d = { ok: false, msg: '服务器返回异常' }; }
           if (d && d.ok) {
             notice(d.msg || '已发布图集', 'success');
-            Upload.sel.forEach(function (it) { if (it.url) { try { URL.revokeObjectURL(it.url); } catch (e) {} } });
             Upload.sel = [];
             form.reset();
             try { input.value = ''; } catch (e) {}
@@ -265,7 +269,7 @@
         e.preventDefault();
         card.classList.remove('drop-target');
         var from = parseInt(e.dataTransfer.getData('text/plain'), 10);
-        if (isNaN(from) || from === idx) return;
+        if (isNaN(from) || from < 0 || from >= Upload.sel.length || from === idx) return;
         var moved = Upload.sel.splice(from, 1)[0];
         Upload.sel.splice(idx, 0, moved);
         rerender();
@@ -286,7 +290,7 @@
           if (!box || box.getAttribute('data-loaded') === '1') return;
           var cid = box.getAttribute('data-cid');
           box.setAttribute('data-loaded', '1');
-          fetch(URL + (URL.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=album_images&cid=' + encodeURIComponent(cid), { credentials: 'same-origin' })
+          fetch(ENDPOINT + (ENDPOINT.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=album_images&cid=' + encodeURIComponent(cid), { credentials: 'same-origin' })
             .then(function (r) { return r.text(); })
             .then(function (html) { box.innerHTML = html; Albums.bind(); })
             .catch(function () { box.setAttribute('data-loaded', '0'); box.innerHTML = '<div class="pp-meta">加载失败，请重试</div>'; });
@@ -400,7 +404,7 @@
     if (btn) btn.disabled = true;
     if (bar) bar.style.width = '0%'; // 每次开始先归零，避免上一次的 100% 残留
     if (msg) msg.textContent = '准备中…';
-    var url = URL + (URL.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=' + job + '&_=' + encodeURIComponent(TOKEN);
+    var url = ENDPOINT + (ENDPOINT.indexOf('?') === -1 ? '?' : '&') + 'ajax=1&job=' + job + '&_=' + encodeURIComponent(TOKEN);
     function tick() {
       fetch(url, { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })

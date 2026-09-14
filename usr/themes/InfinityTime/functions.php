@@ -13,13 +13,32 @@ function pp_opt($name, $default = '', $options = null)
     return $default;
 }
 
+/** 输出时再次过滤历史关于内容；独立使用主题且无插件时安全降级为文字。 */
+function pp_safe_about(string $html): string
+{
+    if (class_exists(\TypechoPlugin\InfinityTime\Lib\Sanitizer::class)) {
+        return \TypechoPlugin\InfinityTime\Lib\Sanitizer::sanitize($html);
+    }
+    return htmlspecialchars(strip_tags($html), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+/** 联系方式输出校验，兼容旧数据和未启用插件的主题。 */
+function pp_safe_contact_url(string $url): string
+{
+    if (class_exists(\TypechoPlugin\InfinityTime\Lib\Sanitizer::class)) {
+        return \TypechoPlugin\InfinityTime\Lib\Sanitizer::safeLink($url);
+    }
+    $url = trim($url);
+    return preg_match('#^(?:https?://|mailto:|tel:|/|\#)#i', $url) ? $url : '';
+}
+
 /**
  * 把 EXIF 的时间字符串（如 2026:06:21 17:46:53）转为中文格式（2026年06月21日 17:46:53）。
  */
 function pp_date_cn($s)
 {
     if (preg_match('/^(\d{4}):(\d{2}):(\d{2})[ T]?(\d{2}:\d{2}(?::\d{2})?)?/', (string)$s, $m)) {
-        return $m[1] . '年' . $m[2] . '月' . $m[3] . '日' . ($m[4] ? ' ' . $m[4] : '');
+        return $m[1] . '年' . $m[2] . '月' . $m[3] . '日' . (!empty($m[4]) ? ' ' . $m[4] : '');
     }
     return (string)$s;
 }

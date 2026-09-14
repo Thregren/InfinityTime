@@ -4,7 +4,7 @@
  *
  * @package InfinityTime
  * @author InfinityTime
- * @version 1.13.3
+ * @version 1.13.4
  * @link https://github.com/infinitytime/infinitytime
  */
 
@@ -26,7 +26,7 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 // Typecho versions instead of being misclassified as an instant plugin.
 class Plugin implements \Typecho_Plugin_Interface
 {
-    public const VERSION = '1.13.3';
+    public const VERSION = '1.13.4';
     public const MENU_NAME = 'InfinityTime';
     // 统一默认（“恢复默认/写入”）配置，避免各处写死不同数值
     public const DEFAULT_QUALITY      = 76;   // 缩略图质量
@@ -284,8 +284,9 @@ class Plugin implements \Typecho_Plugin_Interface
 
     /**
      * Typecho 默认上传逻辑的等价实现（当我们的钩子无法处理时回退）。
+     * @return array|false 与 Typecho 上传钩子的失败约定一致。
      */
-    private static function defaultUploadHandle(array $file): ?array
+    private static function defaultUploadHandle(array $file)
     {
         if (empty($file['name'])) {
             return false;

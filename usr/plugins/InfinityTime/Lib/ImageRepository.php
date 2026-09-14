@@ -114,7 +114,7 @@ class ImageRepository
 
         $ext = strtolower(pathinfo($file['name'] ?? '', PATHINFO_EXTENSION));
         if (!in_array($ext, MediaProcessor::supportedExtensions(), true)) {
-            self::$lastError = '不支持的图片格式：' . $file['name'] ?? '';
+            self::$lastError = '不支持的图片格式：' . ($file['name'] ?? '');
             return null;
         }
 
@@ -151,7 +151,7 @@ class ImageRepository
             $fullPath  = $fullAbsDir  . '/' . $base . '.webp';
             $thumbPath = $thumbAbsDir . '/' . $base . '.webp';
 
-            // 全景（宽高比 ≥2）用独立“全景图宽度”（pano_width）控制全图尺寸；0=不裁剪（保留原尺寸最清晰）
+            // 全景（宽高比 1.98～2.02）使用独立宽度；0=保留原尺寸。
             $panoW = (int)($opts['pano_width'] ?? 0);
             $srcInfo = @getimagesize($src);
             if (is_array($srcInfo) && ($srcInfo[0] ?? 0) > 0 && ($srcInfo[1] ?? 0) > 0) {
@@ -312,12 +312,16 @@ class ImageRepository
         ])->where('id = ?', $rowId));
     }
 
-    /** 根据某图集的图片行，重建文章里的 addresses/titles/descs JSON 字段。 */
-    public static function syncPostFields(int $cid): void
+    /** 按图片行的顺序同步路径与元数据，避免排序/删除后文章字段错位。 */
+    public static function syncPostFields(int $cid, bool $clearEmpty = false): void
     {
         $db = \Typecho\Db::get();
         $prefix = $db->getPrefix();
         $rows = self::rowsFor($cid);
+        // 历史文章可能仅有自定义字段。无图片行时不覆盖，删除最后一张图则显式清空。
+        if (!$rows && !$clearEmpty) {
+            return;
+        }
         $addresses = [];
         $titles = [];
         $descs = [];
@@ -325,7 +329,11 @@ class ImageRepository
         $dims = [];
         $variants = [];
         $exifs = [];
+        $images = [];
+        $thumbs = [];
         foreach ($rows as $r) {
+            $images[] = (string)($r['full'] ?? '');
+            $thumbs[] = (string)($r['thumb'] ?? '');
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
             $descs[] = (string)($r['desc'] ?? '');
@@ -334,7 +342,7 @@ class ImageRepository
             // 每张图的实际尺寸（缩略图/全图同比例），供首页瀑布流用 aspect-ratio 预占位，
             // 避免图片懒加载后高度突变导致 CSS 多列重新平衡（图片顺序跳变）。
             $dims[] = ($w > 0 && $h > 0) ? ($w . 'x' . $h) : '';
-            // 长宽比 ≥ 2 视为全景（equirectangular 360 照片，如 8192×4096）
+            // 长宽比 1.98～2.02 视为全景，排除 XPAN 等更宽画幅。
             $panos[] = self::isPano($w, $h) ? 1 : 0;
             // 响应式变体：webp=[full, mid]，avif=[full, mid]（缺失的自动过滤）
             $variants[] = [
@@ -346,6 +354,13 @@ class ImageRepository
             $e = is_array($r['exif'] ?? null) ? $r['exif'] : [];
             unset($e['gps']);
             $exifs[] = $e;
+        }
+        foreach (['img' => $images, 'thumb' => $thumbs] as $name => $paths) {
+            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
+            // 保留空 img 标记，使删除最后一张图片后的空图集仍可识别。
+            $db->query($db->insert($prefix . 'fields')->rows([
+                'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => implode("\n", $paths),
+            ]));
         }
         $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs];
         foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif'] as $f) {
@@ -387,7 +402,7 @@ class ImageRepository
         // 收集所有仍被引用的绝对路径
         $referenced = [];
         foreach ($rows as $r) {
-            foreach (['original', 'full', 'thumb'] as $f) {
+            foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $f) {
                 if (!empty($r[$f])) {
                     $referenced[self::toAbs($r[$f])] = true;
                 }
@@ -402,8 +417,9 @@ class ImageRepository
             $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($absDir, \FilesystemIterator::SKIP_DOTS));
             foreach ($it as $file) {
                 if ($file->isFile() && !isset($referenced[$file->getPathname()])) {
-                    @unlink($file->getPathname());
-                    $removed++;
+                    if (@unlink($file->getPathname())) {
+                        $removed++;
+                    }
                 }
             }
             // 清理空目录
@@ -444,17 +460,19 @@ class ImageRepository
                 continue;
             }
             $pw = (int)($opts['pano_width'] ?? 0);
+            $maxWidth = (int)$opts['max_width'];
+            $fullQuality = (int)$opts['full_quality'];
             $info = @getimagesize($src);
             if (is_array($info) && ($info[0] ?? 0) > 0 && ($info[1] ?? 0) > 0) {
                 $sw = (int)$info[0]; $sh = (int)$info[1];
                 if (self::isPano($sw, $sh)) {
                     // 全景用独立宽度（0=不裁剪）
-                    $opts['max_width'] = $pw > 0 ? (int)min($sw, $pw) : 0;
-                    $opts['full_quality'] = (int)($opts['pano_quality'] ?? $opts['full_quality']);
+                    $maxWidth = $pw > 0 ? (int)min($sw, $pw) : 0;
+                    $fullQuality = (int)$opts['pano_quality'];
                 }
             }
             try {
-                $res = MediaProcessor::process($src, self::toAbs($r['full']), self::toAbs($r['thumb']), $opts['thumb_max'], $opts['quality'], $opts['max_width'] ?? 0, $opts['full_quality']);
+                $res = MediaProcessor::process($src, self::toAbs($r['full']), self::toAbs($r['thumb']), $opts['thumb_max'], $opts['quality'], $maxWidth, $fullQuality);
                 self::updateVariants((int)$r['id'], $res);
                 if ((int)($r['cid'] ?? 0) > 0) {
                     $syncedCids[(int)$r['cid']] = true;
@@ -471,7 +489,7 @@ class ImageRepository
         return ['rebuilt' => $rebuilt, 'failed' => $failed];
     }
 
-    /** 删除三个文件。 */
+    /** 删除指定的原图及派生文件。 */
     public static function unlinkFiles(?string ...$rels): void
     {
         foreach ($rels as $rel) {

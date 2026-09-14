@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.13.3
+ * @version 1.13.4
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
@@ -190,21 +190,28 @@ if (!headers_sent()) {
             <div id="about">
               <section>
                 <h2>关于</h2>
-                <div class="about-text"><?php echo pp_opt('infinitytimeAbout', (string)$this->options->Biglogo, $this->options); ?></div>
+                <div class="about-text"><?php echo pp_safe_about((string)pp_opt('infinitytimeAbout', (string)$this->options->Biglogo, $this->options)); ?></div>
               </section>
               <section>
                 <h2>联系我</h2>
                 <?php
-                $__contacts = json_decode((string)$this->options->infinitytimeContacts, true) ?: [];
-                $__enabled = array_values(array_filter($__contacts, function ($c) {
-                    return !empty($c['url']) && !empty($c['enabled']);
-                }));
+                $__contacts = json_decode((string)$this->options->infinitytimeContacts, true);
+                $__enabled = [];
+                foreach (is_array($__contacts) ? $__contacts : [] as $__c) {
+                    if (!is_array($__c) || empty($__c['enabled']) || !is_string($__c['url'] ?? null)) {
+                        continue;
+                    }
+                    $__c['url'] = pp_safe_contact_url($__c['url']);
+                    if ($__c['url'] !== '') {
+                        $__enabled[] = $__c;
+                    }
+                }
                 ?>
                 <?php if ($__enabled): ?>
                 <ul class="icons">
-                  <?php foreach ($__enabled as $__c): $__icon = !empty($__c['icon']) ? $__c['icon'] : 'icon-shouye'; ?>
+                  <?php foreach ($__enabled as $__c): $__icon = is_string($__c['icon'] ?? null) && $__c['icon'] !== '' ? $__c['icon'] : 'icon-shouye'; ?>
                     <li><a class="contact_link" target="_blank" rel="noopener nofollow"
-                        title="<?php echo htmlspecialchars((string)($__c['name'] ?? '')); ?>"
+                        title="<?php echo htmlspecialchars(is_string($__c['name'] ?? null) ? $__c['name'] : ''); ?>"
                         href="<?php echo htmlspecialchars($__c['url']); ?>"><i class="iconfont <?php echo htmlspecialchars($__icon); ?>"></i></a></li>
                   <?php endforeach; ?>
                 </ul>

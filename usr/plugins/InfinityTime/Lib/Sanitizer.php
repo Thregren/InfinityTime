@@ -42,8 +42,8 @@ class Sanitizer
             return '';
         }
         if (!class_exists('\DOMDocument')) {
-            // 兜底：无 DOM 扩展时用标签白名单，至少挡住脚本标签
-            return trim(strip_tags($html, '<p><br><strong><em><b><i><ul><ol><li><blockquote><h2><h3><h4><a>'));
+            // 无 DOM 时降级为纯文字；strip_tags 的标签白名单不会移除事件属性。
+            return htmlspecialchars(strip_tags($html), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
         $doc = new \DOMDocument('1.0', 'UTF-8');
         $prev = libxml_use_internal_errors(true);
@@ -77,6 +77,8 @@ class Sanitizer
                     continue;
                 }
                 if (!isset($allowed[$tag])) {
+                    // 必须先清洗后代；提到父节点后的节点不会再次出现在本轮快照中。
+                    $walk($child);
                     // 非白名单标签：unwrap——把子节点提到当前节点前，保留文字内容
                     while ($child->firstChild) {
                         $node->insertBefore($child->firstChild, $child);
@@ -109,7 +111,7 @@ class Sanitizer
     /**
      * 校验链接协议：允许 http(s) / mailto / tel / 相对路径 / 锚点 / 协议相对；
      * 其余（javascript:、data:、vbscript: 等）返回空串。
-     * 会先剔除空白与控制字符并解码 HTML 实体，防止 `java\nscript:`、`&#x6a;avascript:` 绕过。
+     * 先解码 HTML 实体，再剔除空白与控制字符，防止编码后的换行绕过。
      */
     public static function safeLink(string $url): string
     {
@@ -117,8 +119,14 @@ class Sanitizer
         if ($url === '') {
             return '';
         }
-        $probe = (string)preg_replace('/[\x00-\x20\x7f]+/', '', $url);
+        // PHP 的实体解码会保留部分数字控制字符（如 &#13;），浏览器会解码。
+        $probe = preg_replace_callback('/&#(x[0-9a-f]+|[0-9]+);?/i', static function ($match) {
+            $value = $match[1];
+            $code = strtolower($value[0]) === 'x' ? hexdec(substr($value, 1)) : (int)$value;
+            return $code <= 127 ? chr((int)$code) : $match[0];
+        }, $url);
         $probe = html_entity_decode($probe, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $probe = (string)preg_replace('/[\x00-\x20\x7f]+/', '', $probe);
         if (preg_match('#^([a-z][a-z0-9+.\-]*):#i', $probe, $m)) {
             $scheme = strtolower($m[1]);
             return in_array($scheme, ['http', 'https', 'mailto', 'tel'], true) ? $url : '';
