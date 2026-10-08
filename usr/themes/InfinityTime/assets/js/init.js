@@ -114,7 +114,7 @@
     var totPages = parseInt(lm.getAttribute('data-total-pages'), 10) || 1;
     var cursorMode = lm.hasAttribute('data-next-url');
     var nextUrl = cursorMode ? lm.getAttribute('data-next-url') : '';
-    var loadingMore = false, failed = false, requestId = 0, controller = null, timeout = null;
+    var loadingMore = false, failed = false, requestId = 0, activeRequest = null;
     var status = document.createElement('span');
     status.className = 'pp-load-status';
     status.setAttribute('role', 'status');
@@ -135,28 +135,53 @@
     }
     function cancel() {
       requestId++;
-      if (controller) controller.abort();
-      controller = null;
-      clearTimeout(timeout);
+      var request = activeRequest;
+      activeRequest = null;
+      if (request) {
+        request.finish(false, false);
+        if (request.controller) request.controller.abort();
+      }
       loadingMore = false;
       update();
     }
     function loadMore(manual) {
-      if (loadingMore || !hasMore() || (failed && !manual)) return Promise.resolve(false);
+      // 自动滚动与主动请求共享结果；busy 不能被调用方当作分页失败。
+      if (activeRequest) return activeRequest.promise;
+      if (!hasMore() || (failed && !manual)) return Promise.resolve(false);
       var id = ++requestId;
       var requestedUrl = cursorMode ? nextUrl : pagerBase + (curPage + 1);
       loadingMore = true; failed = false; update();
-      controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var request = { controller: typeof AbortController !== 'undefined' ? new AbortController() : null, done: false };
+      request.promise = new Promise(function(resolve) {
+        request.finish = function(result, error) {
+          if (request.done) return;
+          request.done = true;
+          clearTimeout(request.timeout);
+          if (id === requestId) {
+            activeRequest = null; loadingMore = false; failed = !!error; update();
+          }
+          resolve(result);
+        };
+      });
+      activeRequest = request;
       var options = { credentials: 'same-origin' };
-      if (controller) options.signal = controller.signal;
-      timeout = setTimeout(function() { if (id === requestId && controller) controller.abort(); }, 20000);
-      return fetch(requestedUrl, options)
+      if (request.controller) options.signal = request.controller.signal;
+      request.timeout = setTimeout(function() {
+        // abort 只是尽力停止网络；即使不可用或底层忽略，也要结束等待并隔离迟到响应。
+        request.finish(false, true);
+        if (request.controller) request.controller.abort();
+      }, 20000);
+      var network;
+      try { network = fetch(requestedUrl, options); }
+      catch (error) { request.finish(false, true); return request.promise; }
+      Promise.resolve(network)
         .then(function(response) {
+          if (request.done || id !== requestId) return null;
           if (!response.ok) throw new Error('HTTP ' + response.status);
           return response.text();
         })
         .then(function(html) {
-          if (id !== requestId || !wf.isConnected) return false;
+          if (request.done || id !== requestId || !wf.isConnected) return false;
           var doc = new DOMParser().parseFromString(html, 'text/html');
           var source = doc.getElementById('waterfall');
           var cards = source ? Array.from(source.querySelectorAll(':scope > .thumb')) : [];
@@ -184,11 +209,9 @@
           document.dispatchEvent(new CustomEvent('infinitygallery:append', { detail: { count: cards.length, page: curPage, nextUrl: nextUrl } }));
           return true;
         })
-        .catch(function() { if (id === requestId) failed = true; return false; })
-        .then(function(result) {
-          if (id === requestId) { clearTimeout(timeout); controller = null; loadingMore = false; update(); }
-          return result;
-        });
+        .then(function(result) { request.finish(result, false); })
+        .catch(function() { request.finish(false, true); });
+      return request.promise;
     }
     button.addEventListener('click', function() { loadMore(true); });
     window.addEventListener('scroll', function() {

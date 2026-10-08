@@ -54,8 +54,13 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       const page = await context.newPage();
       const errors = [], requests = [];
       page.on('pageerror', e => errors.push(e.message));
-      let broken = true, page2Fails = true, includeHistory = false, fallbackWebpFails = true;
+      let broken = true, page2Fails = true, includeHistory = false, fallbackWebpFails = true, holdTimeout = true;
       const delayed = new Map();
+      async function waitForDelayed(name) {
+        const deadline = Date.now() + 5000;
+        while (!delayed.has(name) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+        assert.ok(delayed.has(name), `网络故障注入请求已开始：${name}`);
+      }
       await page.route('**/*', async route => {
         const pathname = new URL(route.request().url()).pathname;
         requests.push(pathname);
@@ -72,6 +77,11 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
           return route.fulfill({ contentType: 'text/html', body: pageHtml(card('stale', 4, [url('stale')], ['p-8']), '') }).catch(() => {});
         }
         if (pathname === '/page4') return route.fulfill({ contentType: 'text/html', body: pageHtml(card('fresh', 5, [url('fresh')], ['p-9']), '') });
+        if ((pathname === '/timeout-page' && holdTimeout) || pathname === '/cancel-no-abort') {
+          await new Promise(resolve => delayed.set(pathname, resolve));
+          return route.fulfill({ contentType: 'text/html', body: pageHtml(card('late-network', 10, [url('late-network')], ['p-50']), '') }).catch(() => {});
+        }
+        if (pathname === '/timeout-page') return route.fulfill({ contentType: 'text/html', body: pageHtml(card('timeout-retry', 11, [url('timeout-retry')], ['p-51']), '') });
         if (pathname === '/empty') return route.fulfill({ contentType: 'text/html', body: pageHtml('', '') });
         if (/^\/fallback-.*\.avif$/.test(pathname)) return route.fulfill(pathname.startsWith('/fallback-decode')
           ? { contentType: 'image/avif', body: 'corrupt AVIF bytes' }
@@ -158,9 +168,15 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       assert.equal(await page.locator('#month-2026-10').count(), 1, '追加月份标题不重复 DOM ID');
       assert.equal(await page.locator('#gallery-pagination a[rel="next"]').getAttribute('href'), '/page3');
       // 取消旧分页并发起新请求，旧响应迟到后不能追加内容。
-      await page.evaluate(() => { window.__pendingPage = InfinityWaterfall.loadMore(); });
-      while (!delayed.has('page3')) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(await page.evaluate(() => {
+        window.__pendingPage = InfinityWaterfall.loadMore();
+        window.__joinedPage = InfinityWaterfall.loadMore();
+        return window.__pendingPage === window.__joinedPage;
+      }), true, '并发调用共享待完成的真实网络结果');
+      await waitForDelayed('page3');
       await page.evaluate(() => InfinityWaterfall.reset({ nextUrl: '/page4' }));
+      assert.equal(await page.evaluate(() => window.__pendingPage), false, 'reset 无需等待网络响应即可结束旧请求');
+      assert.equal(await page.evaluate(() => window.__joinedPage), false);
       delayed.get('page3')();
       assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true);
       assert.equal(await page.locator('#stale').count(), 0);
@@ -174,17 +190,65 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
       // 自动滚动另行通过真实事件路径验证，不依赖上面的手动调用时序。
       const emptyRequests = requests.filter(p => p === '/empty').length;
-      await page.evaluate(() => {
+      assert.equal(await page.evaluate(() => {
         InfinityWaterfall.reset({ nextUrl: '/empty' });
         window.scrollTo(0, document.documentElement.scrollHeight);
         window.dispatchEvent(new Event('scroll'));
-      });
+        return InfinityWaterfall.loadMore();
+      }), true, '主动调用等待已在进行的自动滚动分页，而非立即返回 false');
       await page.waitForFunction(() => {
         const more = document.querySelector('#load-more');
         return more.getAttribute('data-next-url') === '' && more.getAttribute('aria-busy') === 'false';
       });
       assert.equal(requests.filter(p => p === '/empty').length, emptyRequests + 1, '自动滚动恰好加载一次合法末尾空批次');
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
+      // 无 AbortController 的实际浏览器请求：超时与取消必须结束等待，
+      // 即使网络仍在传输，迟到响应也不能写入网格或干扰重试。
+      await page.evaluate(() => {
+        window.__savedAbortController = window.AbortController;
+        window.AbortController = undefined;
+        const schedule = window.setTimeout;
+        window.setTimeout = function(callback, delay, ...args) {
+          if (delay === 20000) window.__expireWaterfall = callback;
+          return schedule(callback, delay, ...args);
+        };
+        try {
+          InfinityWaterfall.reset({ nextUrl: '/timeout-page' });
+          window.__timedOutPage = InfinityWaterfall.loadMore();
+        } finally { window.setTimeout = schedule; }
+      });
+      await waitForDelayed('/timeout-page');
+      await page.evaluate(() => window.__expireWaterfall());
+      assert.equal(await page.evaluate(() => window.__timedOutPage), false, '缺少 AbortController 时超时仍可结束');
+      assert.equal(await page.locator('#load-more').getAttribute('aria-busy'), 'false');
+      assert.match(await page.locator('.pp-load-status').innerText(), /加载失败/);
+      holdTimeout = false;
+      assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true, '超时后能成功重试同一页');
+      assert.equal(await page.locator('#timeout-retry').count(), 1);
+      const lateTimeoutResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/timeout-page');
+      delayed.get('/timeout-page')();
+      await (await lateTimeoutResponse).finished();
+      assert.equal(await page.locator('#late-network').count(), 0, '超时后的迟到页面被隔离');
+      await page.evaluate(() => {
+        InfinityWaterfall.reset({ nextUrl: '/cancel-no-abort' });
+        window.__cancelledPage = InfinityWaterfall.loadMore();
+      });
+      await waitForDelayed('/cancel-no-abort');
+      const cancelledState = await page.evaluate(() => {
+        InfinityWaterfall.cancel();
+        const more = document.querySelector('#load-more');
+        const state = { busy: more.getAttribute('aria-busy'), failed: more.classList.contains('pp-load-error') };
+        // 同一任务内清空游标，避免恢复可重试状态后原生滚动再次请求该测试页。
+        InfinityWaterfall.reset({ nextUrl: '' });
+        window.AbortController = window.__savedAbortController;
+        return state;
+      });
+      assert.equal(await page.evaluate(() => window.__cancelledPage), false, '缺少 AbortController 时取消也立即结束');
+      assert.deepEqual(cancelledState, { busy: 'false', failed: false });
+      const lateCancelledResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/cancel-no-abort');
+      delayed.get('/cancel-no-abort')();
+      await (await lateCancelledResponse).finished();
+      assert.equal(await page.locator('#late-network').count(), 0, '取消后的迟到页面被隔离');
       // AVIF 请求和解码失败均必须尝试可用 WebP，不能仅显示永久失败。
       await page.evaluate(html => {
         document.querySelector('#waterfall').insertAdjacentHTML('beforeend', html);
