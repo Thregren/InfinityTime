@@ -204,6 +204,117 @@ document.addEventListener('DOMContentLoaded', function() {
     let isPopupActive = false;
     const $main = $('#main');
     const $body = $('body');
+    var galleryOpener = null;
+    var backgroundState = [];
+    var poptroxRebindPending = false;
+
+    // Poptrox removes href and owns its popup markup. Restore keyboard semantics
+    // here, including controls rendered outside .poptrox-popup by lightbox.js.
+    function prepareGalleryDialog() {
+        $main.find('.thumb > a.image').attr({ role: 'button', tabindex: '0', 'aria-haspopup': 'dialog' });
+        var overlay = document.querySelector('.poptrox-overlay');
+        if (!overlay) return;
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', '图片浏览');
+        overlay.setAttribute('aria-hidden', isPopupActive ? 'false' : 'true');
+        if (isPopupActive) overlay.removeAttribute('inert');
+        else overlay.setAttribute('inert', '');
+        overlay.setAttribute('tabindex', '-1');
+        document.querySelectorAll('.poptrox-exif-dock, .pp-mobile-nav, .pp-mobile-caption').forEach(function(el) {
+            if (el.parentNode !== overlay) overlay.appendChild(el);
+        });
+        if (!overlay.querySelector('.pp-lightbox-close')) {
+            var close = document.createElement('button');
+            close.type = 'button';
+            close.className = 'pp-lightbox-close';
+            close.setAttribute('aria-label', '关闭图片浏览');
+            close.textContent = '×';
+            close.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                $(overlay.querySelector('.poptrox-popup')).trigger('poptrox_close');
+            });
+            overlay.appendChild(close);
+        }
+    }
+    function openGalleryDialog() {
+        prepareGalleryDialog();
+        var overlay = document.querySelector('.poptrox-overlay');
+        if (!galleryOpener) galleryOpener = document.activeElement;
+        backgroundState = [];
+        Array.from(document.body.children).forEach(function(el) {
+            if (el === overlay || /^(SCRIPT|STYLE|LINK)$/.test(el.tagName)) return;
+            backgroundState.push({ el: el, inert: el.hasAttribute('inert'), hidden: el.getAttribute('aria-hidden') });
+            el.setAttribute('inert', '');
+            el.setAttribute('aria-hidden', 'true');
+        });
+        // onPopupOpen runs just before Poptrox reveals the overlay.
+        setTimeout(function() {
+            if (isPopupActive && overlay && overlay.isConnected) overlay.querySelector('.pp-lightbox-close').focus();
+        }, 0);
+    }
+    function closeGalleryDialog() {
+        backgroundState.forEach(function(state) {
+            if (!state.inert) state.el.removeAttribute('inert');
+            if (state.hidden === null) state.el.removeAttribute('aria-hidden');
+            else state.el.setAttribute('aria-hidden', state.hidden);
+        });
+        backgroundState = [];
+        if (galleryOpener && galleryOpener.isConnected) galleryOpener.focus({ preventScroll: true });
+        galleryOpener = null;
+        var overlay = document.querySelector('.poptrox-overlay');
+        if (overlay) { overlay.setAttribute('aria-hidden', 'true'); overlay.setAttribute('inert', ''); }
+    }
+    function dialogTabStops(overlay) {
+        return Array.from(overlay.querySelectorAll('button, a[href], input, select, textarea, [tabindex]')).filter(function(el) {
+            if (el.tabIndex < 0 || el.disabled || el.closest('[inert]') || !el.getClientRects().length) return false;
+            var style = getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+        });
+    }
+    document.addEventListener('focusin', function(e) {
+        var overlay = document.querySelector('.poptrox-overlay');
+        if (isPopupActive && overlay && !overlay.contains(e.target)) overlay.querySelector('.pp-lightbox-close').focus();
+    });
+    document.addEventListener('keydown', function(e) {
+        var opener = e.target && e.target.closest ? e.target.closest('#main .thumb > a.image') : null;
+        if (!isPopupActive) {
+            if (opener && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                opener.click();
+            }
+            return;
+        }
+        var overlay = document.querySelector('.poptrox-overlay');
+        var popup = overlay && overlay.querySelector('.poptrox-popup');
+        if (!popup) return;
+        if (e.key === 'Tab') {
+            var stops = dialogTabStops(overlay);
+            var index = stops.indexOf(document.activeElement);
+            var next = e.shiftKey ? (index <= 0 ? stops.length - 1 : index - 1) : (index + 1) % stops.length;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            (stops[next] || overlay).focus();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            $(popup).trigger('poptrox_close');
+        } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.target.closest('input, textarea, select, [contenteditable="true"]')) {
+            // Use the same path as the visible buttons, so arrows visit album
+            // images rather than jumping directly to the next gallery card.
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            var nav = popup.querySelector(e.key === 'ArrowRight' ? '.nav-next' : '.nav-previous');
+            if (nav) nav.click();
+        }
+    }, true);
+    // Poptrox treats Space as "previous" at window level. Let real controls
+    // handle it normally without also navigating the gallery.
+    document.addEventListener('keydown', function(e) {
+        if (isPopupActive && e.key === ' ') e.stopPropagation();
+    });
 
     // 监听弹窗状态（配置复用：无限瀑布流翻页后需重绑一次）
     const PP_CONFIG = {
@@ -212,6 +323,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fadeSpeed: 420,
         onPopupClose: function() { 
             isPopupActive = false;
+            closeGalleryDialog();
             captionFadeOut();
             $body.removeClass('modal-active');
             $('html, body').css({
@@ -223,15 +335,23 @@ document.addEventListener('DOMContentLoaded', function() {
             // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
             document.querySelectorAll('.poptrox-popup').forEach(function(p) {
                 clearLqip(p);
+                p.__lqipSeq = (p.__lqipSeq || 0) + 1;
                 p.classList.remove('pp-pano-mode');
                 delete p.__switching;
+                p.__switchSeq = (p.__switchSeq || 0) + 1;
                 delete p.__panoActive;
                 delete p.__ppIndex;
                 delete p.__ppArticle;
             });
+            // Newly loaded cards may have arrived while the modal was open.
+            // Rebuild only after its closing animation no longer owns the overlay.
+            if (poptroxRebindPending) setTimeout(function() {
+                if (poptroxRebindPending) window.__rebindPoptrox();
+            }, PP_CONFIG.fadeSpeed + 20);
         },
         onPopupOpen: function() { 
             isPopupActive = true;
+            openGalleryDialog();
             $body.addClass('modal-active');
             // 移动端用原始宽高预置弹窗尺寸，避免首次打开时先闪一个 150×150 的小方块
             // （桌面端有 EXIF 侧栏让位逻辑，尺寸交给 poptrox 自己算，避免预设偏宽再回缩）
@@ -278,22 +398,30 @@ document.addEventListener('DOMContentLoaded', function() {
       return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
     };
     $main.poptrox(PP_CONFIG);
+    prepareGalleryDialog();
 
     // 无限瀑布流翻页后，把新卡片也绑定到灯箱。
     // poptrox 只绑定“还有 href”的锚点，而早已绑定过的锚点 href 已被 poptrox 移除，
     // 所以重绑前要把 href 从 data-images[0] 补回来；否则重绑会跳过旧卡片（导致“所有灯箱打不开”）。
     window.__rebindPoptrox = function() {
-        if ($('.poptrox-overlay').is(':visible')) return; // 灯箱打开时不重建
+        if (isPopupActive || $('.poptrox-overlay').is(':visible')) { poptroxRebindPending = true; return; }
+        poptroxRebindPending = false;
+        if ($main[0]._poptroxDestroy) $main[0]._poptroxDestroy();
         $main.find('.thumb > a.image').each(function() {
             var a = this;
             if (!a.getAttribute('href') && a.dataset.images) {
                 try { var imgs = ppParseArr(a.dataset.images); if (imgs[0]) a.setAttribute('href', imgs[0]); } catch (e) {}
             }
         });
+        // Preserve the shared controls before disposing of the old dialog.
+        document.querySelectorAll('.poptrox-exif-dock, .pp-mobile-nav, .pp-mobile-caption').forEach(function(el) {
+            document.body.appendChild(el);
+        });
         $('.poptrox-overlay').remove();
         $('.poptrox-popup').remove();
         $main.find('.thumb > a.image').off('click');
         $main.poptrox(PP_CONFIG);
+        prepareGalleryDialog();
         rebuildLightboxData(); // 新卡片加入后重建 blur-up/全景/图集数据
         if (typeof ensureExifObserver === 'function') ensureExifObserver();
     };
@@ -326,10 +454,11 @@ document.addEventListener('DOMContentLoaded', function() {
             imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
             imgs.forEach(function(u, i) { variantMap[u] = variants[i] || null; });
             ALBUMS.push({
+                title: a.getAttribute('aria-label') || '照片',
                 images: nonEmpty(imgs),
                 previews: nonEmpty(pre),
                 exifs: nonEmpty(ppParseArr(a.dataset.exif)),
-                titles: nonEmpty(ppParseArr(a.dataset.titles)),
+                titles: ppParseArr(a.dataset.titles),
                 descs: nonEmpty(ppParseArr(a.dataset.descs)),
                 addrs: nonEmpty(ppParseArr(a.dataset.addresses))
             });
@@ -343,8 +472,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     // 记录点击的是哪张图（原始宽高），供 onPopupOpen 预置弹窗尺寸。
     document.addEventListener('click', function(e) {
-        var a = e.target && e.target.closest ? e.target.closest('#main a.image[data-dims]') : null;
+        var a = e.target && e.target.closest ? e.target.closest('#main .thumb > a.image') : null;
         if (!a) return;
+        galleryOpener = a;
         try {
             var dims = JSON.parse(a.dataset.dims || '[]');
             var m = String(dims[0] || '').split('x');
@@ -375,6 +505,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 440); // 等 poptrox 的 .pic 淡入（420ms）完成后再显示标题
     }
     // ---- 响应式图片：给灯箱主图设置 WebP srcset，并在有 AVIF 变体时用 <picture> 包一层 ----
+    function removeResponsivePicture(img) {
+        var picture = img.parentNode;
+        if (picture && picture.tagName === 'PICTURE' && picture.classList.contains('pp-picture')) {
+            picture.parentNode.insertBefore(img, picture);
+            picture.remove();
+        }
+    }
     function applyResponsive(popup, img) {
         if (!popup || !img) return;
         var src = img.getAttribute('src') || '';
@@ -384,6 +521,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (isPanoUrl(src)) {
             img.removeAttribute('srcset');
             img.removeAttribute('sizes');
+            removeResponsivePicture(img);
             if (pic) pic.querySelectorAll('picture.pp-picture').forEach(function (p) { if (!p.contains(img)) p.remove(); });
             return;
         }
@@ -393,6 +531,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!v) {
             img.removeAttribute('srcset');
             img.removeAttribute('sizes');
+            removeResponsivePicture(img);
             return;
         }
         var webp = v.webp || [];
@@ -429,10 +568,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             source.setAttribute('srcset', avifSet.join(', '));
             source.setAttribute('sizes', sizes);
-        } else if (img.parentNode && img.parentNode.tagName === 'PICTURE') {
-            var p = img.parentNode;
-            p.parentNode.insertBefore(img, p);
-            p.remove();
+        } else {
+            removeResponsivePicture(img);
         }
     }
     function applyLqip(popup) {
@@ -442,6 +579,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!img || !pic) return;
         applyResponsive(popup, img);
         var full = img.getAttribute('src') || '';
+        var current = albumForSrc(full);
+        if (current) {
+            var title = current.album.titles[current.idx] || current.album.title;
+            img.alt = title + (current.album.images.length > 1 ? '（' + (current.idx + 1) + '/' + current.album.images.length + '）' : '');
+        } else { img.alt = '照片'; }
         var pre = lqipFor(full);
         if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; captionFadeInAfterImage(); return; }
         // 每次切图递增序号：上一张的 onload/decode 回调晚到时会自动作废，
@@ -555,22 +697,24 @@ document.addEventListener('DOMContentLoaded', function() {
         return null;
     }
     function inAlbumNav(popup, delta) {
+        if (!isPopupActive) return true;
+        if (popup && (popup.__switching || popup.classList.contains('loading'))) return true;
         var img = popup && popup.querySelector('.pic img');
         if (!img || !img.getAttribute('src')) return false;
         var cur = albumForSrc(img.getAttribute('src'));
         if (!cur || cur.album.images.length <= 1) return false;
         var ni = cur.idx + delta;
         if (ni < 0 || ni >= cur.album.images.length) return false; // 边界：交给外部跨图集
-        if (popup.__switching) return false; // 动画进行中，忽略重复切换，避免 opacity 状态错乱
         popup.__switching = true;
-        setTimeout(function() { popup.__switching = false; }, 460); // 与过渡总时长一致
+        var seq = popup.__switchSeq = (popup.__switchSeq || 0) + 1;
+        setTimeout(function() { if (seq === popup.__switchSeq) popup.__switching = false; }, 460); // 与过渡总时长一致
         // 同步比例切换也要带淡出→淡入，避免“直接换图”的生硬感。
         // 过渡走 .poptrox-popup .pic img 的 CSS opacity transition（柔和缓动）。
         var nextSrc = cur.album.images[ni];
         img.style.opacity = '0';
         setTimeout(function() {
             // 灯箱可能已关闭 / 图片元素已被移除：此时不再操作 DOM，避免报错
-            if (!img || !img.isConnected || !popup || !popup.isConnected) return;
+            if (!isPopupActive || seq !== popup.__switchSeq || !img.isConnected || !popup.isConnected) return;
             img.setAttribute('src', nextSrc);
             img.style.opacity = '1';
         }, 220); // 略大于半程，让淡出先发生，再换图并淡入
@@ -619,3 +763,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 })();
+

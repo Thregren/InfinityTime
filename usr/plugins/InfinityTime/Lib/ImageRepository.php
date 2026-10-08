@@ -26,6 +26,32 @@ class ImageRepository
         return \Typecho\Db::get()->getPrefix() . 'infinitytime_images';
     }
 
+    /** 请求级互斥锁覆盖“文件落盘 → 入库”，进程退出自动释放；不删除锁文件。 */
+    private static $mediaLock = null;
+    public static function lockMedia(): void
+    {
+        if (is_resource(self::$mediaLock)) {
+            return;
+        }
+        self::ensureDir(self::uploadRoot());
+        $handle = @fopen(self::uploadRoot() . '/.infinitytime-media.lock', 'c');
+        if (!$handle || !flock($handle, LOCK_EX | LOCK_NB)) {
+            if (is_resource($handle)) { fclose($handle); }
+            throw new \RuntimeException('图片上传或维护正在进行，请稍后重试');
+        }
+        self::$mediaLock = $handle;
+        register_shutdown_function([self::class, 'unlockMedia']);
+    }
+
+    public static function unlockMedia(): void
+    {
+        if (is_resource(self::$mediaLock)) {
+            flock(self::$mediaLock, LOCK_UN);
+            fclose(self::$mediaLock);
+        }
+        self::$mediaLock = null;
+    }
+
     /** 是否 360 全景：等距圆柱即宽高比约 2:1（1.98~2.02），排除 XPAN 等更宽画幅。 */
     public static function isPano(int $w, int $h): bool
     {
@@ -119,6 +145,7 @@ class ImageRepository
         }
 
         try {
+            self::lockMedia();
             $hash = hash_file('sha256', $src);
 
             $y = date('Y');
@@ -213,6 +240,7 @@ class ImageRepository
      */
     public static function insertRow(int $cid, array $meta, int $sort = 0): int
     {
+        self::lockMedia();
         $db = \Typecho\Db::get();
         $table = self::table();
         return (int)$db->query($db->insert($table)->rows([
@@ -281,12 +309,13 @@ class ImageRepository
         if (self::$schemaEnsured) {
             return;
         }
-        self::$schemaEnsured = true;
         // 按 schema 版本补齐缺失列（幂等；版本一致时 Plugin::migrateSchema 直接返回，不跑 DDL）
         try {
             Plugin::migrateSchema();
+            self::$schemaEnsured = true;
         } catch (\Throwable $e) {
             Plugin::log('migrateSchema failed: ' . $e->getMessage());
+            throw $e;
         }
     }
 
@@ -301,15 +330,20 @@ class ImageRepository
         ])->where('id = ?', $rowId));
     }
 
-    /** 重建后更新某张图的响应式变体路径（mid / avif / mid_avif）。 */
+    /** 重建后同步实际输出尺寸、大小与响应式变体路径。 */
     public static function updateVariants(int $rowId, array $result): void
     {
+        self::lockMedia();
         $db = \Typecho\Db::get();
-        $db->query($db->update(self::table())->rows([
+        $values = [
             'mid' => !empty($result['mid']) ? self::toWeb((string)$result['mid']) : null,
             'avif' => !empty($result['avif']) ? self::toWeb((string)$result['avif']) : null,
             'mid_avif' => !empty($result['mid_avif']) ? self::toWeb((string)$result['mid_avif']) : null,
-        ])->where('id = ?', $rowId));
+        ];
+        foreach (['width', 'height', 'size'] as $field) {
+            if (isset($result[$field])) { $values[$field] = (int)$result[$field]; }
+        }
+        $db->query($db->update(self::table())->rows($values)->where('id = ?', $rowId));
     }
 
     /** 按图片行的顺序同步路径与元数据，避免排序/删除后文章字段错位。 */
@@ -394,38 +428,104 @@ class ImageRepository
         $db->query($db->delete(self::table())->where('cid = ?', $cid));
     }
 
-    /** 清理：删除所有不再关联任何 cid 的孤儿文件与记录（可选保留空目录）。 */
-    public static function cleanupOrphans(): array
+    /** 仅处理真实上传目录内的普通文件；旧快照、软链接与新文件一律跳过。 */
+    private static function orphanFingerprint(string $path): ?array
+    {
+        clearstatcache(true, $path);
+        if (is_link($path) || !is_file($path)) { return null; }
+        $real = realpath($path);
+        if ($real === false || $real !== $path) { return null; }
+        $inside = false;
+        foreach (self::defaultDirs() as $webDir) {
+            $dir = self::toAbs($webDir);
+            if (is_link($dir) || realpath($dir) !== $dir) { continue; }
+            if (strpos($real, $dir . '/') === 0) { $inside = true; break; }
+        }
+        if (!$inside) { return null; }
+        $stat = @stat($path);
+        // 保守宽限期：给升级前的上传进程及失败后的人工恢复留出时间。
+        if (!$stat || $stat['mtime'] > time() - 3600) { return null; }
+        return ['path' => $path, 'dev' => $stat['dev'], 'ino' => $stat['ino'],
+            'size' => $stat['size'], 'mtime' => $stat['mtime'], 'ctime' => $stat['ctime']];
+    }
+
+    private static function referencedPaths(): array
     {
         $db = \Typecho\Db::get();
-        $rows = $db->fetchAll($db->select()->from(self::table()));
-        // 收集所有仍被引用的绝对路径
         $referenced = [];
-        foreach ($rows as $r) {
-            foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $f) {
-                if (!empty($r[$f])) {
-                    $referenced[self::toAbs($r[$f])] = true;
-                }
+        $add = static function ($value) use (&$referenced): void {
+            if (!is_string($value) || trim($value) === '') { return; }
+            $value = trim($value);
+            if (preg_match('#^https?://#i', $value)) { $value = (string)parse_url($value, PHP_URL_PATH); }
+            if ($value === '') { return; }
+            $path = self::toAbs($value);
+            $referenced[$path] = true;
+            $real = realpath($path);
+            if ($real !== false) { $referenced[$real] = true; }
+        };
+        foreach ($db->fetchAll($db->select()->from(self::table())) as $row) {
+            foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
+                $add($row[$field] ?? null);
             }
         }
-        $removed = 0;
-        foreach (self::defaultDirs() as $type => $webDir) {
-            $absDir = self::toAbs($webDir);
-            if (!is_dir($absDir)) {
-                continue;
-            }
-            $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($absDir, \FilesystemIterator::SKIP_DOTS));
-            foreach ($it as $file) {
-                if ($file->isFile() && !isset($referenced[$file->getPathname()])) {
-                    if (@unlink($file->getPathname())) {
-                        $removed++;
+        // 历史图集可能只有文章字段，没有仓库行，也必须保留其公开图片。
+        $fields = $db->fetchAll($db->select('name', 'str_value')->from($db->getPrefix() . 'fields')
+            ->where('name IN (?, ?, ?)', 'img', 'thumb', 'variants'));
+        foreach ($fields as $field) {
+            if (($field['name'] ?? '') === 'variants') {
+                $variants = json_decode((string)($field['str_value'] ?? ''), true);
+                if (!is_array($variants)) { continue; }
+                foreach ($variants as $variant) {
+                    if (!is_array($variant)) { continue; }
+                    foreach (['webp', 'avif'] as $format) {
+                        if (!is_array($variant[$format] ?? null)) { continue; }
+                        foreach ($variant[$format] as $path) { $add($path); }
                     }
                 }
+            } else {
+                foreach (preg_split('/\\r?\\n/', (string)($field['str_value'] ?? '')) as $path) { $add($path); }
             }
-            // 清理空目录
-            self::pruneEmpty($absDir);
         }
-        return ['removed_files' => $removed];
+        return $referenced;
+    }
+
+    /** 快照仅是候选，删除前必须在同一锁内重新校验引用和文件身份。 */
+    public static function orphanCandidates(): array
+    {
+        self::lockMedia();
+        $referenced = self::referencedPaths();
+        $list = [];
+        foreach (self::defaultDirs() as $webDir) {
+            $dir = self::toAbs($webDir);
+            if (!is_dir($dir) || is_link($dir)) { continue; }
+            $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $file) {
+                $path = $file->getPathname();
+                $candidate = self::orphanFingerprint($path);
+                if ($candidate !== null && !isset($referenced[$path])) { $list[] = $candidate; }
+            }
+        }
+        return $list;
+    }
+
+    public static function removeOrphanCandidates(array $candidates): int
+    {
+        self::lockMedia();
+        $referenced = self::referencedPaths();
+        $removed = 0;
+        foreach ($candidates as $candidate) {
+            // 升级前缓存的纯路径列表也不得直接用于删除。
+            if (!is_array($candidate) || !isset($candidate['path'])) { continue; }
+            $path = (string)$candidate['path'];
+            if (isset($referenced[$path]) || self::orphanFingerprint($path) !== $candidate) { continue; }
+            if (@unlink($path)) { $removed++; }
+        }
+        return $removed;
+    }
+
+    public static function cleanupOrphans(): array
+    {
+        return ['removed_files' => self::removeOrphanCandidates(self::orphanCandidates())];
     }
 
     /**
@@ -436,6 +536,7 @@ class ImageRepository
      */
     public static function rebuild(array $opts = []): array
     {
+        self::lockMedia();
         $opts = array_merge([
             'quality' => (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY),
             'thumb_max' => (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX),
@@ -537,3 +638,4 @@ class ImageRepository
         }
     }
 }
+

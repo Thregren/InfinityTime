@@ -18,14 +18,22 @@ namespace Typecho {
         public static self $instance;
         public array $images = [];
         public array $fields = [];
+        public array $legacyFields = [];
         public static function get(): self { return self::$instance; }
         public function getPrefix(): string { return 'test_'; }
         public function select(...$args): Query { return new Query('select'); }
         public function insert($table): Query { return (new Query('insert'))->from($table); }
         public function delete($table): Query { return (new Query('delete'))->from($table); }
         public function update($table): Query { return (new Query('update'))->from($table); }
-        public function fetchAll($query): array { return $this->images; }
+        public function fetchAll($query): array { return $query->table === 'test_fields' ? $this->legacyFields : $this->images; }
         public function query($query): void {
+            if ($query->table === 'test_infinitytime_images' && $query->kind === 'update') {
+                foreach ($this->images as &$image) {
+                    if (($image['id'] ?? null) === $query->conditions['id = ?'][0]) { $image = array_merge($image, $query->values); }
+                }
+                unset($image);
+                return;
+            }
             if ($query->table !== 'test_fields') { return; }
             if ($query->kind === 'delete') { unset($this->fields[$query->conditions['name = ?'][0]]); }
             if ($query->kind === 'insert') { $this->fields[$query->values['name']] = $query->values['str_value']; }
@@ -46,7 +54,11 @@ namespace TypechoPlugin\InfinityTime {
 namespace TypechoPlugin\InfinityTime\Lib {
     class MediaProcessor {
         public static array $calls = [];
-        public static function process(...$args): array { self::$calls[] = $args; return []; }
+        public static function process(...$args): array {
+            self::$calls[] = $args;
+            return ['width' => $args[5], 'height' => 80, 'size' => 321,
+                'mid' => null, 'avif' => null, 'mid_avif' => null];
+        }
     }
 }
 
@@ -80,6 +92,8 @@ namespace {
         expect($result === ['rebuilt' => 2, 'failed' => 0], '混合图片重建成功');
         expect(array_slice(MediaProcessor::$calls[0], 5) === [180, 94], '全景独立压缩设置');
         expect(array_slice(MediaProcessor::$calls[1], 5) === [120, 51], '后续普通图不继承全景设置');
+        expect($db->images[0]['width'] === 180 && $db->images[1]['width'] === 120, '重建持久化实际输出宽度');
+        expect($db->images[1]['height'] === 80 && $db->images[1]['size'] === 321, '重建持久化高度和字节数');
         $db->images[0]['mid'] = '/uploads/full/pano@1600.webp';
         $db->images[0]['avif'] = '/uploads/full/pano.avif';
         $db->images[0]['mid_avif'] = '/uploads/full/pano@1600.avif';
@@ -89,18 +103,60 @@ namespace {
             }
         }
         file_put_contents($root . '/uploads/full/orphan.webp', 'fixture');
+        touch($root . '/uploads/full/orphan.webp', time() - 7200);
         expect(Repository::cleanupOrphans()['removed_files'] === 1, '只清理一个孤儿文件');
         foreach (['mid', 'avif', 'mid_avif'] as $field) {
             expect(is_file(Repository::toAbs($db->images[0][$field])), '保留引用 ' . $field);
         }
 
+        // 快照生成后补入引用，恢复旧任务不得删掉该图。
+        $late = $root . '/uploads/full/late.webp';
+        file_put_contents($late, 'late'); touch($late, time() - 7200);
+        $snapshot = Repository::orphanCandidates();
+        $db->images[] = ['full' => '/uploads/full/late.webp'];
+        expect(Repository::removeOrphanCandidates($snapshot) === 0 && is_file($late), '删除前重查新增数据库引用');
+        $changed = $root . '/uploads/full/changed.webp';
+        file_put_contents($changed, 'old'); touch($changed, time() - 7200);
+        $snapshot = Repository::orphanCandidates();
+        file_put_contents($changed, 'replacement with different size'); touch($changed, time() - 7200);
+        expect(Repository::removeOrphanCandidates($snapshot) === 0 && is_file($changed), '文件身份变化后跳过旧候选');
+        $fresh = $root . '/uploads/full/fresh.webp'; file_put_contents($fresh, 'new upload');
+        expect(!in_array($fresh, array_column(Repository::orphanCandidates(), 'path'), true), '新上传文件享有宽限期');
+        expect(Repository::removeOrphanCandidates([$changed]) === 0, '拒绝旧版纯路径删除快照');
+        $outside = $root . '/outside.webp'; file_put_contents($outside, 'outside'); touch($outside, time() - 7200);
+        symlink($outside, $root . '/uploads/full/link.webp');
+        expect(!in_array($root . '/uploads/full/link.webp', array_column(Repository::orphanCandidates(), 'path'), true), '不收集指向外部的软链接');
+        expect(Repository::removeOrphanCandidates([['path' => $outside]]) === 0 && is_file($outside), '拒绝上传目录外的路径');
+        $legacy = $root . '/uploads/full/legacy.webp';
+        $legacyAvif = $root . '/uploads/full/legacy.avif';
+        foreach ([$legacy, $legacyAvif] as $path) { file_put_contents($path, 'legacy'); touch($path, time() - 7200); }
+        $db->legacyFields = [
+            ['name' => 'img', 'str_value' => "https://example.com/uploads/full/legacy.webp\n/uploads/full/other.webp"],
+            ['name' => 'variants', 'str_value' => '[{"avif":["/uploads/full/legacy.avif"]}]'],
+        ];
+        $legacyCandidates = array_column(Repository::orphanCandidates(), 'path');
+        expect(!in_array($legacy, $legacyCandidates, true) && !in_array($legacyAvif, $legacyCandidates, true), '保留仅由历史文章字段引用的全图和变体');
+        // 模拟其他进程持锁：失败时绝不执行清理。
+        Repository::unlockMedia();
+        $other = fopen($root . '/uploads/.infinitytime-media.lock', 'c');
+        flock($other, LOCK_EX | LOCK_NB);
+        $blocked = false;
+        try { Repository::cleanupOrphans(); } catch (RuntimeException $e) { $blocked = true; }
+        expect($blocked && is_file($changed), '上传/维护锁竞争时安全失败');
+        flock($other, LOCK_UN); fclose($other);
+        Repository::lockMedia();
+        Repository::lockMedia(); // 同一请求可复用锁，覆盖 ingest 到 insertRow 的间隙。
+
         $db->images = [
-            ['full' => '/b.webp', 'thumb' => '/b-thumb.webp', 'title' => 'B', 'exif' => '{"gps":"private","iso":100}'],
+            ['full' => '/b.webp', 'thumb' => '/b-thumb.webp', 'title' => 'B', 'width' => 2400, 'height' => 1600, 'mid' => '/b@1600.webp', 'avif' => '/b.avif', 'exif' => '{"gps":"private","iso":100}'],
             ['full' => '/a.webp', 'thumb' => '/a-thumb.webp', 'title' => 'A', 'exif' => '{}'],
         ];
         Repository::syncPostFields(1);
         expect($db->fields['img'] === "/b.webp\n/a.webp", '图片路径与仓库排序一致');
         expect($db->fields['thumb'] === "/b-thumb.webp\n/a-thumb.webp", '缩略图同序');
+        expect(json_decode($db->fields['dims'], true) === ['2400x1600', ''], '首次同步包含尺寸字段');
+        $variants = json_decode($db->fields['variants'], true);
+        expect($variants[0]['w'] === 2400 && $variants[0]['webp'] === ['/b.webp', '/b@1600.webp'] && $variants[0]['avif'] === ['/b.avif'], '首次同步包含响应式变体');
         expect(json_decode($db->fields['titles']) === ['B', 'A'], '标题同序');
         expect(strpos($db->fields['exif'], 'private') === false, 'GPS 不写入公开字段');
         $db->images = [$db->images[1]];
@@ -113,9 +169,11 @@ namespace {
         expect($db->fields['img'] === '' && $db->fields['thumb'] === '' && !isset($db->fields['titles']), '删除最后一张清空地址及元数据');
         echo "Repository: $checks checks passed\n";
     } finally {
+        Repository::unlockMedia();
         // 仅移除本次随机创建的 fixture 目录。
         $entries = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
         foreach ($entries as $entry) { $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname()); }
         rmdir($root);
     }
 }
+
