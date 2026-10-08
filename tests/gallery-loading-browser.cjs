@@ -166,8 +166,24 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       assert.equal(await page.locator('#stale').count(), 0);
       assert.equal(await page.locator('#fresh').count(), 1);
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
-      await page.evaluate(() => InfinityWaterfall.reset({ nextUrl: '/empty' }));
-      assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true, '合法的搜索末尾空批次能正常结束');
+      // 同一浏览器任务内重置并发起明确请求，避免原生滚动事件在两次 evaluate 间抢先加载。
+      assert.equal(await page.evaluate(() => {
+        InfinityWaterfall.reset({ nextUrl: '/empty' });
+        return InfinityWaterfall.loadMore();
+      }), true, '合法的搜索末尾空批次能正常结束');
+      assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
+      // 自动滚动另行通过真实事件路径验证，不依赖上面的手动调用时序。
+      const emptyRequests = requests.filter(p => p === '/empty').length;
+      await page.evaluate(() => {
+        InfinityWaterfall.reset({ nextUrl: '/empty' });
+        window.scrollTo(0, document.documentElement.scrollHeight);
+        window.dispatchEvent(new Event('scroll'));
+      });
+      await page.waitForFunction(() => {
+        const more = document.querySelector('#load-more');
+        return more.getAttribute('data-next-url') === '' && more.getAttribute('aria-busy') === 'false';
+      });
+      assert.equal(requests.filter(p => p === '/empty').length, emptyRequests + 1, '自动滚动恰好加载一次合法末尾空批次');
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
       // AVIF 请求和解码失败均必须尝试可用 WebP，不能仅显示永久失败。
       await page.evaluate(html => {

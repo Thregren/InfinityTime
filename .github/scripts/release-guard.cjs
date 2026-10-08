@@ -61,6 +61,19 @@ function buildArchives(temp, dist) {
   }
   return digests;
 }
+// 仅输出诊断白名单；禁止输出令牌、完整响应头或原始响应正文。
+function formatApiError(method, endpoint, response, body, secrets = []) {
+  const clean = value => {
+    let text = String(value ?? '');
+    for (const secret of secrets.filter(Boolean)) text = text.split(secret).join('[REDACTED]');
+    return text.replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]').replace(/[\r\n\x00-\x1f\x7f]/g, ' ');
+  };
+  const route = endpoint.startsWith('https://') ? new URL(endpoint).pathname : endpoint.split('?')[0];
+  const details = ['x-ratelimit-remaining', 'x-ratelimit-reset', 'x-ratelimit-resource', 'retry-after']
+    .map(name => `${name}=${clean(response.headers.get(name) ?? 'unknown').slice(0, 100)}`).join(' ');
+  const message = typeof body?.message === 'string' ? clean(body.message).slice(0, 300) : 'unavailable';
+  return `GitHub API ${clean(method)} ${clean(route)}: ${response.status}; ${details}; message=${message}`;
+}
 async function main() {
   insist(process.env.GITHUB_EVENT_NAME === 'workflow_run', '仅允许 workflow_run');
   const repo = process.env.GITHUB_REPOSITORY;
@@ -74,7 +87,10 @@ async function main() {
     insist(url.startsWith(`${root}/`) || url.startsWith(`https://uploads.github.com/repos/${repo}/`), '非预期 API 目标');
     const response = await fetch(url, { signal: AbortSignal.timeout(30000), method, headers: { ...(endpoint.startsWith('/actions/') && method === 'GET' ? {} : { Authorization: `Bearer ${token}` }), Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': binary ? 'application/zip' : 'application/json' } : {}) }, body: body ? (binary ? body : JSON.stringify(body)) : undefined });
     if (optional && response.status === 404) return null;
-    insist(response.ok, `GitHub API ${method} ${endpoint}: ${response.status}`);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null);
+      throw new Error(formatApiError(method, endpoint, response, errorBody, [token]));
+    }
     return response.json();
   }
   const verifyDownloads = async release => {
@@ -138,5 +154,5 @@ async function main() {
     console.log(`发布成功：${release.html_url}；SHA=${sha}；两份 ZIP SHA-256 已验证`);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
-module.exports = { guardRun, guardVersions, guardExisting, buildArchives, VERSION, TAG, ASSETS };
+module.exports = { guardRun, guardVersions, guardExisting, buildArchives, formatApiError, VERSION, TAG, ASSETS };
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });

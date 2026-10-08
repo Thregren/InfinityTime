@@ -88,3 +88,27 @@ test('真实 ZIP 构建确定性、单根目录、排除 data，拒绝 symlink',
     assert.throws(() => build('unsafe'), /非普通文件/);
   } finally { process.chdir(old); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('API 错误诊断仅输出白名单和截断 message，隐藏令牌与敏感头', () => {
+  const { formatApiError } = require('../.github/scripts/release-guard.cjs');
+  const response = { status: 403, headers: new Headers({
+    'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1234567890',
+    'x-ratelimit-resource': 'core', 'retry-after': '60',
+    authorization: 'Bearer secret-header', 'set-cookie': 'private-cookie',
+  }) };
+  const result = formatApiError('GET', '/actions/runs/123?secret=query-secret', response,
+    { message: `rate limited known-token Bearer unknown-token\n${'x'.repeat(500)}`, secret: 'raw-body-secret' }, ['known-token']);
+  assert.match(result, /GET \/actions\/runs\/123: 403/);
+  for (const detail of ['x-ratelimit-remaining=0', 'x-ratelimit-reset=1234567890', 'x-ratelimit-resource=core', 'retry-after=60']) assert(result.includes(detail));
+  for (const secret of ['known-token', 'unknown-token', 'secret-header', 'private-cookie', 'raw-body-secret', 'query-secret', '\n']) assert(!result.includes(secret));
+  assert(result.includes('[REDACTED]'));
+  assert(result.split('; message=')[1].length <= 300);
+  assert.match(formatApiError('POST', 'https://uploads.github.com/repos/a/b/releases/1/assets?name=test', response, null), /POST \/repos\/a\/b\/releases\/1\/assets: 403/);
+});
+test('checkout 前 inline API 错误格式与共享测试函数完全一致', () => {
+  const fs = require('node:fs');
+  const { formatApiError } = require('../.github/scripts/release-guard.cjs');
+  const workflow = fs.readFileSync('.github/workflows/release.yml', 'utf8');
+  const lines = workflow.split('\n').map(line => line.startsWith('            ') ? line.slice(12) : line).join('\n');
+  assert(lines.includes(formatApiError.toString()));
+});
