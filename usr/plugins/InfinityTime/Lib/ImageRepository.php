@@ -240,6 +240,7 @@ class ImageRepository
      */
     public static function insertRow(int $cid, array $meta, int $sort = 0): int
     {
+        self::ensureSchema();
         self::lockMedia();
         $db = \Typecho\Db::get();
         $table = self::table();
@@ -256,6 +257,8 @@ class ImageRepository
             'size' => $meta['size'],
             'sort' => $sort,
             'hash' => $meta['hash'] ?? '',
+            'upload_key' => $meta['upload_key'] ?? null,
+            'upload_fingerprint' => $meta['upload_fingerprint'] ?? null,
             'exif' => json_encode($meta['exif'] ?? [], JSON_UNESCAPED_UNICODE),
             'gps_lat' => $meta['gps_lat'] ?? null,
             'gps_lng' => $meta['gps_lng'] ?? null,
@@ -363,9 +366,13 @@ class ImageRepository
         $dims = [];
         $variants = [];
         $exifs = [];
+        $photoIds = [];
+        $months = [];
         $images = [];
         $thumbs = [];
         foreach ($rows as $r) {
+            $photoIds[] = (int)($r['id'] ?? 0);
+            $months[] = self::photoMonth(is_array($r['exif'] ?? null) ? $r['exif'] : [], (int)($r['created'] ?? 0));
             $images[] = (string)($r['full'] ?? '');
             $thumbs[] = (string)($r['thumb'] ?? '');
             $addresses[] = (string)($r['address'] ?? '');
@@ -396,8 +403,8 @@ class ImageRepository
                 'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => implode("\n", $paths),
             ]));
         }
-        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs];
-        foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif'] as $f) {
+        $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs, 'photo_ids' => $photoIds, 'months' => $months];
+        foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif', 'photo_ids', 'months'] as $f) {
             $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
             // 注意：variants 的元素是数组，不能直接用 array_filter($val, 'strlen')（PHP 8 会对数组调 strlen 报错）
@@ -415,6 +422,17 @@ class ImageRepository
                 ]));
             }
         }
+    }
+
+    /** EXIF dates are wall-clock camera dates; timestamps fall back to documented UTC. */
+    public static function photoMonth(array $exif, int $created): string
+    {
+        $date = (string)($exif['datetime'] ?? '');
+        if (preg_match('/^(\d{4})[:-](\d{2})[:-](\d{2})(?:[ T]|$)/', $date, $parts)
+            && checkdate((int)$parts[2], (int)$parts[3], (int)$parts[1])) {
+            return $parts[1] . '-' . $parts[2];
+        }
+        return $created > 0 ? gmdate('Y-m', $created) : '';
     }
 
     /** 删除某 cid 的所有图片（含文件）。 */

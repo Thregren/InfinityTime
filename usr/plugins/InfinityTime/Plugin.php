@@ -372,6 +372,8 @@ class Plugin implements \Typecho_Plugin_Interface
             {$q}size{$q} integer DEFAULT 0,
             {$q}sort{$q} integer DEFAULT 0,
             {$q}hash{$q} varchar(64) DEFAULT '',
+            {$q}upload_key{$q} varchar(64) DEFAULT NULL,
+            {$q}upload_fingerprint{$q} varchar(64) DEFAULT NULL,
             {$q}exif{$q} text,
             {$q}gps_lat{$q} real,
             {$q}gps_lng{$q} real,
@@ -401,7 +403,7 @@ class Plugin implements \Typecho_Plugin_Interface
     }
 
     /** 当前 schema 版本。新增列时 +1，并在 migrateSchema 里补对应 ALTER。 */
-    private const SCHEMA_VERSION = 3;
+    private const SCHEMA_VERSION = 4;
 
     /** 按版本补齐旧表缺失的列（幂等；每进程/每次激活最多跑一次 DDL）。 */
     public static function migrateSchema(): void
@@ -415,8 +417,9 @@ class Plugin implements \Typecho_Plugin_Interface
             return;
         }
         // v3 一次性验证全部旧列，修复曾被 v2 错误标记成功的安装。
-        $cols = ['title', 'desc', 'mid', 'avif', 'mid_avif'];
-        foreach ($cols as $col) {
+        $cols = ['title' => 'text', 'desc' => 'text', 'mid' => 'text', 'avif' => 'text', 'mid_avif' => 'text',
+            'upload_key' => 'varchar(64) DEFAULT NULL', 'upload_fingerprint' => 'varchar(64) DEFAULT NULL'];
+        foreach ($cols as $col => $definition) {
             // 使用限定列名，避免 SQLite 将不存在的双引号列名当作字符串。
             $probe = "SELECT {$q}{$table}{$q}.{$q}{$col}{$q} FROM {$q}{$table}{$q} WHERE 1 = 0";
             try {
@@ -426,7 +429,7 @@ class Plugin implements \Typecho_Plugin_Interface
                 // 缺列时尝试补齐；其他读取错误也不能冒充成功。
             }
             try {
-                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} text");
+                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} {$definition}");
             } catch (\Throwable $e) {
                 // 另一进程可能已加列；下面实际探测成功才允许继续。
             }
@@ -436,7 +439,45 @@ class Plugin implements \Typecho_Plugin_Interface
                 throw new \RuntimeException('InfinityTime 数据库升级失败，请检查数据库权限后重试（列：' . $col . '）', 0, $e);
             }
         }
+        self::ensureUploadIndex($db, $table);
         self::setOption('infinitytimeSchemaVersion', (string)self::SCHEMA_VERSION);
+    }
+
+    /** A nullable key preserves existing rows and gives retries a database safety net. */
+    private static function ensureUploadIndex($db, string $table): void
+    {
+        $adapter = strtolower($db->getAdapterName());
+        $mysql = strpos($adapter, 'mysql') !== false;
+        $pgsql = strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false;
+        $q = $mysql ? '`' : '"';
+        $index = 'it_upload_' . substr(sha1($table), 0, 16);
+        try {
+            $db->query("CREATE UNIQUE INDEX {$q}{$index}{$q} ON {$q}{$table}{$q} ({$q}cid{$q}, {$q}upload_key{$q})");
+            return;
+        } catch (\Throwable $e) {
+            // Only a verified existing unique index permits a concurrent migration retry.
+        }
+        $valid = false;
+        if ($mysql) {
+            $rows = $db->fetchAll("SHOW INDEX FROM {$q}{$table}{$q} WHERE Key_name = '" . $index . "'");
+            usort($rows, static function ($a, $b) { return (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']; });
+            $valid = count($rows) === 2 && (int)$rows[0]['Non_unique'] === 0 && (int)$rows[1]['Non_unique'] === 0
+                && array_column($rows, 'Column_name') === ['cid', 'upload_key'];
+        } elseif ($pgsql) {
+            $rows = $db->fetchAll("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = '" . $index . "'");
+            $definition = str_replace('"', '', (string)($rows[0]['indexdef'] ?? ''));
+            $valid = strpos($definition, 'CREATE UNIQUE INDEX ') === 0
+                && preg_match('/\(cid,\s*upload_key\)/', $definition) === 1;
+        } else {
+            foreach ($db->fetchAll("PRAGMA index_list(" . $q . $table . $q . ")") as $row) {
+                if (($row['name'] ?? '') !== $index || (int)($row['unique'] ?? 0) !== 1) { continue; }
+                $columns = $db->fetchAll("PRAGMA index_info(" . $q . $index . $q . ")");
+                $valid = array_column($columns, 'name') === ['cid', 'upload_key'];
+            }
+        }
+        if (!$valid) {
+            throw new \RuntimeException('InfinityTime 上传去重索引创建失败，请检查数据库权限后重试');
+        }
     }
 
     private static function safeName(string $name): string

@@ -148,10 +148,15 @@ namespace {
         Repository::lockMedia(); // 同一请求可复用锁，覆盖 ingest 到 insertRow 的间隙。
 
         $db->images = [
-            ['full' => '/b.webp', 'thumb' => '/b-thumb.webp', 'title' => 'B', 'width' => 2400, 'height' => 1600, 'mid' => '/b@1600.webp', 'avif' => '/b.avif', 'exif' => '{"gps":"private","iso":100}'],
-            ['full' => '/a.webp', 'thumb' => '/a-thumb.webp', 'title' => 'A', 'exif' => '{}'],
+            ['id' => 21, 'created' => 1767225600, 'full' => '/b.webp', 'thumb' => '/b-thumb.webp', 'title' => 'B', 'width' => 2400, 'height' => 1600, 'mid' => '/b@1600.webp', 'avif' => '/b.avif', 'exif' => '{"gps":"private","iso":100}'],
+            ['id' => 15, 'created' => 1735689600, 'full' => '/a.webp', 'thumb' => '/a-thumb.webp', 'title' => 'A', 'exif' => '{}'],
         ];
+        expect(Repository::photoMonth(['datetime' => '2024:02:29 10:11:12'], 1735689600) === '2024-02', 'EXIF valid leap date keeps camera month');
+        expect(Repository::photoMonth(['datetime' => '2025:02:29 10:11:12'], 1735689600) === '2025-01', 'Invalid EXIF day uses creation UTC month');
+        expect(Repository::photoMonth([], 0) === '', 'Missing dates remain unknown');
         Repository::syncPostFields(1);
+        expect(json_decode($db->fields['photo_ids'], true) === [21, 15], 'Stable IDs follow sorted rows, not positions');
+        expect(json_decode($db->fields['months'], true) === ['2026-01', '2025-01'], 'Photo months synced in same order');
         expect($db->fields['img'] === "/b.webp\n/a.webp", '图片路径与仓库排序一致');
         expect($db->fields['thumb'] === "/b-thumb.webp\n/a-thumb.webp", '缩略图同序');
         expect(json_decode($db->fields['dims'], true) === ['2400x1600', ''], '首次同步包含尺寸字段');
