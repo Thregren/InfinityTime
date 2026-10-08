@@ -35,7 +35,7 @@ if (($_GET['infinitytime_api'] ?? '') === 'gallery') {
 }
 $__galleryGroups = pp_gallery_groups($__gallery['albums']);
 // 静态资源版本号（以文件 mtime 生成，改动即失效缓存，避免改后还看到旧的 CSS/JS）
-$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js') . (string)@filemtime(__DIR__ . '/assets/js/init.js') . (string)@filemtime(__DIR__ . '/assets/js/gallery-navigation.js') . (string)@filemtime(__DIR__ . '/assets/css/gallery.css')), 0, 8);
+$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js') . (string)@filemtime(__DIR__ . '/assets/js/init.js') . (string)@filemtime(__DIR__ . '/assets/js/data-saver.js') . (string)@filemtime(__DIR__ . '/assets/js/gallery-navigation.js') . (string)@filemtime(__DIR__ . '/assets/css/gallery.css')), 0, 8);
 // JSON 嵌入 HTML 属性时的安全标志：把 ' " & < > 转成 \uXXXX，
 // 防止用户标题/描述/文件名等含引号或尖括号时破坏属性或注入脚本（存储型 XSS）。
 $__jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG;
@@ -106,6 +106,7 @@ if (!headers_sent()) {
           <button type="submit">查找</button>
           <a href="<?php echo htmlspecialchars(pp_gallery_url($__galleryBase), ENT_QUOTES); ?>">全部照片</a>
         </form>
+        <label class="gallery-data-saver" hidden>照片加载<select id="gallery-data-saver"><option value="auto">跟随网络建议</option><option value="on">开启省流</option><option value="off">正常加载</option></select><span id="gallery-data-saver-status" role="status"></span></label>
         <p class="gallery-filter-help">关键词匹配标题或描述；多个筛选条件同时生效。月份优先使用拍摄时间，无拍摄时间时使用上传时间（历史照片使用相册时间）。</p>
         <?php if ($__galleryGroups): ?><nav class="gallery-month-nav" aria-label="本页月份"><?php foreach ($__galleryGroups as $month => $items): ?><a href="#month-<?php echo htmlspecialchars($month, ENT_QUOTES); ?>"><?php echo $month === 'unknown' ? '日期未知' : htmlspecialchars($month); ?></a><?php endforeach; ?></nav><?php endif; ?>
       </section>
@@ -177,6 +178,7 @@ if (!headers_sent()) {
                     <span class="theme"><a href="https://github.com/Thregren/InfinityTime" target="_blank" rel="noopener nofollow">InfinityTime Theme</a></span>
                 </div>
       </footer>
+      <script src="<?php $this->options->themeUrl('assets/js/data-saver.js?v=' . $__assetVer); ?>"></script>
       <script src="<?php $this->options->themeUrl('assets/js/init.js?v=' . $__assetVer); ?>"></script>
   </div>
   <!-- Scripts -->

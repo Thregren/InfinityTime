@@ -49,6 +49,7 @@ jobs:
           php tests/media-gd.php
           php tests/media-command.php
           php tests/media-temp.php
+          php tests/health-diagnostics.php
           php tests/maintenance-state.php
           for mode in rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
             php tests/maintenance-panel.php "$mode"
@@ -65,6 +66,7 @@ jobs:
           node tests/maintenance-client.cjs
           node --test tests/release-guards.cjs
           node tests/gallery.cjs
+          node tests/data-saver.cjs
           node tests/gallery-loading.cjs
           node tests/gallery-navigation.cjs
 

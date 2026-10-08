@@ -827,7 +827,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 全景查看器仍预加载原图。
     var __preloaded = new Map();
     function preloadUrl(u) {
-        if (!u) return;
+        if (!u || document.hidden || (window.InfinityDataSaver && !window.InfinityDataSaver.allowBackground())) return;
         var key = u + '|' + window.innerWidth + '|' + (window.devicePixelRatio || 1);
         if (__preloaded.has(key)) return;
         var host = document.createElement('div');
@@ -848,6 +848,21 @@ document.addEventListener('DOMContentLoaded', function() {
         // 也不阻止预加载失败的图片再次重试。
         while (__preloaded.size > 64) __preloaded.delete(__preloaded.keys().next().value);
     }
+    function releasePreloads() {
+        __preloaded.forEach(function(entry) {
+            if (!entry || entry === true) return;
+            entry.image.onload = entry.image.onerror = null;
+            entry.host.querySelectorAll('source').forEach(function(source) { source.removeAttribute('srcset'); });
+            entry.image.removeAttribute('srcset');
+            entry.image.removeAttribute('src');
+        });
+        __preloaded.clear();
+    }
+    window.addEventListener('pagehide', releasePreloads);
+    window.addEventListener('infinity:network-preference', function() {
+        if (window.InfinityDataSaver && window.InfinityDataSaver.isEnabled()) releasePreloads();
+    });
+    document.addEventListener('visibilitychange', function() { if (document.hidden) releasePreloads(); });
     function preloadNeighbors(popup) {
         try {
             var img = popup && popup.querySelector('.pic img');
