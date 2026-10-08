@@ -40,6 +40,7 @@ namespace Utils {
 }
 namespace {
     interface Typecho_Plugin_Interface {}
+    require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/Database.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Plugin.php';
     use TypechoPlugin\InfinityTime\Plugin;
     $db = \Typecho\Db::$instance = new \Typecho\Db();

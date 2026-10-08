@@ -8,6 +8,10 @@
 
 ## 功能特性
 
+### v1.14.1 性能与可靠性加固
+
+维护任务身份与原子检查点、聚合字段事务回滚、Mysqli 主库一致性修复、低内存孤儿引用扫描，并扩充官方 Typecho、多 PHP 和多数据库集成验证。1.14.0 的相册工作流与浏览功能全部保留。
+
 ### v1.14.0 相册工作流与浏览增强
 
 - **先存草稿，再明确发布**：创建后保持草稿，逐张上传并显示「待上传 / 上传中 / 转换中 / 完成 / 失败」。只有点击发布才会公开；贡献者可管理自己的草稿，公开发布与已发布相册修改需要编辑者或管理员权限。
@@ -74,7 +78,7 @@
 - **联系方式 / 联系我**：可视化选图标、增删/启停（AJAX）。
 - **WebP 转换设置**：按 **通用保留原图 / 缩略图 / 普通图 / 全景图** 分组；宽度、**质量滑块**；转换工具状态；「恢复默认最佳设置」（AJAX）。
 - **维护**：重建缩略图/全图、清理孤儿文件、重建尺寸字段、**清理非插件文章**；进度实时刷新，刷新页面后可继续未完成任务，并带并发锁。
-- **安全加固**：写操作带 CSRF token（含 GET 维护任务）、上传单文件大小/像素前置校验、「关于」HTML 危险标签/事件/协议清洗。
+- **安全加固**：所有写操作与维护任务仅接受带 CSRF token 的 POST、上传单文件大小/像素前置校验、「关于」HTML 危险标签/事件/协议清洗。
 
 ## 技术栈
 
@@ -88,12 +92,16 @@ php tests/sanitizer-fallback.php
 php tests/repository.php
 php tests/migration.php
 php tests/schema-sqlite.php
+php tests/field-sync.php
+php tests/maintenance-state.php
+php tests/maintenance-panel.php
 php tests/admin-workflow.php
 php tests/admin-panel.php
 php tests/gallery-discovery.php
 php tests/upload-fallback.php
 php tests/theme-output.php
 node tests/admin-upload.cjs
+node tests/maintenance-client.cjs
 node tests/gallery.cjs
 node tests/gallery-loading.cjs
 node tests/gallery-navigation.cjs
@@ -109,7 +117,15 @@ node tests/gallery-loading-browser.cjs
 node tests/admin-upload.cjs --browser
 ```
 
-CI 同时检查 PHP / JS 语法、版本一致性和更新记录。仓库测试使用隔离临时文件及 DB/编码器替身；后台脚本测试模拟 DOM，覆盖预览、拖拽、移除和无 `DataTransfer` 时的提交顺序。这些检查不能替代真实 Typecho 后台及图片编码器的端到端验证。
+CI 同时检查 PHP / JS 语法、版本一致性和更新记录，并在 PHP 7.4 / 8.2 / 8.4、Typecho 1.2.1 / 1.3.0、SQLite / MySQL 8 / PostgreSQL 17 矩阵中使用官方数据库层与 PDO/原生适配器执行集成测试。测试 Typecho 源码固定到官方提交，覆盖草稿、权限、重试、字段回滚、外层事务及旧库升级。数据库以外的 options/编码器边界仍使用隔离替身，不能冒充真实网站、生产主从延迟或完整图片编码器的端到端验证。
+
+真实数据库测试仅在一次性测试库运行，例如：`TYPECHO_ROOT=/path/to/typecho php tests/typecho-integration.php Pdo_SQLite`。其他适配器为 `SQLite`、`Pdo_Mysql`、`Mysqli`、`Pdo_Pgsql`、`Pgsql`，连接参数使用 `IT_DB_HOST`、`IT_DB_PORT`、`IT_DB_NAME`、`IT_DB_USER`、`IT_DB_PASSWORD` 环境变量。测试会创建随机前缀的表并在结束时清理。
+
+字段聚合同步使用主库保存点：失败保留完整旧字段，不提交或回滚调用方的其他事务。MySQL 的 `fields` 表必须使用 InnoDB；非事务引擎会在写入前明确拒绝，需要管理员先备份并自行迁移，本插件不会自动改动站点表引擎。
+
+维护检查点有独立任务标识。未完成的同类任务继续原清单与进度，完成后再次开始会重新收集候选；迟到轮询不能覆盖新任务。磁盘写入失败会明确报错，重建字段失败计入失败数，可运行「重建尺寸字段」重试。首批已完成但响应丢失后，手动再次开始属于新任务，可能重复处理，但不会复用过期快照。
+
+孤儿引用扫描仅读六个路径列，不缓存旧引用；每批删除前仍在媒体锁内核验。可运行 `php tests/orphan-performance.php` 在隔离 SQLite 中对比返回量和查询中位数，测试不使用机器相关的耗时通过阈值。
 
 维护与上传现在通过同一上传根目录内的文件锁互斥，媒体处理串行执行，逐图队列在忙时保留状态并提示重试，不会并发启动多张转换。孤儿清理只处理至少一小时前的文件，恢复任务时重新核验数据库引用与文件身份；旧版任务快照会安全跳过，重新启动清理即可。文件锁需要底层文件系统支持可靠的 `flock`（多节点部署需共用支持锁的上传卷）。
 

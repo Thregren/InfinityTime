@@ -5,6 +5,7 @@
  */
 declare(strict_types=1);
 
+require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/Database.php';
 require __DIR__ . '/../usr/plugins/InfinityTime/Lib/Sanitizer.php';
 require __DIR__ . '/../usr/plugins/InfinityTime/Lib/ImageRepository.php';
 require __DIR__ . '/../usr/plugins/InfinityTime/Lib/MediaProcessor.php';

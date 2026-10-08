@@ -16,6 +16,9 @@ use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 use TypechoPlugin\InfinityTime\Lib\AdminRepository;
 use TypechoPlugin\InfinityTime\Lib\AdminSecurity;
 use TypechoPlugin\InfinityTime\Lib\AdminWorkflow;
+use TypechoPlugin\InfinityTime\Lib\MaintenanceState;
+use TypechoPlugin\InfinityTime\Lib\Database;
+require_once __DIR__ . '/Lib/MaintenanceState.php';
 
 $db = Db::get();
 $user = User::alloc();
@@ -193,9 +196,9 @@ function pp_set_field(int $cid, string $name, string $value): void
 {
     $db = Db::get();
     $prefix = $db->getPrefix();
-    $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
+    Database::query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
     if ($value !== '') {
-        $db->query($db->insert($prefix . 'fields')->rows([
+        Database::query($db->insert($prefix . 'fields')->rows([
             'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value,
         ]));
     }
@@ -212,15 +215,12 @@ function pp_data_file(): string
 
 function pp_read_json(string $file): array
 {
-    return is_file($file) ? (json_decode((string)@file_get_contents($file), true) ?: []) : [];
+    return MaintenanceState::read($file);
 }
 
 function pp_write_json(string $file, array $data): void
 {
-    $tmp = $file . '.tmp.' . getmypid();
-    if (@file_put_contents($tmp, json_encode($data, JSON_UNESCAPED_UNICODE)) !== false) {
-        @rename($tmp, $file);
-    }
+    MaintenanceState::write($file, $data);
 }
 
 /** 清理 original/full/thumb 下因删除文件而空出的目录（自底向上）。 */
@@ -303,33 +303,24 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         $__uid = (int)($user->uid ?? 0);
         $__lockFile = pp_data_file() . '/job.lock';
         $__lock = is_file($__lockFile) ? (json_decode((string)@file_get_contents($__lockFile), true) ?: []) : [];
-        if ($__lock && (time() - (int)($__lock['time'] ?? 0)) < 90 && (int)($__lock['uid'] ?? 0) !== $__uid) {
+        if ($__lock && (time() - (int)($__lock['time'] ?? 0)) < 90 && ((int)($__lock['uid'] ?? 0) !== $__uid || (string)($__lock['job'] ?? '') !== $job)) {
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '另一个维护任务正在进行，请稍后再试'], JSON_UNESCAPED_UNICODE);
             exit;
         }
-        @file_put_contents($__lockFile, json_encode(['uid' => $__uid, 'job' => $job, 'time' => time()]));
+
     }
     set_time_limit(60);
     $result = ['finished' => true, 'total' => 0, 'done' => 0, 'current' => ''];
 
+    try {
     if ($job === 'rebuild') {
-        $listFile = pp_data_file() . '/rebuild_list.json';
-        $jobFile = pp_data_file() . '/job.json';
-        $state = pp_read_json($jobFile);
-        if (($state['job'] ?? '') !== 'rebuild' || !file_exists($listFile)) {
-            $rows = $db->fetchAll($db->select()->from(ImageRepository::table()));
-            $list = [];
-            foreach ($rows as $r) {
-                if (!empty($r['original'])) {
-                    $list[] = [$r['id'], $r['original'], $r['full'], $r['thumb'], (int)($r['cid'] ?? 0)];
-                }
-            }
-            pp_write_json($listFile, $list);
-            pp_write_json($jobFile, ['job' => 'rebuild', 'total' => count($list), 'done' => 0, 'current' => '', 'failed' => 0]);
-        }
-        $list = pp_read_json($listFile);
-        $state = pp_read_json($jobFile);
+        [$state, $list] = MaintenanceState::open(pp_data_file(), $job, (string)($_POST['mode'] ?? 'start'), (string)($_POST['job_id'] ?? ''), static function () use ($db) {
+            $rows = AdminRepository::readAll($db->select('id')->from(ImageRepository::table())->where('original <> ?', ''), true);
+            return array_map(static function ($row) { return (int)$row['id']; }, $rows);
+        });
+        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
         $failed = (int)($state['failed'] ?? 0);
         $batch = 3;
@@ -348,8 +339,13 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
             if ((microtime(true) - $started) > $budget) {
                 break;
             }
-            $item = $list[$idx];
-            $src = ImageRepository::toAbs($item[1]);
+            $snapshot = $list[$idx];
+            $rowId = is_array($snapshot) ? (int)$snapshot[0] : (int)$snapshot;
+            // 快照只决定候选身份；路径与归属在每批主库重读，避免删除/改绑后重建旧记录。
+            $live = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
+            if (!$live || empty($live['original'])) { $idx++; continue; }
+            $item = [$rowId, $live['original'], $live['full'], $live['thumb'], (int)($live['cid'] ?? 0)];
+            $src = ImageRepository::toAbs((string)$item[1]);
             if (is_file($src)) {
                 $mw = $maxWidth;
                 $fq = $fullQuality;
@@ -378,27 +374,23 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
             $idx++;
         }
         foreach (array_keys($syncedCids) as $__c) {
-            try { ImageRepository::syncPostFields((int)$__c); } catch (\Throwable $e) {}
+            try { ImageRepository::syncPostFields((int)$__c); } catch (\Throwable $e) {
+                Plugin::log('rebuild sync: cid=' . $__c . ' ' . $e->getMessage());
+                $failed++;
+                $state['current'] = 'cid ' . $__c . '（字段同步失败，可重建字段重试）';
+            }
         }
         $state['done'] = $idx;
         $state['failed'] = $failed;
         $state['finished'] = $idx >= $total;
-        if ($state['finished']) {
-            $state = ['job' => 'rebuild', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true, 'failed' => $failed];
-        }
-        pp_write_json($jobFile, $state);
-        $result = ['finished' => $idx >= $total, 'total' => $total, 'done' => $idx, 'current' => $state['current'], 'failed' => $failed];
+        MaintenanceState::save(pp_data_file(), $state);
+        $result = $state;
     } elseif ($job === 'cleanup') {
-        $listFile = pp_data_file() . '/cleanup_list.json';
-        $jobFile = pp_data_file() . '/job.json';
-        $state = pp_read_json($jobFile);
-        if (($state['job'] ?? '') !== 'cleanup' || !file_exists($listFile)) {
-            $list = ImageRepository::orphanCandidates();
-            pp_write_json($listFile, $list);
-            pp_write_json($jobFile, ['job' => 'cleanup', 'total' => count($list), 'done' => 0, 'current' => '']);
-        }
-        $list = pp_read_json($listFile);
-        $state = pp_read_json($jobFile);
+        [$state, $list] = MaintenanceState::open(pp_data_file(), $job, (string)($_POST['mode'] ?? 'start'), (string)($_POST['job_id'] ?? ''), static function () {
+            return ImageRepository::orphanCandidates();
+        });
+        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
         $batch = 50;
         ImageRepository::removeOrphanCandidates(array_slice($list, $idx, $batch));
@@ -408,33 +400,25 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         }
         $state['done'] = $idx;
         $state['finished'] = $idx >= count($list);
-        if ($state['finished']) {
-            @unlink($listFile);
-            $state = ['job' => 'cleanup', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true];
-        }
-        pp_write_json($jobFile, $state);
-        $result = ['finished' => $idx >= count($list), 'total' => count($list), 'done' => $idx, 'current' => $state['current']];
+        MaintenanceState::save(pp_data_file(), $state);
+        $result = $state;
     } elseif ($job === 'resync') {
         // 重算每篇图集的聚合字段（addresses/titles/descs/panos，并补上 dims 宽高数组）。
         // 用于给已发布的历史文章补齐文章字段，使首页瀑布流能拿到图片比例做占位。
-        $listFile = pp_data_file() . '/resync_list.json';
-        $jobFile = pp_data_file() . '/job.json';
-        $state = pp_read_json($jobFile);
-        if (($state['job'] ?? '') !== 'resync' || !file_exists($listFile)) {
+        [$state, $list] = MaintenanceState::open(pp_data_file(), $job, (string)($_POST['mode'] ?? 'start'), (string)($_POST['job_id'] ?? ''), static function () use ($db, $prefix) {
             $cids = [];
-            foreach ($db->fetchAll($db->select('cid')->from(ImageRepository::table())) as $r) {
+            foreach (AdminRepository::readAll($db->select('cid')->from(ImageRepository::table()), true) as $r) {
                 $cids[(int)$r['cid']] = true;
             }
-            foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img')) as $r) {
+            foreach (AdminRepository::readAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img'), true) as $r) {
                 $cids[(int)$r['cid']] = true;
             }
             $list = array_values(array_filter(array_map('intval', array_keys($cids))));
             sort($list);
-            pp_write_json($listFile, $list);
-            pp_write_json($jobFile, ['job' => 'resync', 'total' => count($list), 'done' => 0, 'current' => '']);
-        }
-        $list = pp_read_json($listFile);
-        $state = pp_read_json($jobFile);
+            return $list;
+        });
+        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
         $failed = (int)($state['failed'] ?? 0);
         $batch = 12; // 每次处理 12 篇，避免单次 AJAX 超时
@@ -461,12 +445,8 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         $state['done'] = $idx;
         $state['failed'] = $failed;
         $state['finished'] = $idx >= $total;
-        if ($state['finished']) {
-            $state = ['job' => 'resync', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true, 'failed' => $failed];
-            @unlink($listFile);
-        }
-        pp_write_json($jobFile, $state);
-        $result = ['finished' => $idx >= $total, 'total' => $total, 'done' => $idx, 'current' => $state['current'], 'failed' => $failed];
+        MaintenanceState::save(pp_data_file(), $state);
+        $result = $state;
     } elseif ($job === 'albums_html') {
         // 局部刷新图集列表：只返回卡片 HTML，避免为刷新列表重新渲染整个后台页面
         header('Content-Type: text/html; charset=utf-8');
@@ -489,6 +469,11 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         }
         echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : [], pp_can_edit_cid($cid));
         exit;
+    }
+
+    } catch (\Throwable $e) {
+        Plugin::log('maintenance: ' . $e->getMessage());
+        pp_reply_json(false, $e->getMessage(), ['retryable' => true], 500);
     }
 
     if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
@@ -568,7 +553,7 @@ if ($ppMethod === 'POST') {
         if ($cid > 0) {
             $title = trim((string)($_POST['title'] ?? ''));
             if ($title !== '') {
-                $db->query($db->update($prefix . 'contents')->rows(['title' => $title])->where('cid = ?', $cid));
+                Database::query($db->update($prefix . 'contents')->rows(['title' => $title])->where('cid = ?', $cid));
             }
             pp_set_field($cid, 'device', trim((string)($_POST['device'] ?? '')));
             pp_set_field($cid, 'tags', trim((string)($_POST['tags'] ?? '')));
@@ -614,7 +599,7 @@ if ($ppMethod === 'POST') {
             if ($rid <= 0) {
                 continue;
             }
-            $db->query($db->update(ImageRepository::table())->rows(['sort' => $order])->where('id = ?', $rid)->where('cid = ?', $cid));
+            Database::query($db->update(ImageRepository::table())->rows(['sort' => $order])->where('id = ?', $rid)->where('cid = ?', $cid));
             $order++;
         }
         if ($cid > 0) {
@@ -631,7 +616,7 @@ if ($ppMethod === 'POST') {
             $row = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限删除该图片'); }
             ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
-            $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
+            Database::query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
             ImageRepository::syncPostFields((int)$row['cid'], true);
         } else {
             pp_deny('没有权限删除该图片');
@@ -644,18 +629,18 @@ if ($ppMethod === 'POST') {
         pp_require_admin(); // 一键清理全站非插件文章：仅管理员
         // 汇总“本插件发布的图集”cid：有 img 自定义字段 或 在 infinitytime_images 表里
         $pluginCids = [];
-        foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name IN (?, ?)', 'img', AdminRepository::MARKER)) as $f) {
+        foreach (AdminRepository::readAll($db->select('cid')->from($prefix . 'fields')->where('name IN (?, ?)', 'img', AdminRepository::MARKER), true) as $f) {
             $pluginCids[(int)$f['cid']] = true;
         }
-        foreach ($db->fetchAll($db->select('cid')->from(ImageRepository::table())) as $f) {
+        foreach (AdminRepository::readAll($db->select('cid')->from(ImageRepository::table()), true) as $f) {
             $pluginCids[(int)$f['cid']] = true;
         }
-        $rows = $db->fetchAll($db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post'));
+        $rows = AdminRepository::readAll($db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post'), true);
         $nonCount = 0;
         $titles = [];
         $isDelete = ($action === 'delete_non_plugin');
         // 注意：SQLite 只支持 BEGIN，不支持 MySQL 的 START TRANSACTION（BEGIN 在两者都可用）
-        if ($isDelete) { $db->query('BEGIN'); }
+        if ($isDelete) { Database::query('BEGIN'); }
         try {
             foreach ($rows as $r) {
                 $cid = (int)$r['cid'];
@@ -664,15 +649,15 @@ if ($ppMethod === 'POST') {
                 }
                 $nonCount++;
                 if ($isDelete) {
-                    $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
-                    $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+                    Database::query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+                    Database::query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
                 } elseif (count($titles) < 20) {
                     $titles[] = (string)($r['title'] ?? '');
                 }
             }
-            if ($isDelete) { $db->query('COMMIT'); }
+            if ($isDelete) { Database::query('COMMIT'); }
         } catch (\Throwable $e) {
-            if ($isDelete) { $db->query('ROLLBACK'); }
+            if ($isDelete) { Database::query('ROLLBACK'); }
             Plugin::log('delete_non_plugin failed: ' . $e->getMessage());
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['ok' => false, 'msg' => '清理失败：' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
@@ -706,8 +691,8 @@ if ($ppMethod === 'POST') {
         if (!pp_can_edit_cid($cid)) { pp_deny('没有权限删除该图集'); }
         if ($cid > 0) {
             ImageRepository::removeFor($cid);
-            $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
-            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+            Database::query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+            Database::query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
         }
         if ($ajax) {
             header('Content-Type: application/json; charset=utf-8');
@@ -963,7 +948,8 @@ if (!empty($_GET['append'])) {
     }
 }
 $ppOperationKey = bin2hex(random_bytes(16));
-$ppJobState = pp_read_json(pp_data_file() . '/job.json');
+try { $ppJobState = pp_read_json(pp_data_file() . '/job.json'); }
+catch (\Throwable $e) { $ppJobState = []; $notice = $e->getMessage(); $noticeType = 'error'; }
 
 /* ---------------------------------- 视图 ---------------------------------- */
 $adminDir = dirname($_SERVER['SCRIPT_FILENAME']);

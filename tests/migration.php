@@ -78,6 +78,7 @@ namespace Utils {
 namespace {
     interface Typecho_Plugin_Interface {}
     require __DIR__ . '/../usr/plugins/InfinityTime/Plugin.php';
+    require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/Database.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Lib/ImageRepository.php';
     use TypechoPlugin\InfinityTime\Plugin;
     use TypechoPlugin\InfinityTime\Lib\ImageRepository;

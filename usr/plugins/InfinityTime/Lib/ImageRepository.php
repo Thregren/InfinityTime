@@ -244,7 +244,7 @@ class ImageRepository
         self::lockMedia();
         $db = \Typecho\Db::get();
         $table = self::table();
-        return (int)$db->query($db->insert($table)->rows([
+        return (int)Database::query($db->insert($table)->rows([
             'cid' => $cid,
             'original' => $meta['original'],
             'full' => $meta['full'],
@@ -274,7 +274,7 @@ class ImageRepository
     {
         if (is_resource(self::$mediaLock)) {
             // Typecho 会按 Query 类型重新选择连接池；先编译绑定参数，再显式选择主库。
-            $query = $db->query($query->prepare((string)$query), \Typecho\Db::WRITE);
+            $query = Database::query($query->prepare((string)$query));
         }
         return $db->fetchAll($query);
     }
@@ -337,7 +337,7 @@ class ImageRepository
     public static function setImageMeta(int $rowId, string $title, string $desc, string $address): void
     {
         $db = \Typecho\Db::get();
-        $db->query($db->update(self::table())->rows([
+        Database::query($db->update(self::table())->rows([
             'title' => $title,
             'desc' => $desc,
             'address' => $address,
@@ -357,15 +357,97 @@ class ImageRepository
         foreach (['width', 'height', 'size'] as $field) {
             if (isset($result[$field])) { $values[$field] = (int)$result[$field]; }
         }
-        $db->query($db->update(self::table())->rows($values)->where('id = ?', $rowId));
+        Database::query($db->update(self::table())->rows($values)->where('id = ?', $rowId));
+    }
+
+    /** 主库上的原子字段替换；保存点不会提交或回滚调用方的其他写入。 */
+    public static function syncPostFields(int $cid, bool $clearEmpty = false): void
+    {
+        self::lockMedia();
+        $db = \Typecho\Db::get();
+        $adapter = strtolower($db->getAdapterName());
+        $handle = $db->selectDb(\Typecho\Db::WRITE);
+        $write = static function ($query) {
+            // 所有同步语句编译后固定走主库；不需要 INSERT 的生成主键。
+            return Database::query(is_string($query) ? $query : $query->prepare((string)$query));
+        };
+        $savepoint = 'infinitytime_fields_' . bin2hex(random_bytes(8));
+        $owned = false;
+        $mysql = strpos($adapter, 'mysql') !== false;
+        if ($mysql) {
+            // MyISAM 等表忽略回滚，不能宣称字段替换是原子的；不自动 ALTER 用户表。
+            $query = $db->select();
+            $sql = $query->prepare('SHOW TABLE STATUS WHERE Name = ' . $query->quoteValue($db->getPrefix() . 'fields'));
+            $table = $db->fetchRow($write($sql));
+            if (strcasecmp((string)($table['Engine'] ?? ''), 'InnoDB') !== 0) {
+                throw new \RuntimeException('字段同步需要 fields 表使用 InnoDB 事务引擎，请先备份并由管理员迁移表引擎');
+            }
+            // MySQL 在 autocommit 下静默忽略 SAVEPOINT；必须在写入前验证它实际存在。
+            // 不用 BEGIN 探测：它会隐式提交已有事务。也兼容调用方 SET autocommit=0。
+            $write('SAVEPOINT ' . $savepoint);
+            try {
+                // 直接检查驱动错误码，避免 Typecho PDO 包装丢失 MySQL errno。
+                $result = $handle->query('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                if ($result === false) {
+                    $code = $handle instanceof \PDO ? (int)($handle->errorInfo()[1] ?? 0) : (int)$handle->errno;
+                    throw new \RuntimeException('无法验证字段同步保存点', $code);
+                }
+            } catch (\Throwable $e) {
+                $code = $e instanceof \PDOException ? (int)($e->errorInfo[1] ?? 0) : (int)$e->getCode();
+                if ($code !== 1305) { throw $e; }
+                $write('BEGIN');
+                $owned = true;
+            }
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            if ($handle instanceof \PDO) {
+                $active = $handle->inTransaction();
+            } elseif (function_exists('pg_transaction_status')) {
+                $status = pg_transaction_status($handle);
+                if (!in_array($status, [PGSQL_TRANSACTION_IDLE, PGSQL_TRANSACTION_INTRANS], true)) {
+                    throw new \RuntimeException('数据库事务不可用，请先结束当前失败的事务');
+                }
+                $active = $status === PGSQL_TRANSACTION_INTRANS;
+            } else {
+                throw new \RuntimeException('无法安全检测数据库事务状态');
+            }
+            if (!$active) { $write('BEGIN'); $owned = true; }
+        } elseif (strpos($adapter, 'sqlite') === false) {
+            throw new \RuntimeException('当前数据库适配器不支持安全的字段同步事务');
+        }
+        // SQLite SAVEPOINT 可独立启动事务；嵌套 RELEASE 不会提交外层 BEGIN/SAVEPOINT。
+        $started = false;
+        try {
+            $write('SAVEPOINT ' . $savepoint);
+            $started = true;
+            self::writePostFields($cid, $clearEmpty, $write);
+            $write('RELEASE SAVEPOINT ' . $savepoint);
+            if ($owned) { $write('COMMIT'); }
+        } catch (\Throwable $e) {
+            try {
+                if ($owned) { $write('ROLLBACK'); }
+                elseif ($started) {
+                    $write('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                    $write('RELEASE SAVEPOINT ' . $savepoint);
+                }
+            } catch (\Throwable $rollbackError) {
+                // 保留最初的错误，同时明确记录连接丢失等导致无法确认回滚的情况。
+                Plugin::log('field sync rollback failed: ' . $rollbackError->getMessage());
+            }
+            throw $e;
+        }
     }
 
     /** 按图片行的顺序同步路径与元数据，避免排序/删除后文章字段错位。 */
-    public static function syncPostFields(int $cid, bool $clearEmpty = false): void
+    private static function writePostFields(int $cid, bool $clearEmpty, callable $write): void
     {
         $db = \Typecho\Db::get();
         $prefix = $db->getPrefix();
-        $rows = self::rowsFor($cid);
+        // 不在调用方可能已开启的事务内运行 schema 迁移（MySQL DDL 会隐式提交）。
+        $query = $db->select()->from(self::table())->where('cid = ?', $cid)
+            ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC);
+        $rows = $db->fetchAll($write($query));
+        foreach ($rows as &$row) { $row['exif'] = json_decode($row['exif'] ?? '{}', true); }
+        unset($row);
         // 历史文章可能仅有自定义字段。无图片行时不覆盖，删除最后一张图则显式清空。
         if (!$rows && !$clearEmpty) {
             return;
@@ -408,15 +490,15 @@ class ImageRepository
             $exifs[] = $e;
         }
         foreach (['img' => $images, 'thumb' => $thumbs] as $name => $paths) {
-            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
             // 保留空 img 标记，使删除最后一张图片后的空图集仍可识别。
-            $db->query($db->insert($prefix . 'fields')->rows([
+            $write($db->insert($prefix . 'fields')->rows([
                 'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => implode("\n", $paths),
             ]));
         }
         $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs, 'photo_ids' => $photoIds, 'months' => $months];
         foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif', 'photo_ids', 'months'] as $f) {
-            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
             // 注意：variants 的元素是数组，不能直接用 array_filter($val, 'strlen')（PHP 8 会对数组调 strlen 报错）
             $nonEmpty = false;
@@ -427,9 +509,9 @@ class ImageRepository
                 }
             }
             if ($nonEmpty) {
-                $db->query($db->insert($prefix . 'fields')->rows([
+                $write($db->insert($prefix . 'fields')->rows([
                     'cid' => $cid, 'name' => $f, 'type' => 'str',
-                    'str_value' => json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'str_value' => json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
                 ]));
             }
         }
@@ -454,7 +536,7 @@ class ImageRepository
             self::unlinkFiles($r['original'], $r['full'], $r['mid'] ?? null, $r['avif'] ?? null, $r['mid_avif'] ?? null, $r['thumb']);
         }
         $db = \Typecho\Db::get();
-        $db->query($db->delete(self::table())->where('cid = ?', $cid));
+        Database::query($db->delete(self::table())->where('cid = ?', $cid));
     }
 
     /** 仅处理真实上传目录内的普通文件；旧快照、软链接与新文件一律跳过。 */
@@ -492,7 +574,8 @@ class ImageRepository
             $real = realpath($path);
             if ($real !== false) { $referenced[$real] = true; }
         };
-        foreach (self::fetchRows($db, $db->select()->from(self::table())) as $row) {
+        // 只读引用路径；扫描孤儿文件不需要搬运可能很大的 EXIF/标题等元数据。
+        foreach (self::fetchRows($db, $db->select('original', 'full', 'thumb', 'mid', 'avif', 'mid_avif')->from(self::table())) as $row) {
             foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
                 $add($row[$field] ?? null);
             }

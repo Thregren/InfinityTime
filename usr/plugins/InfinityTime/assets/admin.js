@@ -564,7 +564,7 @@
 
   /* ---------- 维护任务 ---------- */
   var runningJobs = {};
-  function runJob(job) {
+  function runJob(job, resume) {
     if (runningJobs[job]) return;
     runningJobs[job] = true;
     var bar = $('#pp-bar-' + job);
@@ -573,11 +573,15 @@
     if (btn) btn.disabled = true;
     if (bar) bar.style.width = '0%'; // 每次开始先归零，避免上一次的 100% 残留
     if (msg) msg.textContent = '准备中…';
+    var mode = resume ? 'resume' : 'start';
+    var jobId = resume && JOB ? (JOB.job_id || '') : '';
     function tick() {
-      post('maintenance', { job: job })
+      post('maintenance', { job: job, mode: mode, job_id: jobId })
         .then(function (d) {
           if (!d || d.ok === false) throw new Error((d && d.msg) || '出错，请重试');
           if (d.msg && d.finished) { if (msg) msg.textContent = d.msg; if (btn) btn.disabled = false; runningJobs[job] = false; return; }
+          jobId = d.job_id || jobId;
+          mode = 'poll';
           var pct = d.total ? Math.round(d.done * 100 / d.total) : 100;
           if (bar) bar.style.width = pct + '%';
           if (d.total > 0) {
@@ -587,7 +591,7 @@
             if (msg) msg.textContent = noJob[job] || '没有需要处理的项目';
           }
           if (!d.finished) { setTimeout(tick, 300); return; }
-          if (msg) msg.textContent += d.failed > 0 ? (' ✓ 完成（' + d.failed + ' 张失败，请查看日志）') : ' ✓ 完成';
+          if (msg) msg.textContent += d.failed > 0 ? (' ✓ 完成（' + d.failed + ' 项失败，请查看日志）') : ' ✓ 完成';
           if (btn) btn.disabled = false;
           runningJobs[job] = false;
         })
@@ -757,7 +761,7 @@
       if (container) container.insertBefore(tip, container.firstElementChild);
       tip.querySelector('button').addEventListener('click', function () {
         tip.parentNode.removeChild(tip);
-        runJob(JOB.job);
+        runJob(JOB.job, true);
       });
     }
   });
