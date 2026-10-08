@@ -122,20 +122,38 @@
         // 结果按 src 缓存，并合并同一张图的并发请求：来回切图不再重复解码 + 采样。
         var __photoCache = {};   // src -> result
         var __photoPending = {}; // src -> [cb, ...]
-        function analyzePhoto(src, cb) {
+        function analyzePhoto(src, displayed, preview, cb) {
           if (!src) { cb({ colors: [], hist: null, top: null }); return; }
           if (__photoCache[src]) { cb(__photoCache[src]); return; }
           if (__photoPending[src]) { __photoPending[src].push(cb); return; }
           __photoPending[src] = [cb];
           function finish(res) {
-            __photoCache[src] = res;
+            if (res.colors && res.colors.length) {
+              __photoCache[src] = res;
+              var keys = Object.keys(__photoCache);
+              if (keys.length > 64) delete __photoCache[keys[0]];
+            }
             var list = __photoPending[src] || [];
             delete __photoPending[src];
             for (var i = 0; i < list.length; i++) { try { list[i](res); } catch (e) {} }
           }
-          var img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = function () {
+          var empty = { colors: [], hist: null, top: null };
+          var previewRequested = false;
+          function samplePreview() {
+            // 采样不再创建或解码第二份全尺寸图片。
+            // 主图跨域导致画布不可读时，只允许使用支持 CORS 的独立缩略图。
+            if (previewRequested || !preview || preview === src || preview === (displayed && displayed.currentSrc)) {
+              finish(empty); return;
+            }
+            previewRequested = true;
+            var small = new Image();
+            small.crossOrigin = 'anonymous';
+            small.decoding = 'async';
+            small.onload = function() { sample(small); };
+            small.onerror = function() { finish(empty); };
+            small.src = preview;
+          }
+          function sample(img) {
             try {
               var w = img.naturalWidth, h = img.naturalHeight;
               if (!w || !h) return finish({ colors: [], hist: null, top: null });
@@ -231,10 +249,12 @@
                 colors: picked.slice(0, 3).map(function (e) { return rgbToHex(e.r, e.g, e.b); }),
                 hist: [histR, histG, histB]
               });
-            } catch (e) { finish({ colors: [], hist: null, top: null }); }
-          };
-          img.onerror = function () { finish({ colors: [], hist: null, top: null }); };
-          img.src = src;
+            } catch (e) { if (!previewRequested) samplePreview(); else finish(empty); }
+          }
+          // renderExif 只在主图加载完成后调用；画布直接复用已解码位图，
+          // 保留原有代表色选择算法。
+          if (displayed && displayed.complete && displayed.naturalWidth > 0) sample(displayed);
+          else samplePreview();
         }
         // 画 RGB 直方图（三条半透明色带）
         function drawHistogram(cv, hist) {
@@ -279,14 +299,18 @@
           const histCv = dock.querySelector('.hist-canvas');
           const img = popup && popup.querySelector('.pic img');
           if (!list || !box || !img) return;
-          const src = (img.getAttribute('src') || '').split('?')[0];
+          const src = img.getAttribute('src') || '';
           if (!src) { box.style.display = 'none'; if (histCv) histCv.style.display = 'none'; return; }
           box.style.display = '';
           if (histCv) histCv.style.display = '';
           list.innerHTML = '<span class="palette-loading">提取中…</span>';
-          analyzePhoto(src, function (res) {
+          var data = articleData(popup.__article);
+          var index = currentImgIndex(popup, data);
+          var preview = data && index >= 0 ? data.previews[index] : '';
+          var paletteSeq = popup.__paletteSeq = (popup.__paletteSeq || 0) + 1;
+          analyzePhoto(src, img, preview, function (res) {
             // 快速切图时旧图的采样回调可能晚到：确认当前主图仍是这张，避免把旧主题色刷到新图上
-            if (!img || (img.getAttribute('src') || '').split('?')[0] !== src) return;
+            if (!img.isConnected || !overlayVisible() || popup.__paletteSeq !== paletteSeq || img.getAttribute('src') !== src) return;
             if (!res || !res.colors || !res.colors.length) { box.style.display = 'none'; if (histCv) histCv.style.display = 'none'; return; }
             list.innerHTML = res.colors.map(function (hex) {
               return '<span class="palette-item"><span class="palette-swatch" style="background:' + hex + '"></span><span class="palette-hex">' + hex + '</span></span>';
@@ -358,6 +382,8 @@
         }
         // 从弹窗主图 URL 反查对应的相册文章
         function findArtForPopup(popup) {
+          var selection = window.InfinityGallery && window.InfinityGallery.getCurrent();
+          if (selection && selection.opener) return selection.opener.closest('.thumb');
           const img = popup.querySelector('.pic img');
           if (!img) return null;
           const src = (img.getAttribute('src') || '').split('?')[0];
@@ -442,10 +468,41 @@
           }
           ppSetPanoActive(null, false);
         }
+        var ppWebglSupport;
+        function ppCanUseWebgl() {
+          if (ppWebglSupport !== undefined) return ppWebglSupport;
+          ppWebglSupport = false;
+          try {
+            var canvas = document.createElement('canvas');
+            var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            ppWebglSupport = !!gl;
+            if (gl) {
+              var release = gl.getExtension('WEBGL_lose_context');
+              if (release) release.loseContext();
+            }
+          } catch (e) {}
+          return ppWebglSupport;
+        }
+        function ppFlatPano(popup, url) {
+          ppDestroyPano();
+          popup.__panoFallbackSource = url;
+          popup.classList.remove('pp-pano-mode');
+          var image = popup.querySelector('.pic img');
+          if (image) { image.style.visibility = ''; image.style.opacity = '1'; }
+          var notice = popup.querySelector('.pp-pano-fallback');
+          if (!notice) {
+            notice = document.createElement('div');
+            notice.className = 'pp-pano-fallback';
+            notice.setAttribute('role', 'status');
+            notice.textContent = '当前浏览器无法显示 360° 全景，已显示平面照片。';
+            popup.appendChild(notice);
+          }
+        }
         function ppMountPano(popup, url) {
+          if (popup.__panoFallbackSource === url) return;
           if (ppPanoState && ppPanoState.popup === popup && ppPanoState.url === url && ppPanoState.viewer) return;
           ppDestroyPano();
-          if (typeof window.pannellum === 'undefined') { console.error('[InfinityTime pano] pannellum not loaded'); return; } // 库未加载（异常兜底）
+          if (!window.pannellum || typeof window.pannellum.viewer !== 'function' || !ppCanUseWebgl()) { ppFlatPano(popup, url); return; }
           const pic = popup.querySelector('.pic');
           if (!pic) return;
           const img = pic.querySelector('img');
@@ -473,7 +530,7 @@
           } catch (e) {
             if (img) img.style.visibility = '';
             if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
-            console.error('[InfinityTime pano] viewer init failed:', e && e.message);
+            ppFlatPano(popup, url);
             return;
           }
           // 跟随容器尺寸（poptrox 弹窗有放大动画，叠加 ResizeObserver 保证 Pannellum 画布尺寸正确）
@@ -573,16 +630,24 @@
           ppBindPanoGuard();
           ppPanoState = { popup: popup, url: url, viewer: viewer, wrap: wrap, img: img, ro: ro, fsBtn: fsBtn, exitBtn: exitBtn, onFsChange: onFsChange };
           ppSetPanoActive(popup, true);
+          if (viewer && typeof viewer.on === 'function') viewer.on('error', function() {
+            // 已切换或关闭的全景查看器若迟到报错，不得修改当前照片。
+            if (ppPanoState && ppPanoState.viewer === viewer && overlayVisible() &&
+                img && img.getAttribute('src') === url) ppFlatPano(popup, url);
+          });
         }
         function syncPano() {
           const overlay = document.querySelector('.poptrox-overlay');
           const vis = overlay && getComputedStyle(overlay).display !== 'none'
             && overlay.style.display !== 'none' && overlay.style.visibility !== 'hidden';
-          if (!vis) { ppDestroyPano(); return; }
+          if (!vis) { ppDestroyPano(); document.querySelectorAll('.pp-pano-fallback').forEach(function(n) { n.remove(); }); return; }
           const popup = currentPopupExif();
           if (!popup) { ppDestroyPano(); return; }
           const img = popup.querySelector('.pic img');
-          if (!img || !img.complete || img.naturalWidth === 0) return; // 图片加载后再判定，保证 .pic 有盒子尺寸
+          if (!img || !img.complete || img.naturalWidth === 0) {
+            if (ppPanoState && (!img || ppPanoState.url !== img.getAttribute('src'))) ppDestroyPano();
+            return;
+          } // 图片加载后再判定，保证 .pic 有盒子尺寸
           const article = findArtForPopup(popup) || activeArticle;
           if (!article) { ppDestroyPano(); return; }
           const d = articleData(article);
@@ -590,7 +655,12 @@
           if (idx < 0) { ppDestroyPano(); return; }
           const isPano = !!(d.panos && d.panos[idx]);
           if (isPano) ppMountPano(popup, d.images[idx] || img.getAttribute('src'));
-          else ppDestroyPano();
+          else {
+            ppDestroyPano();
+            popup.querySelectorAll('.pp-pano-fallback').forEach(function(n) { n.remove(); });
+            delete popup.__panoFallbackSource;
+            popup.classList.remove('pp-pano-mode');
+          }
         }
 
         // ===== 灯箱 EXIF 侧栏（轮询驱动，单数据源） =====
@@ -719,6 +789,7 @@
             }
             document.body.classList.remove('pp-dock-expanded');
             ppDestroyPano();
+            document.querySelectorAll('.pp-pano-fallback').forEach(function(n) { n.remove(); });
           }
         }
         function startExifPoll() {
@@ -762,6 +833,17 @@
         }, true);
 
 
+        document.addEventListener('infinitygallery:close', function() {
+          ppDestroyPano();
+          document.querySelectorAll('.pp-pano-fallback').forEach(function(n) { n.remove(); });
+        });
+        document.addEventListener('infinitygallery:change', function() {
+          if (ppPanoState) {
+            var image = ppPanoState.popup.querySelector('.pic img');
+            if (!image || image.getAttribute('src') !== ppPanoState.url) ppDestroyPano();
+          }
+          document.querySelectorAll('.pp-pano-fallback').forEach(function(n) { n.remove(); });
+        });
         // 暴露给 main.js 的无限滚动重绑使用
         window.ensureExifObserver = ensureExifObserver;
         window.syncDockExif = syncDockExif;

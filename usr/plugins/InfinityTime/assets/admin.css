@@ -442,3 +442,24 @@ summary { cursor: pointer; }
   .pp-card { padding: 18px 16px; }
   .pp-tabs { position: static; }
 }
+
+/* 串行上传状态：保留成功项，只重试失败项。 */
+.pp-up-state { font-size: 12px; line-height: 1.5; color: #52606d; overflow-wrap: anywhere; }
+.pp-up-uploading, .pp-up-converting { border-color: var(--pp-brand); }
+.pp-up-uploading .pp-up-state, .pp-up-converting .pp-up-state { color: var(--pp-brand-dark); font-weight: 600; }
+.pp-up-done { border-color: #b9d9b5; background: #fcfefb; }
+.pp-up-done .pp-up-state { color: #2e7d32; }
+.pp-up-failed { border-color: #e5a69f; }
+.pp-up-failed .pp-up-state { color: var(--pp-danger); }
+.pp-up-remove:disabled { opacity: .35; cursor: not-allowed; }
+.pp-up-tit:disabled, .pp-up-desc:disabled { color: #52606d; background: #f6f8fa; }
+.pp-up-saved { display: flex; align-items: center; justify-content: center; color: #2e7d32; font-size: 13px; }
+.pp-up-missing { border: 1px dashed #d6dbe0; }
+.pp-dropzone.disabled { opacity: .55; cursor: not-allowed; }
+#pp-upload-target { display: block; color: #3e4c59; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.pp-wrap [hidden] { display: none !important; }
+.pp-album-search, .pp-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.pp-pagination a, .pp-pagination span { padding: 6px 10px; border-radius: 6px; }
+.pp-pagination [aria-current="page"] { background: var(--pp-brand); color: #fff; }
+
+.pp-album-search input[type="search"] { min-width: 0; max-width: 100%; padding: 7px 10px; border: 1px solid #d6dbe0; border-radius: 8px; }

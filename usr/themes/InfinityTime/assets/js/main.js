@@ -58,8 +58,7 @@
 
 		}
 
-	// Scroll back to top.
-		$window.scrollTop(0);
+	// 由浏览器和图册历史记录控制器恢复滚动位置。
 
 	// Panels.
 		var $panels = $('.panel');
@@ -207,6 +206,29 @@ document.addEventListener('DOMContentLoaded', function() {
     var galleryOpener = null;
     var backgroundState = [];
     var poptroxRebindPending = false;
+    var activeAlbum = null;
+    var pendingPhoto = null;
+    var lastSelection = null;
+    var openRequestSeq = 0;
+
+    function selectionFor(album, index) {
+        if (!album || !album.images[index]) return null;
+        return { albumId: album.id, photoId: album.photoIds[index] || '', index: index,
+            source: album.images[index], opener: album.opener };
+    }
+    function galleryEvent(name, detail) {
+        document.dispatchEvent(new CustomEvent('infinitygallery:' + name, { detail: detail }));
+    }
+    function notifySelection(src) {
+        if (!isPopupActive) return;
+        var current = albumForSrc(src);
+        if (!current) return;
+        activeAlbum = current.album;
+        var detail = selectionFor(current.album, current.idx);
+        if (lastSelection && lastSelection.opener === detail.opener && lastSelection.index === detail.index) return;
+        lastSelection = detail;
+        galleryEvent('change', detail);
+    }
 
     // Poptrox removes href and owns its popup markup. Restore keyboard semantics
     // here, including controls rendered outside .poptrox-popup by lightbox.js.
@@ -323,6 +345,11 @@ document.addEventListener('DOMContentLoaded', function() {
         fadeSpeed: 420,
         onPopupClose: function() { 
             isPopupActive = false;
+            openRequestSeq++;
+            pendingPhoto = null;
+            galleryEvent('close', lastSelection);
+            lastSelection = null;
+            activeAlbum = null;
             closeGalleryDialog();
             captionFadeOut();
             $body.removeClass('modal-active');
@@ -335,6 +362,9 @@ document.addEventListener('DOMContentLoaded', function() {
             // 清理本项目挂在弹窗上的临时状态，避免关闭后再开残留锁/全景态
             document.querySelectorAll('.poptrox-popup').forEach(function(p) {
                 clearLqip(p);
+                clearImageError(p);
+                if (p.__imageCleanup) p.__imageCleanup();
+                delete p.__panoFallbackSource;
                 p.__lqipSeq = (p.__lqipSeq || 0) + 1;
                 p.classList.remove('pp-pano-mode');
                 delete p.__switching;
@@ -352,6 +382,7 @@ document.addEventListener('DOMContentLoaded', function() {
         onPopupOpen: function() { 
             isPopupActive = true;
             openGalleryDialog();
+            galleryEvent('open', selectionFor(activeAlbum, pendingPhoto ? pendingPhoto.index : 0));
             $body.addClass('modal-active');
             // 移动端用原始宽高预置弹窗尺寸，避免首次打开时先闪一个 150×150 的小方块
             // （桌面端有 EXIF 侧栏让位逻辑，尺寸交给 poptrox 自己算，避免预设偏宽再回缩）
@@ -442,9 +473,6 @@ document.addEventListener('DOMContentLoaded', function() {
         panoMap = {};
         ALBUMS = [];
         variantMap = {};
-        function nonEmpty(arr) {
-            return (Array.isArray(arr) ? arr : []).filter(function(v) { return v !== null && v !== undefined && String(v) !== ''; });
-        }
         document.querySelectorAll('#main a.image[data-images]').forEach(function(a) {
             var imgs = ppParseArr(a.dataset.images);
             var pre = ppParseArr(a.dataset.previews);
@@ -454,13 +482,16 @@ document.addEventListener('DOMContentLoaded', function() {
             imgs.forEach(function(u, i) { panoMap[u] = !!panos[i]; });
             imgs.forEach(function(u, i) { variantMap[u] = variants[i] || null; });
             ALBUMS.push({
+                id: String(a.dataset.cid || ''),
+                photoIds: ppParseArr(a.dataset.photoIds).map(String),
+                opener: a,
                 title: a.getAttribute('aria-label') || '照片',
-                images: nonEmpty(imgs),
-                previews: nonEmpty(pre),
-                exifs: nonEmpty(ppParseArr(a.dataset.exif)),
+                images: imgs,
+                previews: pre,
+                exifs: ppParseArr(a.dataset.exif),
                 titles: ppParseArr(a.dataset.titles),
-                descs: nonEmpty(ppParseArr(a.dataset.descs)),
-                addrs: nonEmpty(ppParseArr(a.dataset.addresses))
+                descs: ppParseArr(a.dataset.descs),
+                addrs: ppParseArr(a.dataset.addresses)
             });
         });
     }
@@ -475,6 +506,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var a = e.target && e.target.closest ? e.target.closest('#main .thumb > a.image') : null;
         if (!a) return;
         galleryOpener = a;
+        activeAlbum = ALBUMS.find(function(album) { return album.opener === a; }) || null;
         try {
             var dims = JSON.parse(a.dataset.dims || '[]');
             var m = String(dims[0] || '').split('x');
@@ -512,9 +544,9 @@ document.addEventListener('DOMContentLoaded', function() {
             picture.remove();
         }
     }
-    function applyResponsive(popup, img) {
+    function applyResponsive(popup, img, requestedSrc) {
         if (!popup || !img) return;
-        var src = img.getAttribute('src') || '';
+        var src = requestedSrc || img.getAttribute('src') || '';
         var pic = popup.querySelector('.pic');
         // 全景：隐藏的 <img> 只用于「加载完成」判定，真正渲染由 Pannellum 读全图；
         // 这里若走 srcset 会额外下一份 1600 变体，反而多流量，直接跳过。
@@ -572,11 +604,43 @@ document.addEventListener('DOMContentLoaded', function() {
             removeResponsivePicture(img);
         }
     }
+    function clearImageError(popup) {
+        var status = popup && popup.querySelector('.pp-image-error');
+        if (status) status.remove();
+        if (popup) popup.classList.remove('pp-image-failed');
+    }
+    function showImageError(popup, img) {
+        if (!isPopupActive || !img.isConnected || popup.querySelector('.pic img') !== img) return;
+        clearLqip(popup);
+        clearImageError(popup);
+        popup.classList.add('pp-image-failed');
+        img.style.opacity = '0';
+        var status = document.createElement('div');
+        status.className = 'pp-image-error';
+        status.setAttribute('role', 'status');
+        var message = document.createElement('p');
+        message.textContent = '照片加载失败，请重试。';
+        var retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = '重新加载照片';
+        status.appendChild(message);
+        status.appendChild(retry);
+        status.addEventListener('click', function(event) { event.stopPropagation(); });
+        retry.addEventListener('click', function() {
+            var cur = albumForSrc(img.getAttribute('src'));
+            if (!cur) return;
+            openPhoto(cur.album, cur.idx);
+        });
+        popup.appendChild(status);
+        galleryEvent('error', lastSelection);
+    }
     function applyLqip(popup) {
         if (!popup) return;
         var pic = popup.querySelector('.pic');
         var img = pic ? pic.querySelector('img') : null;
-        if (!img || !pic) return;
+        if (!img || !pic || !img.getAttribute('src')) return;
+        if (popup.__imageCleanup) popup.__imageCleanup();
+        clearImageError(popup);
         applyResponsive(popup, img);
         var full = img.getAttribute('src') || '';
         var current = albumForSrc(full);
@@ -584,77 +648,70 @@ document.addEventListener('DOMContentLoaded', function() {
             var title = current.album.titles[current.idx] || current.album.title;
             img.alt = title + (current.album.images.length > 1 ? '（' + (current.idx + 1) + '/' + current.album.images.length + '）' : '');
         } else { img.alt = '照片'; }
-        var pre = lqipFor(full);
-        if (!pre || pre === full) { clearLqip(popup); img.style.opacity = '1'; captionFadeInAfterImage(); return; }
-        // 每次切图递增序号：上一张的 onload/decode 回调晚到时会自动作废，
-        // 避免把「已经切走」的图淡入回来或残留透明状态。
         var seq = popup.__lqipSeq = (popup.__lqipSeq || 0) + 1;
-        var lq = popup.querySelector('.pp-lqip');
-        if (!lq) {
-            lq = document.createElement('div');
-            lq.className = 'pp-lqip';
-            // 插在 .pic 前面（而非 .pic 内）：poptrox 加载完成会对 .pic 做一次 hide().fadeIn()，
-            // 若遮罩在 .pic 内会跟着一起闪；放在 .pic 前面则按文档顺序垫底，全图淡入时遮罩保持稳定。
-            // 不用 z-index 抬 .pic，避免破坏全景/全屏按钮依赖的原有堆叠关系。
-            popup.insertBefore(lq, pic);
+        var timers = [], observer = null;
+        function isCurrent() {
+            return isPopupActive && seq === popup.__lqipSeq && img.isConnected &&
+                popup.querySelector('.pic img') === img && img.getAttribute('src') === full;
         }
-        // 缩略图立刻垫底：不能从透明淡入，否则切图瞬间会先露出弹窗外面的背景（更生硬）。
-        lq.style.backgroundImage = 'url("' + pre + '")';
-        lq.style.opacity = '1';
-        // 原图先透明：这里必须临时关掉过渡，否则新 <img> 的默认 opacity:1 会先
-        // 「反向淡出」一段，等于加载期间把下一张照片提前露出来。
+        function later(fn, delay) { timers.push(setTimeout(fn, delay)); }
+        function cleanup() {
+            img.removeEventListener('load', whenDecoded);
+            img.removeEventListener('error', failed);
+            if (observer) observer.disconnect();
+            timers.forEach(clearTimeout);
+            if (popup.__imageCleanup === cleanup) popup.__imageCleanup = null;
+        }
+        popup.__imageCleanup = cleanup;
+        var pre = lqipFor(full);
+        clearLqip(popup);
+        if (pre && pre !== full) {
+            var lq = document.createElement('div');
+            lq.className = 'pp-lqip';
+            popup.insertBefore(lq, pic);
+            lq.style.backgroundImage = 'url("' + pre.replace(/"/g, '%22') + '")';
+            lq.style.opacity = '1';
+        }
         img.style.transition = 'none';
         img.style.opacity = '0';
-        void img.offsetWidth; // 强制 reflow，确保下一帧从 opacity:0 起步
-        img.style.transition = ''; // 恢复 CSS 里的柔和淡入过渡
+        void img.offsetWidth;
+        img.style.transition = '';
         function reveal() {
-            if (seq !== popup.__lqipSeq) return; // 已切到下一张，丢弃过期回调
+            if (!isCurrent() || !img.complete || img.naturalWidth === 0) return;
+            clearImageError(popup);
             img.style.opacity = '1';
             captionFadeInAfterImage();
-            // 把弹窗尺寸回写为实际渲染尺寸：poptrox 在加载阶段量到的宽度受上一帧的
-            // 弹窗尺寸影响（移动端 img 是 width:100%），会把它当作下一张的起始尺寸，
-            // 于是切图先缩成小框再放大。这里在稳定后用真实尺寸覆盖，切图只保留高度方向的柔和变化。
-            if (!popup.classList.contains('loading')) {
-                try {
-                    var r = popup.getBoundingClientRect();
-                    if (r.width > 0 && r.height > 0) {
-                        $(popup).data('width', r.width).data('height', r.height);
-                    }
-                } catch (e) {}
-            }
-            setTimeout(function() {
-                if (seq !== popup.__lqipSeq) return;
-                clearLqip(popup);
-            }, 1000); // 覆盖 poptrox 的尺寸过渡(420ms) + .pic 淡入(420ms)，避免中途露出背景
+            try {
+                var rect = popup.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) $(popup).data('width', rect.width).data('height', rect.height);
+            } catch (e) {}
+            later(function() { if (isCurrent()) clearLqip(popup); }, 1000);
+            galleryEvent('loaded', lastSelection);
         }
-        // 两个条件都满足才显示原图：①浏览器已解码完成（避免边解码边变清晰）；
-        // ②poptrox 已结束 loading（此时它会对 .pic 做淡入）。这样缩略图会一直垫在下面，
-        // 原图是随 .pic 的淡入柔和盖上去，不会先整张弹出、再被 .pic 的淡入闪一下。
+        function gate() {
+            if (!isCurrent()) return;
+            if (!popup.classList.contains('loading')) { reveal(); return; }
+            if (observer) observer.disconnect();
+            observer = new MutationObserver(function() {
+                if (!popup.classList.contains('loading')) { observer.disconnect(); reveal(); }
+            });
+            observer.observe(popup, { attributes: true, attributeFilter: ['class'] });
+        }
         function whenDecoded() {
-            var gate = function() {
-                if (seq !== popup.__lqipSeq) return;
-                if (!popup.classList.contains('loading')) { reveal(); return; }
-                var mo = new MutationObserver(function() {
-                    if (popup.classList.contains('loading')) return;
-                    mo.disconnect();
-                    if (seq === popup.__lqipSeq) reveal();
-                });
-                mo.observe(popup, { attributes: true, attributeFilter: ['class'] });
-                setTimeout(function() { // 兜底：极端情况下 class 未变化也要显示
-                    mo.disconnect();
-                    if (seq === popup.__lqipSeq) reveal();
-                }, 2000);
-            };
-            if (img.decode) { img.decode().then(gate, gate); }
-            else { gate(); }
+            if (!isCurrent()) return;
+            if (img.decode) img.decode().then(gate, function() { if (img.naturalWidth > 0) gate(); else failed(); });
+            else gate();
         }
-        if (img.complete) {
-            if (img.naturalWidth > 0) { whenDecoded(); }
-            else { reveal(); } // 加载失败也恢复可见，避免图片一直透明
-        } else {
-            img.onload = whenDecoded;
-            img.onerror = reveal;
+        function failed() {
+            if (!isCurrent()) return;
+            showImageError(popup, img);
+            if (observer) observer.disconnect();
         }
+        img.addEventListener('load', whenDecoded);
+        img.addEventListener('error', failed);
+        if (img.complete && img.naturalWidth > 0) whenDecoded();
+        // 错误可能早于 MutationObserver 绑定监听，因此补查一次。
+        else if (img.complete) later(function() { if (isCurrent() && img.complete && !img.naturalWidth) failed(); }, 0);
     }
     // 监听灯箱图片 src 变化（上一张/下一张/滑动），重新铺预览
     new MutationObserver(function(muts) {
@@ -663,9 +720,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 var img = m.target;
                 if (!img || img.tagName !== 'IMG') return; // 只关心图片 src，忽略其它元素的 src 变化
                 var popup = img.closest ? img.closest('.poptrox-popup') : null;
-                if (popup) {
+                if (popup && isPopupActive && img.getAttribute('src')) {
+                    if (pendingPhoto) {
+                        var requested = pendingPhoto;
+                        pendingPhoto = null;
+                        activeAlbum = requested.album;
+                        if (img.getAttribute('src') !== requested.album.images[requested.index]) {
+                            img.setAttribute('src', requested.album.images[requested.index]);
+                            return;
+                        }
+                    }
+                    if (popup.__panoFallbackSource !== img.getAttribute('src')) delete popup.__panoFallbackSource;
+                    notifySelection(img.getAttribute('src'));
                     // 全景统一 4:3 视窗：在 src 变化当下就切换类，LQIP 盖着时完成尺寸变化，不会挂载后再跳
-                    popup.classList.toggle('pp-pano-mode', isPanoUrl(img.getAttribute('src')));
+                    popup.classList.toggle('pp-pano-mode', isPanoUrl(img.getAttribute('src')) && popup.__panoFallbackSource !== img.getAttribute('src'));
                     captionFadeOut();
                     applyLqip(popup);
                     preloadNeighbors(popup);
@@ -680,10 +748,11 @@ document.addEventListener('DOMContentLoaded', function() {
     function albumForSrc(src) {
         var s = normUrl(src);
         if (!s) return null;
-        for (var i = 0; i < ALBUMS.length; i++) {
-            var imgs = ALBUMS[i].images;
+        var ordered = activeAlbum ? [activeAlbum].concat(ALBUMS.filter(function(album) { return album !== activeAlbum; })) : ALBUMS;
+        for (var i = 0; i < ordered.length; i++) {
+            var imgs = ordered[i].images;
             for (var k = 0; k < imgs.length; k++) {
-                if (normUrl(imgs[k]) === s) return { album: ALBUMS[i], idx: k };
+                if (normUrl(imgs[k]) === s) return { album: ordered[i], idx: k };
             }
         }
         for (var i2 = 0; i2 < ALBUMS.length; i2++) {
@@ -721,28 +790,105 @@ document.addEventListener('DOMContentLoaded', function() {
         if (window.syncDockExif) { try { syncDockExif(); } catch (e) {} }
         return true;
     }
-    // 预加载当前图的相邻图（同图集前后 + 相邻图集首图），让键盘/按钮/滑动切换更跟手。
-    // 每张只预加载一次；用 new Image() 走浏览器缓存，不阻塞主线程。
-    var __preloaded = {};
+    // 与主图复用 AVIF/WebP srcset、sizes 和设备像素比选择。
+    // 离屏 <picture> 交给浏览器选择相同候选，避免额外解码全尺寸图片；
+    // 全景查看器仍预加载原图。
+    var __preloaded = new Map();
     function preloadUrl(u) {
-        if (!u || __preloaded[u]) return;
-        __preloaded[u] = true;
-        try { var im = new Image(); im.decoding = 'async'; im.src = u; } catch (e) {}
+        if (!u) return;
+        var key = u + '|' + window.innerWidth + '|' + (window.devicePixelRatio || 1);
+        if (__preloaded.has(key)) return;
+        var host = document.createElement('div');
+        var pic = document.createElement('div');
+        pic.className = 'pic';
+        host.appendChild(pic);
+        var im = new Image();
+        im.decoding = 'async';
+        im.fetchPriority = 'low';
+        pic.appendChild(im);
+        applyResponsive(host, im, u);
+        var entry = { image: im, host: host };
+        __preloaded.set(key, entry);
+        im.onload = function() { if (__preloaded.get(key) === entry) __preloaded.set(key, true); };
+        im.onerror = function() { if (__preloaded.get(key) === entry) __preloaded.delete(key); };
+        im.src = u;
+        // 限制长时间浏览时保留的对象数量，不清空浏览器缓存，
+        // 也不阻止预加载失败的图片再次重试。
+        while (__preloaded.size > 64) __preloaded.delete(__preloaded.keys().next().value);
     }
     function preloadNeighbors(popup) {
         try {
             var img = popup && popup.querySelector('.pic img');
-            var src = img && img.getAttribute('src');
-            var cur = albumForSrc(src);
+            var cur = albumForSrc(img && img.getAttribute('src'));
             if (!cur) return;
-            var album = cur.album, idx = cur.idx;
-            preloadUrl(album.images[idx - 1]);
-            preloadUrl(album.images[idx + 1]);
-            var ai = ALBUMS.indexOf(album);
-            if (ai > 0) preloadUrl(ALBUMS[ai - 1].images[0]);
-            if (ai >= 0 && ai + 1 < ALBUMS.length) preloadUrl(ALBUMS[ai + 1].images[0]);
+            var ai = ALBUMS.indexOf(cur.album);
+            var prev = cur.album.images[cur.idx - 1];
+            var next = cur.album.images[cur.idx + 1];
+            if (!prev && ALBUMS.length > 1) prev = ALBUMS[(ai - 1 + ALBUMS.length) % ALBUMS.length].images[0];
+            if (!next && ALBUMS.length > 1) next = ALBUMS[(ai + 1) % ALBUMS.length].images[0];
+            preloadUrl(prev);
+            preloadUrl(next);
         } catch (e) {}
     }
+    function openPhoto(album, index) {
+        if (!album || !album.images[index]) return Promise.resolve(false);
+        var request = ++openRequestSeq;
+        var deadline = Date.now() + 5000;
+        return new Promise(function(resolve) {
+            function start() {
+                if (request !== openRequestSeq || Date.now() > deadline) { resolve(false); return; }
+                var popup = document.querySelector('.poptrox-popup');
+                var overlay = document.querySelector('.poptrox-overlay');
+                if (!popup || !album.opener.isConnected) { resolve(false); return; }
+                // 关闭淡出结束前 Poptrox 仍持有内部锁。
+                // 快速前进/后退时等待淡出完成，避免新打开请求被忽略。
+                if (!isPopupActive && overlay && getComputedStyle(overlay).display !== 'none') {
+                    setTimeout(start, 25); return;
+                }
+                activeAlbum = album;
+                pendingPhoto = { album: album, index: index };
+                popup.__switchSeq = (popup.__switchSeq || 0) + 1;
+                popup.__switching = false;
+                var current = popup.querySelector('.pic img');
+                if (current) { current.removeAttribute('srcset'); removeResponsivePicture(current); }
+                if (!isPopupActive) {
+                    galleryOpener = album.opener;
+                    album.opener.click();
+                } else {
+                    // 新的深链接导航可能在首次打开淡入结束前到达；
+                    // 取消旧淡入附带的首图切换，避免它随后覆盖新照片。
+                    $(overlay).stop(true, false).css('opacity', 1);
+                    $(popup).stop(true, false);
+                    $(popup.querySelector('.pic')).stop(true, false);
+                    $(popup).trigger('poptrox_switch', [ALBUMS.indexOf(album), true]);
+                }
+                check();
+            }
+            function check() {
+                if (request !== openRequestSeq || !isPopupActive || Date.now() > deadline) { resolve(false); return; }
+                var detail = lastSelection;
+                if (!pendingPhoto && detail && detail.opener === album.opener && detail.index === index) { resolve(true); return; }
+                setTimeout(check, 25);
+            }
+            start();
+        });
+    }
+
+    window.InfinityGallery = {
+        getCurrent: function() { return isPopupActive ? lastSelection : null; },
+        open: function(target) {
+            target = target || {};
+            var candidates = ALBUMS.filter(function(album) { return album.id === String(target.albumId || ''); });
+            for (var i = 0; i < candidates.length; i++) {
+                var index = target.photoId ? candidates[i].photoIds.indexOf(String(target.photoId)) : 0;
+                if (index >= 0) return openPhoto(candidates[i], index);
+            }
+            return Promise.resolve(false);
+        },
+        close: function() { if (isPopupActive) $('.poptrox-popup').trigger('poptrox_close'); },
+        refresh: function() { window.__rebindPoptrox(); }
+    };
+    galleryEvent('ready', null);
     // 捕获阶段拦截上一张/下一张按钮，避免 poptrox 直接跳到相邻图集
     document.addEventListener('click', function(e) {
         var t = e.target && e.target.closest ? e.target.closest('.poptrox-popup .nav-previous, .poptrox-popup .nav-next') : null;

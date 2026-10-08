@@ -12,9 +12,12 @@ namespace Typecho {
         public function rows($values): self { $this->values = $values; return $this; }
         public function where($clause, ...$values): self { $this->conditions[$clause] = $values; return $this; }
         public function order(...$args): self { return $this; }
+        public function __toString(): string { return 'fixture:' . base64_encode(serialize($this)); }
+        public function prepare(string $sql): string { return $sql; }
     }
     class Db {
         public const SORT_ASC = 'ASC';
+        public const WRITE = 2;
         public static self $instance;
         public array $images = [];
         public array $fields = [];
@@ -26,7 +29,11 @@ namespace Typecho {
         public function delete($table): Query { return (new Query('delete'))->from($table); }
         public function update($table): Query { return (new Query('update'))->from($table); }
         public function fetchAll($query): array { return $query->table === 'test_fields' ? $this->legacyFields : $this->images; }
-        public function query($query): void {
+        public function query($query, $op = null) {
+            if (is_string($query) && strpos($query, 'fixture:') === 0) {
+                if ($op !== self::WRITE) { throw new \RuntimeException('Locked reads must use writer'); }
+                return unserialize(base64_decode(substr($query, 8)));
+            }
             if ($query->table === 'test_infinitytime_images' && $query->kind === 'update') {
                 foreach ($this->images as &$image) {
                     if (($image['id'] ?? null) === $query->conditions['id = ?'][0]) { $image = array_merge($image, $query->values); }

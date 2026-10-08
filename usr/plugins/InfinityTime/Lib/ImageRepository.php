@@ -269,12 +269,23 @@ class ImageRepository
         ]));
     }
 
+    /** 持锁后的变更及引用检查必须读取主库，避免从库延迟造成重复或误删。 */
+    private static function fetchRows($db, $query): array
+    {
+        if (is_resource(self::$mediaLock)) {
+            // Typecho 会按 Query 类型重新选择连接池；先编译绑定参数，再显式选择主库。
+            $query = $db->query($query->prepare((string)$query), \Typecho\Db::WRITE);
+        }
+        return $db->fetchAll($query);
+    }
+
     /** 从插件表取某 cid 的图片列表。 */
     public static function rowsFor(int $cid): array
     {
         self::ensureSchema();
         $db = \Typecho\Db::get();
-        $rows = $db->fetchAll($db->select()->from(self::table())->where('cid = ?', $cid)->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC));
+        $query = $db->select()->from(self::table())->where('cid = ?', $cid)->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC);
+        $rows = self::fetchRows($db, $query);
         return array_map(function ($r) {
             $r['exif'] = json_decode($r['exif'] ?? '{}', true);
             return $r;
@@ -292,7 +303,7 @@ class ImageRepository
         }
         $db = \Typecho\Db::get();
         $ph = implode(',', array_fill(0, count($cids), '?'));
-        $rows = $db->fetchAll(
+        $rows = self::fetchRows($db,
             $db->select()->from(self::table())
                 ->where('cid IN (' . $ph . ')', ...$cids)
                 ->order('sort', \Typecho\Db::SORT_ASC)
@@ -424,7 +435,7 @@ class ImageRepository
         }
     }
 
-    /** EXIF dates are wall-clock camera dates; timestamps fall back to documented UTC. */
+    /** EXIF 日期按相机记录的日历日期解释；缺失时按入库时间的 UTC 月份回退。 */
     public static function photoMonth(array $exif, int $created): string
     {
         $date = (string)($exif['datetime'] ?? '');
@@ -481,13 +492,13 @@ class ImageRepository
             $real = realpath($path);
             if ($real !== false) { $referenced[$real] = true; }
         };
-        foreach ($db->fetchAll($db->select()->from(self::table())) as $row) {
+        foreach (self::fetchRows($db, $db->select()->from(self::table())) as $row) {
             foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
                 $add($row[$field] ?? null);
             }
         }
         // 历史图集可能只有文章字段，没有仓库行，也必须保留其公开图片。
-        $fields = $db->fetchAll($db->select('name', 'str_value')->from($db->getPrefix() . 'fields')
+        $fields = self::fetchRows($db, $db->select('name', 'str_value')->from($db->getPrefix() . 'fields')
             ->where('name IN (?, ?, ?)', 'img', 'thumb', 'variants'));
         foreach ($fields as $field) {
             if (($field['name'] ?? '') === 'variants') {
@@ -565,7 +576,7 @@ class ImageRepository
         ], $opts);
 
         $db = \Typecho\Db::get();
-        $rows = $db->fetchAll($db->select()->from(self::table()));
+        $rows = self::fetchRows($db, $db->select()->from(self::table()));
         $rebuilt = 0;
         $failed = 0;
         $syncedCids = [];

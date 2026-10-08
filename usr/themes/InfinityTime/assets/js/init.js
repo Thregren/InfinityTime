@@ -43,20 +43,47 @@
   /* ------------------------------------------------------------------
    * 2) 缩略图加载失败时换成占位图（替代原来的 onerror 内联属性）
    * ------------------------------------------------------------------ */
-  function initImageFallback() {
-    document.querySelectorAll('img.my-photo[data-fallback]').forEach(function (img) {
+  function initImageFallback(scope) {
+    (scope || document).querySelectorAll('a.image.my-photo img').forEach(function (img) {
+      if (img.__ppFallbackBound) return;
+      img.__ppFallbackBound = true;
       var fallback = img.getAttribute('data-fallback');
-      if (!fallback) return;
-      var swapped = false;
-      var swap = function () {
+      var original = img.getAttribute('src');
+      var originalSet = img.getAttribute('srcset');
+      var article = img.closest('.thumb');
+      var sources = Array.from((img.closest('picture') || document.createElement('picture')).querySelectorAll('source'))
+        .map(function(source) { return { node: source, srcset: source.getAttribute('srcset') }; });
+      var swapped = false, retry;
+      function failed() {
         if (swapped) return;
         swapped = true;
-        img.removeEventListener('error', swap);
-        img.src = fallback;
-      };
-      // 本脚本执行时图片可能已经加载失败过（监听来不及绑上），这里补判一次
-      if (img.complete && img.naturalWidth === 0) { swap(); return; }
-      img.addEventListener('error', swap, { once: true });
+        img.removeAttribute('srcset');
+        sources.forEach(function(source) { source.node.removeAttribute('srcset'); });
+        if (fallback && img.getAttribute('src') !== fallback) img.src = fallback;
+        if (!article || retry) return;
+        retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'pp-thumb-retry';
+        retry.textContent = '缩略图加载失败 · 重试';
+        retry.addEventListener('click', function(event) {
+          event.preventDefault(); event.stopPropagation();
+          swapped = false;
+          retry.disabled = true;
+          retry.textContent = '正在重试…';
+          sources.forEach(function(source) { if (source.srcset) source.node.setAttribute('srcset', source.srcset); });
+          if (originalSet) img.setAttribute('srcset', originalSet);
+          img.src = original;
+        });
+        article.appendChild(retry);
+      }
+      img.addEventListener('load', function() {
+        if (!swapped && retry) { retry.remove(); retry = null; }
+      });
+      img.addEventListener('error', function() {
+        if (retry) { retry.disabled = false; retry.textContent = '缩略图加载失败 · 重试'; }
+        failed();
+      });
+      if (img.complete && !img.naturalWidth) failed();
     });
   }
 
@@ -65,46 +92,107 @@
    * ------------------------------------------------------------------ */
   function initWaterfall() {
     var wf = document.getElementById('waterfall');
-    if (!wf) return;
-    // 列布局交给 CSS column 实现，DOM 保持源码顺序（灯箱 poptrox 因此按源码顺序切图）。
-    // 无限瀑布流：滚动到底自动加载下一页并追加到容器。
     var lm = document.getElementById('load-more');
-    // 分页基址由模板写在 data-pager-base 上（原先由 PHP 内联注入）
-    var PAGER_BASE = lm ? (lm.getAttribute('data-pager-base') || '') : '';
-    var curPage = lm ? (parseInt(lm.getAttribute('data-page'), 10) || 1) : 1;
-    var totPages = lm ? (parseInt(lm.getAttribute('data-total-pages'), 10) || 1) : 1;
-    var loadingMore = false;
-
-    function loadMore() {
-      if (!lm || loadingMore || curPage >= totPages || !PAGER_BASE) return;
-      loadingMore = true;
-      fetch(PAGER_BASE + (curPage + 1), { credentials: 'same-origin' })
-        .then(function (r) { return r.text(); })
-        .then(function (html) {
-          try {
-            var doc = new DOMParser().parseFromString(html, 'text/html');
-            var cards = Array.prototype.slice.call(doc.querySelectorAll('#waterfall > .thumb'));
-            if (cards.length) {
-              cards.forEach(function (card) { wf.appendChild(card); });
-              curPage += 1;
-              if (lm) lm.setAttribute('data-page', String(curPage));
-              // 新卡片需绑定灯箱（poptrox 只在初始化时逐个绑定），否则点击会直接跳原图
-              if (typeof window.__rebindPoptrox === 'function') {
-                try { window.__rebindPoptrox(); } catch (e) {}
-              }
-              if (typeof window.applyDims === 'function') window.applyDims(document);
-            }
-          } catch (e) {}
-          loadingMore = false;
-        })
-        .catch(function () { loadingMore = false; });
+    if (!wf || !lm) return;
+    var pagerBase = lm.getAttribute('data-pager-base') || '';
+    var curPage = parseInt(lm.getAttribute('data-page'), 10) || 1;
+    var totPages = parseInt(lm.getAttribute('data-total-pages'), 10) || 1;
+    var cursorMode = lm.hasAttribute('data-next-url');
+    var nextUrl = cursorMode ? lm.getAttribute('data-next-url') : '';
+    var loadingMore = false, failed = false, requestId = 0, controller = null, timeout = null;
+    var status = document.createElement('span');
+    status.className = 'pp-load-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'pp-load-retry';
+    button.textContent = '加载更多照片';
+    lm.appendChild(status); lm.appendChild(button);
+    function hasMore() { return cursorMode ? !!nextUrl : curPage < totPages && !!pagerBase; }
+    function update() {
+      lm.setAttribute('aria-busy', loadingMore ? 'true' : 'false');
+      button.disabled = loadingMore;
+      button.hidden = !hasMore();
+      button.textContent = failed ? '重试加载' : (loadingMore ? '正在加载…' : '加载更多照片');
+      status.textContent = failed ? '照片加载失败，请重试。' : (loadingMore ? '正在加载更多照片…' : '');
+      lm.classList.toggle('pp-load-error', failed);
     }
-
-    window.addEventListener('scroll', function () {
-      if ((window.innerHeight + window.scrollY) >= (document.documentElement.offsetHeight - 600)) loadMore();
+    function cancel() {
+      requestId++;
+      if (controller) controller.abort();
+      controller = null;
+      clearTimeout(timeout);
+      loadingMore = false;
+      update();
+    }
+    function loadMore(manual) {
+      if (loadingMore || !hasMore() || (failed && !manual)) return Promise.resolve(false);
+      var id = ++requestId;
+      var requestedUrl = cursorMode ? nextUrl : pagerBase + (curPage + 1);
+      loadingMore = true; failed = false; update();
+      controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var options = { credentials: 'same-origin' };
+      if (controller) options.signal = controller.signal;
+      timeout = setTimeout(function() { if (id === requestId && controller) controller.abort(); }, 20000);
+      return fetch(requestedUrl, options)
+        .then(function(response) {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return response.text();
+        })
+        .then(function(html) {
+          if (id !== requestId || !wf.isConnected) return false;
+          var doc = new DOMParser().parseFromString(html, 'text/html');
+          var source = doc.getElementById('waterfall');
+          var cards = source ? Array.from(source.querySelectorAll(':scope > .thumb')) : [];
+          var newPager = doc.getElementById('load-more');
+          if (!source || (cursorMode && !newPager) || (!cursorMode && !cards.length)) throw new Error('图册分页内容无效');
+          var next = cursorMode ? (newPager.getAttribute('data-next-url') || '') : '';
+          if (next && new URL(next, location.href).href === new URL(requestedUrl, location.href).href) throw new Error('图册分页游标未推进');
+          Array.from(source.children).forEach(function(node) {
+            if (!node.matches('.thumb, .gallery-month-label')) return;
+            if (node.id && document.getElementById(node.id)) node.removeAttribute('id');
+            wf.appendChild(node);
+          });
+          curPage++;
+          lm.setAttribute('data-page', String(curPage));
+          if (cursorMode) { nextUrl = next; lm.setAttribute('data-next-url', next); }
+          var pagination = document.getElementById('gallery-pagination');
+          var nextLink = pagination && pagination.querySelector('a[rel="next"]');
+          if (nextLink) {
+            if (next) nextLink.setAttribute('href', next);
+            else nextLink.remove();
+          }
+          applyDims(wf);
+          initImageFallback(wf);
+          if (typeof window.__rebindPoptrox === 'function') window.__rebindPoptrox();
+          document.dispatchEvent(new CustomEvent('infinitygallery:append', { detail: { count: cards.length, page: curPage, nextUrl: nextUrl } }));
+          return true;
+        })
+        .catch(function() { if (id === requestId) failed = true; return false; })
+        .then(function(result) {
+          if (id === requestId) { clearTimeout(timeout); controller = null; loadingMore = false; update(); }
+          return result;
+        });
+    }
+    button.addEventListener('click', function() { loadMore(true); });
+    window.addEventListener('scroll', function() {
+      if (window.innerHeight + window.scrollY >= document.documentElement.offsetHeight - 600) loadMore(false);
     }, { passive: true });
-
-    if (document.documentElement.offsetHeight <= window.innerHeight + 600) loadMore();
+    window.addEventListener('pagehide', cancel);
+    window.InfinityWaterfall = {
+      loadMore: function() { return loadMore(true); },
+      cancel: cancel,
+      reset: function(options) {
+        cancel(); options = options || {};
+        curPage = options.page || 1; totPages = options.totalPages || 1;
+        pagerBase = options.pagerBase || '';
+        cursorMode = Object.prototype.hasOwnProperty.call(options, 'nextUrl');
+        nextUrl = options.nextUrl || ''; failed = false; update();
+      }
+    };
+    update();
+    if (document.documentElement.offsetHeight <= window.innerHeight + 600) loadMore(false);
   }
 
   /* ------------------------------------------------------------------
@@ -143,3 +231,4 @@
   // 无限瀑布流翻页后要重新给新卡片占位，暴露给其它脚本调用。
   window.applyDims = applyDims;
 })();
+

@@ -39,10 +39,12 @@ jobs:
           php tests/repository.php
           php tests/migration.php
           php tests/schema-sqlite.php
+          php tests/admin-workflow.php
           php tests/upload-fallback.php
           php tests/theme-output.php
           node tests/admin-upload.cjs
           node tests/gallery.cjs
+          node tests/gallery-loading.cjs
 
       - name: Version consistency
         run: |
@@ -71,4 +73,7 @@ jobs:
           npm install --no-save --package-lock=false playwright@1.62.1
           npx playwright install --with-deps chromium
       - name: Gallery browser regressions
-        run: node tests/gallery-browser.cjs
+        run: |
+          node tests/gallery-browser.cjs
+          node tests/gallery-loading-browser.cjs
+          node tests/admin-upload.cjs --browser

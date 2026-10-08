@@ -385,7 +385,7 @@ class Plugin implements \Typecho_Plugin_Interface
         if ($isMysql) {
             $sql .= " engine=InnoDB DEFAULT CHARSET=utf8mb4";
         }
-        $db->query($sql);
+        $db->query($sql, Db::WRITE);
 
         // 旧表升级：按 schema 版本补齐缺失列
         self::migrateSchema();
@@ -393,9 +393,9 @@ class Plugin implements \Typecho_Plugin_Interface
         // 索引（跨库兼容：SQLite 支持 IF NOT EXISTS；MySQL/MariaDB 需 try/catch 忽略已存在）
         try {
             if ($isMysql) {
-                $db->query("CREATE INDEX idx_{$table}_cid ON {$q}{$table}{$q} (`cid`)");
+                $db->query("CREATE INDEX idx_{$table}_cid ON {$q}{$table}{$q} (`cid`)", Db::WRITE);
             } else {
-                $db->query("CREATE INDEX idx_cid ON {$q}{$table}{$q} ({$q}cid{$q})");
+                $db->query("CREATE INDEX idx_cid ON {$q}{$table}{$q} ({$q}cid{$q})", Db::WRITE);
             }
         } catch (\Throwable $e) {
             // 已存在或不受支持时忽略
@@ -423,18 +423,18 @@ class Plugin implements \Typecho_Plugin_Interface
             // 使用限定列名，避免 SQLite 将不存在的双引号列名当作字符串。
             $probe = "SELECT {$q}{$table}{$q}.{$q}{$col}{$q} FROM {$q}{$table}{$q} WHERE 1 = 0";
             try {
-                $db->query($probe);
+                $db->query($probe, Db::WRITE);
                 continue;
             } catch (\Throwable $e) {
                 // 缺列时尝试补齐；其他读取错误也不能冒充成功。
             }
             try {
-                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} {$definition}");
+                $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} {$definition}", Db::WRITE);
             } catch (\Throwable $e) {
                 // 另一进程可能已加列；下面实际探测成功才允许继续。
             }
             try {
-                $db->query($probe);
+                $db->query($probe, Db::WRITE);
             } catch (\Throwable $e) {
                 throw new \RuntimeException('InfinityTime 数据库升级失败，请检查数据库权限后重试（列：' . $col . '）', 0, $e);
             }
@@ -443,7 +443,7 @@ class Plugin implements \Typecho_Plugin_Interface
         self::setOption('infinitytimeSchemaVersion', (string)self::SCHEMA_VERSION);
     }
 
-    /** A nullable key preserves existing rows and gives retries a database safety net. */
+    /** 可空键兼容已有记录，唯一索引为上传重试提供数据库级去重保护。 */
     private static function ensureUploadIndex($db, string $table): void
     {
         $adapter = strtolower($db->getAdapterName());
@@ -452,26 +452,26 @@ class Plugin implements \Typecho_Plugin_Interface
         $q = $mysql ? '`' : '"';
         $index = 'it_upload_' . substr(sha1($table), 0, 16);
         try {
-            $db->query("CREATE UNIQUE INDEX {$q}{$index}{$q} ON {$q}{$table}{$q} ({$q}cid{$q}, {$q}upload_key{$q})");
+            $db->query("CREATE UNIQUE INDEX {$q}{$index}{$q} ON {$q}{$table}{$q} ({$q}cid{$q}, {$q}upload_key{$q})", Db::WRITE);
             return;
         } catch (\Throwable $e) {
-            // Only a verified existing unique index permits a concurrent migration retry.
+            // 建索引失败时，只有验证已存在的索引确为目标唯一索引才允许继续。
         }
         $valid = false;
         if ($mysql) {
-            $rows = $db->fetchAll("SHOW INDEX FROM {$q}{$table}{$q} WHERE Key_name = '" . $index . "'");
+            $rows = $db->fetchAll($db->query("SHOW INDEX FROM {$q}{$table}{$q} WHERE Key_name = '" . $index . "'", Db::WRITE));
             usort($rows, static function ($a, $b) { return (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']; });
             $valid = count($rows) === 2 && (int)$rows[0]['Non_unique'] === 0 && (int)$rows[1]['Non_unique'] === 0
                 && array_column($rows, 'Column_name') === ['cid', 'upload_key'];
         } elseif ($pgsql) {
-            $rows = $db->fetchAll("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = '" . $index . "'");
+            $rows = $db->fetchAll($db->query("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = '" . $index . "'", Db::WRITE));
             $definition = str_replace('"', '', (string)($rows[0]['indexdef'] ?? ''));
             $valid = strpos($definition, 'CREATE UNIQUE INDEX ') === 0
                 && preg_match('/\(cid,\s*upload_key\)/', $definition) === 1;
         } else {
-            foreach ($db->fetchAll("PRAGMA index_list(" . $q . $table . $q . ")") as $row) {
+            foreach ($db->fetchAll($db->query("PRAGMA index_list(" . $q . $table . $q . ")", Db::WRITE)) as $row) {
                 if (($row['name'] ?? '') !== $index || (int)($row['unique'] ?? 0) !== 1) { continue; }
-                $columns = $db->fetchAll("PRAGMA index_info(" . $q . $index . $q . ")");
+                $columns = $db->fetchAll($db->query("PRAGMA index_info(" . $q . $index . $q . ")", Db::WRITE));
                 $valid = array_column($columns, 'name') === ['cid', 'upload_key'];
             }
         }
@@ -503,9 +503,8 @@ class Plugin implements \Typecho_Plugin_Interface
         $db = Db::get();
         $prefix = $db->getPrefix();
         $val = is_array($value) ? json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : (string)$value;
-        $exists = $db->fetchRow(
-            $db->select('name')->from($prefix . 'options')->where('name = ?', $name)->limit(1)
-        );
+        $query = $db->select('name')->from($prefix . 'options')->where('name = ?', $name)->limit(1);
+        $exists = $db->fetchRow($db->query($query->prepare((string)$query), Db::WRITE));
         if ($exists) {
             $db->query($db->update($prefix . 'options')->rows(['value' => $val])->where('name = ?', $name));
         } else {

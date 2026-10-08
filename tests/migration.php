@@ -11,8 +11,11 @@ namespace Typecho {
         public function where(...$args): self { return $this; }
         public function limit($limit): self { return $this; }
         public function rows($values): self { $this->values = $values; return $this; }
+        public function __toString(): string { return 'SELECT option_fixture'; }
+        public function prepare(string $sql): string { return $sql; }
     }
     class Db {
+        public const WRITE = 2;
         public static self $instance;
         public array $columns = [];
         public array $alters = [];
@@ -40,7 +43,10 @@ namespace Typecho {
             if (strpos($query, 'PRAGMA index_info') === 0) { return [['name' => 'cid'], ['name' => 'upload_key']]; }
             throw new \RuntimeException('Unexpected index probe');
         }
-        public function query($query): void {
+        public function query($query, $op = null) {
+            if (is_string($query) && $op !== self::WRITE) { throw new \RuntimeException('Schema SQL must use writer'); }
+            if ($query === 'SELECT option_fixture') { return null; }
+            if (is_string($query) && preg_match('/^(SHOW INDEX|SELECT indexdef|PRAGMA)/', $query)) { return $query; }
             if (!is_string($query)) { return; }
             if (strpos($query, 'CREATE UNIQUE INDEX') === 0) {
                 if ($this->failIndex) { throw new \RuntimeException('index permission denied'); }
