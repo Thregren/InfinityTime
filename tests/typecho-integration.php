@@ -498,6 +498,78 @@ namespace {
         check(AdminRepository::album($deleteCid, 7, false) !== null, '删除最后一张图片后仍保留图集身份');
         check($allFilesGone($keeperPaths), '最后一个引用删除后才清理共用变体文件');
 
+        // 整图集删除必须在同一事务内处理 images、fields 和 contents 三张表。
+        $albumDraft = AdminWorkflow::draft(7, ['title' => '整图集删除', 'device' => '图集原设备'], 'draft-delete-album');
+        $albumCid = (int)$albumDraft['cid'];
+        $sharedDraft = AdminWorkflow::draft(7, ['title' => '跨图集共享引用'], 'draft-shared-album');
+        $sharedCid = (int)$sharedDraft['cid'];
+        $privateAlbumPaths = $makeFiles('album-private');
+        $sharedAlbumPaths = $makeFiles('album-shared');
+        photo($albumCid, $privateAlbumPaths, 0);
+        photo($albumCid, $sharedAlbumPaths, 1);
+        photo($sharedCid, $sharedAlbumPaths);
+        ImageRepository::syncPostFields($albumCid);
+        ImageRepository::syncPostFields($sharedCid);
+        $albumFields = fields($albumCid);
+        $albumImages = ImageRepository::rowsFor($albumCid);
+        $contentFor = static function (int $id): array {
+            return AdminRepository::readRow(Db::get()->select()->from('table.contents')->where('cid = ?', $id), true);
+        };
+        $albumContent = $contentFor($albumCid);
+        $deleteTrigger = static function (bool $enabled, string $target) use ($prefix, $dialect): void {
+            if (!in_array($target, ['fields', 'contents'], true)) { throw new \InvalidArgumentException('删除触发器表无效'); }
+            $name = $prefix . 'reject_album_delete';
+            $fn = $prefix . 'reject_album_delete_fn';
+            if (!$enabled) {
+                Database::query('DROP TRIGGER IF EXISTS ' . $name . ($dialect === 'Pgsql' ? ' ON ' . table($target) : ''));
+                if ($dialect === 'Pgsql') { Database::query('DROP FUNCTION IF EXISTS ' . $fn . '()'); }
+                return;
+            }
+            if ($dialect === 'SQLite') {
+                $sql = 'CREATE TRIGGER ' . $name . ' BEFORE DELETE ON ' . table($target) . " BEGIN SELECT RAISE(ABORT, 'Integration failure'); END";
+            } elseif ($dialect === 'Mysql') {
+                $sql = 'CREATE TRIGGER ' . $name . ' BEFORE DELETE ON ' . table($target) . " FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Integration failure'";
+            } else {
+                Database::query('CREATE FUNCTION ' . $fn . "() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Integration failure'; RETURN OLD; END $$");
+                $sql = 'CREATE TRIGGER ' . $name . ' BEFORE DELETE ON ' . table($target) . ' FOR EACH ROW EXECUTE PROCEDURE ' . $fn . '()';
+            }
+            Database::query($sql);
+        };
+        foreach (['fields', 'contents'] as $faultTable) {
+            $deleteTrigger(true, $faultTable);
+            try {
+                injectedFailure(static function () use ($albumCid) { ImageRepository::deleteAlbum($albumCid); }, '整图集删除遇到 ' . $faultTable . ' 故障必须失败');
+            } finally { $deleteTrigger(false, $faultTable); }
+            check(ImageRepository::rowsFor($albumCid) === $albumImages, $faultTable . ' 删除失败后图片行完整回滚');
+            check(fields($albumCid) === $albumFields && $contentFor($albumCid) === $albumContent, $faultTable . ' 删除失败后文章和全部字段完整回滚');
+            check($allFilesExist($privateAlbumPaths) && $allFilesExist($sharedAlbumPaths), $faultTable . ' 删除失败后全部实体文件保留');
+        }
+        Database::query('BEGIN');
+        try {
+            AdminRepository::setField($cid, 'device', '整图集删除外层写入');
+            check(ImageRepository::deleteAlbum($albumCid), '外层事务内整图集删除成功');
+            check(ImageRepository::rowsFor($albumCid) === [] && $contentFor($albumCid) === [], '外层事务内可见图集已删除');
+            check(AdminRepository::field($cid, 'device', true) === '整图集删除外层写入', '整图集删除保留调用方其他修改');
+            check(AdminRepository::field($cid, 'device') === 'before transaction', '整图集删除不得提交调用方事务');
+            check($allFilesExist($privateAlbumPaths) && $allFilesExist($sharedAlbumPaths), '外层事务内整图集删除不清理文件');
+        } finally { Database::query('ROLLBACK'); }
+        check(ImageRepository::rowsFor($albumCid) === $albumImages && fields($albumCid) === $albumFields && $contentFor($albumCid) === $albumContent, '外层回滚恢复整图集三张表的全部记录');
+        check($allFilesExist($privateAlbumPaths) && $allFilesExist($sharedAlbumPaths), '整图集外层回滚后全部文件仍存在');
+        if ($dialect === 'Mysql') {
+            Database::query('ALTER TABLE ' . table('contents') . ' ENGINE=MyISAM');
+            try {
+                rejected(static function () use ($albumCid) { ImageRepository::deleteAlbum($albumCid); }, \RuntimeException::class, 'contents 非 InnoDB 必须拒绝整图集删除');
+                check(ImageRepository::rowsFor($albumCid) === $albumImages && fields($albumCid) === $albumFields && $contentFor($albumCid) === $albumContent, '拒绝非事务文章表时三表数据均不变');
+                check($allFilesExist($privateAlbumPaths), '拒绝非事务文章表时不删除文件');
+            } finally { Database::query('ALTER TABLE ' . table('contents') . ' ENGINE=InnoDB'); }
+        }
+        check(ImageRepository::deleteAlbum($albumCid), '独立整图集删除事务成功提交');
+        check(ImageRepository::rowsFor($albumCid) === [] && fields($albumCid) === [] && $contentFor($albumCid) === [], '整图集提交后移除三表记录');
+        check($allFilesGone($privateAlbumPaths), '整图集提交后清理无共享引用的全部变体');
+        check($allFilesExist($sharedAlbumPaths) && $contentFor($sharedCid) !== [], '整图集删除保留其他图集的共享文件与记录');
+        check(!ImageRepository::deleteAlbum($albumCid) && !ImageRepository::deleteAlbum(0), '重复或无效整图集删除不产生额外操作');
+        check(ImageRepository::deleteAlbum($sharedCid) && $allFilesGone($sharedAlbumPaths), '最后一个共享图集删除后清理全部共用变体');
+
         Database::query($db->delete(ImageRepository::table())->where('cid = ?', $cid));
         ImageRepository::syncPostFields($cid, true);
         check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', '显式清空删除最后一张图的元数据');

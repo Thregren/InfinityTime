@@ -61,6 +61,7 @@ jobs:
           php tests/theme-output.php
           node tests/admin-upload.cjs
           node tests/maintenance-client.cjs
+          node --test tests/release-guards.cjs
           node tests/gallery.cjs
           node tests/gallery-loading.cjs
           node tests/gallery-navigation.cjs

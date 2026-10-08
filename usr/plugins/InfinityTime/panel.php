@@ -698,16 +698,19 @@ if ($ppMethod === 'POST') {
         $ajax = !empty($_POST['ajax']);
         if (!pp_can_edit_cid($cid)) { pp_deny('没有权限删除该图集'); }
         if ($cid > 0) {
-            ImageRepository::removeFor($cid);
-            Database::query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
-            Database::query($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+            try {
+                if (!ImageRepository::deleteAlbum($cid)) {
+                    if ($ajax) { pp_reply_json(false, '图集已变化，请刷新后重试', [], 409); }
+                    pp_reply('图集已变化，请刷新后重试', 'error');
+                }
+            } catch (\Throwable $e) {
+                Plugin::log('delete_album: ' . $e->getMessage());
+                if ($ajax) { pp_reply_json(false, '删除暂未确认，请刷新核对后重试', ['retryable' => true], 500); }
+                pp_reply('删除暂未确认，请刷新核对后重试', 'error');
+            }
         }
-        if ($ajax) {
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['ok' => true, 'msg' => _t('已删除图集及其图片文件')], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-        pp_reply(_t('已删除图集及其图片文件'));
+        if ($ajax) { pp_reply_json(true, _t('已删除图集')); }
+        pp_reply(_t('已删除图集'));
     }
 
     if ($action === 'save_site') {

@@ -369,7 +369,7 @@ class ImageRepository
     }
 
     /** 共用字段同步事务协议；返回 true 仅表示本方法已提交自己开启的事务。 */
-    private static function fieldTransaction(callable $operation, bool $mutatesImages = false): bool
+    private static function fieldTransaction(callable $operation, bool $mutatesImages = false, bool $mutatesContents = false): bool
     {
         self::lockMedia();
         $db = \Typecho\Db::get();
@@ -386,6 +386,7 @@ class ImageRepository
             // MyISAM 等表忽略回滚，不能宣称字段替换是原子的；不自动 ALTER 用户表。
             $tables = [$db->getPrefix() . 'fields'];
             if ($mutatesImages) { $tables[] = self::table(); }
+            if ($mutatesContents) { $tables[] = $db->getPrefix() . 'contents'; }
             foreach ($tables as $name) {
                 $query = $db->select();
                 $sql = $query->prepare('SHOW TABLE STATUS WHERE Name = ' . $query->quoteValue($name));
@@ -474,33 +475,70 @@ class ImageRepository
             $row = $db->fetchRow($write($db->select()->from(self::table())
                 ->where('id = ?', $rowId)->where('cid = ?', $cid)->limit(1)));
             if (!$row) { return; }
-            foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
-                $path = $row[$field] ?? null;
-                // 污染路径不能经 toAbs 的容错归一化变成另一个有效文件。
-                if (!is_string($path) || $path === '' || $path[0] !== '/'
-                    || strpos($path, "\\") !== false || strpos($path, "\0") !== false
-                    || preg_match('#(?:^|/)\.\.?(?:/|$)#', $path)) { continue; }
-                $candidate = self::orphanFingerprint(self::toAbs($path), false);
-                if ($candidate !== null) { $candidates[$candidate['path']] = $candidate; }
-            }
+            $candidates = self::deletionCandidates($row);
             $write($db->delete(self::table())->where('id = ?', $rowId)->where('cid = ?', $cid));
             self::writePostFields($cid, true, $write);
             $deleted = true;
         }, true);
-        if ($deleted && $committed && $candidates) {
-            // 锁持续覆盖提交后的引用重查；任何异常都不能把已提交的删除伪报为失败。
-            try {
-                $referenced = self::referencedPaths();
-                foreach ($candidates as $path => $candidate) {
-                    if (!isset($referenced[$path]) && self::orphanFingerprint($path, false) === $candidate) {
-                        if (!@unlink($path)) { Plugin::log('image delete left an orphan file for later cleanup'); }
-                    }
-                }
-            } catch (\Throwable $e) {
-                Plugin::log('image delete cleanup deferred: ' . $e->getMessage());
-            }
-        }
+        if ($deleted && $committed) { self::cleanupDeletedFiles($candidates); }
         return $deleted;
+    }
+
+    /** 删除图集的现有三表数据；不扩大到评论、分类关系或其他 cid。调用方先验证编辑权限。 */
+    public static function deleteAlbum(int $cid): bool
+    {
+        if ($cid <= 0) { return false; }
+        $deleted = false;
+        $candidates = [];
+        $committed = self::fieldTransaction(static function (callable $write) use ($cid, &$deleted, &$candidates): void {
+            $db = \Typecho\Db::get();
+            $prefix = $db->getPrefix();
+            $content = $db->fetchRow($write($db->select('cid')->from($prefix . 'contents')->where('cid = ?', $cid)->limit(1)));
+            if (!$content) { return; }
+            // 单次扫描本图集路径，避免逐图同步及反复扫描全站引用的 O(N²) 开销。
+            $rows = $db->fetchAll($write($db->select('original', 'full', 'thumb', 'mid', 'avif', 'mid_avif')
+                ->from(self::table())->where('cid = ?', $cid)));
+            foreach ($rows as $row) { $candidates += self::deletionCandidates($row); }
+            $write($db->delete(self::table())->where('cid = ?', $cid));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+            $write($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+            $deleted = true;
+        }, true, true);
+        // 不提交调用方事务；与单图删除相同，未自提交时保留文件供后续安全清理。
+        if ($deleted && $committed) { self::cleanupDeletedFiles($candidates); }
+        return $deleted;
+    }
+
+    private static function deletionCandidates(array $row): array
+    {
+        $candidates = [];
+        foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
+            $path = $row[$field] ?? null;
+            // 污染路径不能经 toAbs 的容错归一化变成另一个有效文件。
+            if (!is_string($path) || $path === '' || $path[0] !== '/'
+                || strpos($path, "\\") !== false || strpos($path, "\0") !== false
+                || preg_match('#(?:^|/)\.\.?(?:/|$)#', $path)) { continue; }
+            $candidate = self::orphanFingerprint(self::toAbs($path), false);
+            if ($candidate !== null) { $candidates[$candidate['path']] = $candidate; }
+        }
+        return $candidates;
+    }
+
+    /** 仅在确认提交后调用；文件系统失败只留下孤儿，不改变已提交的成功结果。 */
+    private static function cleanupDeletedFiles(array $candidates): void
+    {
+        if (!$candidates) { return; }
+        // 锁持续覆盖提交后的引用重查；任何异常都不能把已提交的删除伪报为失败。
+        try {
+            $referenced = self::referencedPaths();
+            foreach ($candidates as $path => $candidate) {
+                if (!isset($referenced[$path]) && self::orphanFingerprint($path, false) === $candidate) {
+                    if (!@unlink($path)) { Plugin::log('image delete left an orphan file for later cleanup'); }
+                }
+            }
+        } catch (\Throwable $e) {
+            Plugin::log('image delete cleanup deferred: ' . $e->getMessage());
+        }
     }
 
     /** 按图片行的顺序同步路径与元数据，避免排序/删除后文章字段错位。 */

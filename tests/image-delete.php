@@ -111,6 +111,7 @@ namespace {
         return [
             $pdo->query('SELECT * FROM sync_infinitytime_images ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
             $pdo->query('SELECT * FROM sync_fields ORDER BY cid,name')->fetchAll(\PDO::FETCH_ASSOC),
+            $pdo->query('SELECT * FROM sync_contents ORDER BY cid')->fetchAll(\PDO::FETCH_ASSOC),
         ];
     }
     function addImage(int $id, int $cid): array {
@@ -134,6 +135,7 @@ namespace {
     }
     try {
         $pdo->exec('PRAGMA foreign_keys = ON');
+        $pdo->exec('CREATE TABLE sync_contents (cid INTEGER PRIMARY KEY, title TEXT)');
         $pdo->exec('CREATE TABLE sync_fields (cid INTEGER, name TEXT, type TEXT, str_value TEXT, int_value INTEGER DEFAULT 0, float_value REAL DEFAULT 0, PRIMARY KEY(cid,name))');
         $pdo->exec('CREATE TABLE sync_infinitytime_images (id INTEGER PRIMARY KEY, cid INTEGER, sort INTEGER, original TEXT, full TEXT, thumb TEXT, mid TEXT, avif TEXT, mid_avif TEXT, width INTEGER, height INTEGER, exif TEXT, created INTEGER)');
         $paths = addImage(1, 1);
@@ -258,6 +260,75 @@ namespace {
         $candidates = Repository::orphanCandidates();
         expect(Repository::removeOrphanCandidates($candidates) >= 3 && !filesExist($paths9), '已提交外层事务留下的孤儿可由现有安全流程清理');
         expect(filesExist($paths2), '后续孤儿清理仍保护历史引用');
+        // 图集删除只改变授权 cid 的原有三表；失败和外层事务边界必须完整保留。
+        $pdo->exec("INSERT INTO sync_contents VALUES (100,'target'),(200,'other'),(300,'legacy')");
+        $albumPaths = array_merge(addImage(100, 100), addImage(101, 100));
+        $otherPaths = addImage(200, 200);
+        $albumBefore = snapshot();
+        foreach (['sync_infinitytime_images', 'sync_fields', 'sync_contents'] as $table) {
+            $pdo->exec("CREATE TRIGGER fail_album BEFORE DELETE ON $table WHEN OLD.cid=100 BEGIN SELECT RAISE(ABORT, 'injected album failure'); END");
+            $failed = false;
+            try { Repository::deleteAlbum(100); } catch (\Throwable $e) { $failed = true; }
+            expect($failed && snapshot() === $albumBefore && filesExist($albumPaths), '任一图集表删除失败均保留三表与全部文件');
+            $pdo->exec('DROP TRIGGER fail_album');
+        }
+        $pdo->exec('BEGIN');
+        $pdo->exec("UPDATE sync_contents SET title='caller-before' WHERE cid=200");
+        $albumOuter = snapshot();
+        $pdo->exec("CREATE TRIGGER fail_album BEFORE DELETE ON sync_contents WHEN OLD.cid=100 BEGIN SELECT RAISE(ABORT, 'injected album failure'); END");
+        $failed = false;
+        try { Repository::deleteAlbum(100); } catch (\Throwable $e) { $failed = true; }
+        expect($failed && snapshot() === $albumOuter && filesExist($albumPaths), '图集失败不回滚外层其他内容修改');
+        $pdo->exec('DROP TRIGGER fail_album');
+        expect(Repository::deleteAlbum(100) && filesExist($albumPaths), '外层事务内图集删除不清理文件');
+        $pdo->exec('ROLLBACK');
+        expect(snapshot() === $albumBefore && filesExist($albumPaths), '外层回滚恢复完整图集及文件');
+        $pdo->exec('SAVEPOINT album_caller');
+        expect(Repository::deleteAlbum(100) && filesExist($albumPaths), '图集删除不跨越外层保存点');
+        $pdo->exec('ROLLBACK TO SAVEPOINT album_caller');
+        $pdo->exec('RELEASE SAVEPOINT album_caller');
+        expect(snapshot() === $albumBefore && filesExist($albumPaths), '图集保存点回滚后完整恢复');
+        $pdo->exec('CREATE TRIGGER fail_album_commit AFTER DELETE ON sync_contents WHEN OLD.cid=100 BEGIN INSERT INTO deferred_failure VALUES (99); END');
+        $failed = false;
+        try { Repository::deleteAlbum(100); } catch (\Throwable $e) { $failed = true; }
+        expect($failed && snapshot() === $albumBefore && filesExist($albumPaths), '图集真实提交约束失败不清理文件');
+        $pdo->exec('DROP TRIGGER fail_album_commit');
+        expect(!Repository::deleteAlbum(0) && !Repository::deleteAlbum(99999), '不存在图集不改任何数据');
+        expect(snapshot() === $albumBefore, '错误图集目标无副作用');
+        // 外图集仓库行及仅有字段的图集分别引用一张，其他文件正常回收。
+        $q = $pdo->prepare('UPDATE sync_infinitytime_images SET original=? WHERE id=200');
+        $q->execute([$albumPaths[0]]);
+        $q = $pdo->prepare('INSERT INTO sync_fields (cid,name,type,str_value) VALUES (?,?,?,?)');
+        $q->execute([300,'img','str','/uploads/full/temp/../101.webp?cache=1']);
+        $otherBefore = $pdo->query('SELECT * FROM sync_contents WHERE cid<>100 ORDER BY cid')->fetchAll(\PDO::FETCH_ASSOC);
+        $operationStart = count($db->operations);
+        expect(Repository::deleteAlbum(100), '独立图集删除成功');
+        expect($pdo->query('SELECT COUNT(*) FROM sync_contents WHERE cid=100')->fetchColumn() == 0
+            && $pdo->query('SELECT COUNT(*) FROM sync_fields WHERE cid=100')->fetchColumn() == 0
+            && $pdo->query('SELECT COUNT(*) FROM sync_infinitytime_images WHERE cid=100')->fetchColumn() == 0, '图集三表完整删除');
+        expect($pdo->query('SELECT * FROM sync_contents WHERE cid<>100 ORDER BY cid')->fetchAll(\PDO::FETCH_ASSOC) === $otherBefore, '保留其他图集内容');
+        expect(is_file($root . $albumPaths[0]) && is_file($root . $albumPaths[4]), '图集共享原图及历史点目录引用受到保护');
+        foreach ([1,2,3,5] as $index) { expect(!is_file($root . $albumPaths[$index]), '其余无引用图集文件在提交后删除'); }
+        expect(filesExist($otherPaths), '其他图集文件不受影响');
+        $referenceScans = 0;
+        foreach (array_slice($db->operations, $operationStart) as $operation) {
+            if (strpos($operation['sql'], 'SELECT original,full,thumb,mid,avif,mid_avif FROM "sync_infinitytime_images"') === 0
+                && strpos($operation['sql'], ' WHERE ') === false) { $referenceScans++; }
+        }
+        expect($referenceScans === 1, '整图集仅执行一次全站图片引用扫描');
+        expect(!Repository::deleteAlbum(100), '重复删除图集返回不存在');
+        expect(Repository::deleteAlbum(300), '仅有历史字段的空仓库图集仍可删除');
+        expect(is_file($root . $albumPaths[4]), '没有仓库行的历史图片不越权直接删除');
+        $pdo->exec("INSERT INTO sync_contents VALUES (400,'cleanup-failure')");
+        $cleanupPaths = addImage(400, 400);
+        $committed = false;
+        $db->beforeSql = static function ($sql) use (&$committed): void {
+            if ($sql === 'COMMIT') { $committed = true; }
+            if ($committed && strpos($sql, 'SELECT original,full,thumb') === 0) { throw new \RuntimeException('album cleanup failure'); }
+        };
+        expect(Repository::deleteAlbum(400), '图集提交后清理失败仍返回成功');
+        $db->beforeSql = null;
+        expect(filesExist($cleanupPaths) && $pdo->query('SELECT COUNT(*) FROM sync_contents WHERE cid=400')->fetchColumn() == 0, '图集清理失败仅保留孤儿');
         expect(\TypechoPlugin\InfinityTime\Plugin::$migrations === 0, '整个删除流程不运行隐式提交 DDL');
         foreach ($db->operations as $operation) {
             expect($operation['op'] === \Typecho\Db::WRITE && !$operation['object'], '删除、同步和引用检查固定主库');
