@@ -16,9 +16,9 @@ function card(id, cid, images, ids, options = {}) {
     data-variants='${attr(options.variants || [])}' data-panos='${attr(options.panos || [])}' data-dims='["3200x2000"]'
     data-exif='[]' data-descs='[]' data-addresses='[]'><img class="my-photo" src="${previews[0]}" alt="Album ${id}"></a><h2>Album ${id}</h2></article>`;
 }
-function pageHtml(cards, next = '/page2') {
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/css/main.css"><link rel="stylesheet" href="/assets/css/gallery.css"><style>#main{display:block;min-height:2000px}.thumb{max-width:240px}</style></head><body><header id="header"></header><div id="wrapper"><main id="main"><div id="waterfall"><h2 class="gallery-month-label" id="month-2026-10">2026-10</h2>${cards}</div><nav id="gallery-pagination"><a rel="next" href="${next}">下一页</a></nav><div id="load-more" data-next-url="${next}" data-page="1" data-total-pages="2"></div></main></div>
-  ${['init', 'jquery.min', 'jquery.poptrox.min', 'browser.min', 'breakpoints.min', 'lightbox', 'main'].map(n => `<script src="/assets/js/${n}.js"></script>`).join('')}</body></html>`;
+function pageHtml(cards, next = '/page2', navigation = false) {
+  return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/css/main.css"><link rel="stylesheet" href="/assets/css/gallery.css"><style>#main{display:block;min-height:2000px}.thumb{max-width:240px}</style></head><body><header id="header"></header><div id="wrapper"><main id="main"><div id="waterfall"><h2 class="gallery-month-label" id="month-2026-10">2026-10</h2>${cards}</div><nav id="gallery-pagination"><a rel="next" href="${next}">下一页</a></nav><div id="load-more" data-next-url="${next}" data-page="1" data-total-pages="2"></div></main></div>
+  ${['init', 'jquery.min', 'jquery.poptrox.min', 'browser.min', 'breakpoints.min', 'lightbox', 'main'].concat(navigation ? ['gallery-navigation'] : []).map(n => `<script src="/assets/js/${n}.js"></script>`).join('')}</body></html>`;
 }
 const initial = card('a', 1, [url('a'), url('b'), url('pano'), url('slow')], ['p-1', 'p-2', 'p-3', 'p-4'], {
   variants: [variants('a'), variants('b'), variants('pano')], panos: [0, 0, 1, 0]
@@ -52,12 +52,12 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       const page = await context.newPage();
       const errors = [], requests = [];
       page.on('pageerror', e => errors.push(e.message));
-      let broken = true, page2Fails = true;
+      let broken = true, page2Fails = true, includeHistory = false;
       const delayed = new Map();
       await page.route('**/*', async route => {
         const pathname = new URL(route.request().url()).pathname;
         requests.push(pathname);
-        if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: pageHtml(initial) });
+        if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: pageHtml(initial, '/page2', includeHistory) });
         if (pathname.startsWith('/assets/')) {
           const filename = path.join(theme, pathname.slice(1));
           return fs.existsSync(filename) ? route.fulfill({ path: filename }) : route.fulfill({ status: 404, body: '' });
@@ -163,6 +163,29 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await page.evaluate(() => InfinityWaterfall.reset({ nextUrl: '/empty' }));
       assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true, '合法的搜索末尾空批次能正常结束');
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
+      // 与真实历史模块整合：切图只替换一条灯箱记录，返回恢复列表滚动；
+      // 前进和刷新恢复同一照片，直接分享链接关闭后保留相册筛选。
+      includeHistory = true;
+      await page.goto(origin);
+      await page.waitForFunction(() => !!window.InfinityGallery);
+      await page.evaluate(() => { window.scrollTo(0, 600); document.querySelector('#a').click(); });
+      await ready('a');
+      assert.equal(new URL(page.url()).searchParams.get('photo'), 'p-1');
+      await page.keyboard.press('ArrowRight'); await ready('b');
+      assert.equal(new URL(page.url()).searchParams.get('photo'), 'p-2');
+      await page.goBack();
+      await page.waitForFunction(() => getComputedStyle(document.querySelector('.poptrox-overlay')).display === 'none');
+      assert.equal(new URL(page.url()).searchParams.has('photo'), false);
+      await page.waitForFunction(() => Math.abs(window.scrollY - 600) < 2);
+      await page.goForward(); await ready('b');
+      await page.reload(); await ready('b');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
+      await page.waitForFunction(() => getComputedStyle(document.querySelector('.poptrox-overlay')).display === 'none');
+      await page.goto(origin + '/?album=1&photo=p-5'); await ready('other-month');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
+      assert.equal(new URL(page.url()).searchParams.get('album'), '1');
       assert.deepEqual(errors, []);
       await context.close();
       console.log(`图册加载、降级和重试回归测试通过：${viewport.width}px`);

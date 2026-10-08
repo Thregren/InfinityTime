@@ -275,6 +275,9 @@ $ppMethod = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
 $ppAction = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
 $ppMaintenance = $ppMethod === 'POST' && $ppAction === 'maintenance';
 if ($ppMethod === 'POST') {
+    if (empty($_POST) && empty($_FILES) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+        pp_reply_json(false, '没有收到表单内容，可能超过服务器 post_max_size 限制。请减少单次上传大小后重试', [], 413);
+    }
     if (!pp_csrf_check()) {
         pp_reply_json(false, _t('安全校验失败，请刷新后台页面后重试'), [], 403);
     }
@@ -488,11 +491,11 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         exit;
     }
 
+    if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
     if ($ppMaintenance && empty($_POST['ajax'])) {
         pp_reply('维护任务已处理 ' . (int)($result['done'] ?? 0) . ' / ' . (int)($result['total'] ?? 0) . (!empty($result['finished']) ? '，已完成' : '；再次提交可继续'));
     }
     header('Content-Type: application/json');
-    if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
     echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -818,7 +821,7 @@ function pp_render_albums_card(array $result, $options): string
     ?>
     <div class="pp-card" id="pp-albums-card" data-page="<?php echo $page; ?>" data-query="<?php echo htmlspecialchars($query); ?>">
       <h2>图集 <span class="pp-sub">共 <?php echo (int)$result['total']; ?> 组 · 每页 <?php echo AdminRepository::PAGE_SIZE; ?> 组</span></h2>
-      <form method="get" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>" class="pp-album-search">
+      <form method="get" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>#albums" class="pp-album-search">
         <input type="hidden" name="panel" value="InfinityTime/panel.php">
         <label for="pp-album-query">搜索图集标题</label>
         <input id="pp-album-query" type="search" name="q" maxlength="100" value="<?php echo htmlspecialchars($query); ?>">
@@ -837,11 +840,11 @@ function pp_render_albums_card(array $result, $options): string
             <span class="pp-meta">（<?php echo $count; ?> 张）· <?php echo $al['status'] === 'draft' ? '草稿' : '已发布'; ?></span>
           </summary>
           <div class="pp-album-toolbar">
-            <span class="pp-meta">共 <?php echo $count; ?> 张 · 拖动图片可调整顺序</span>
+            <span class="pp-meta">共 <?php echo $count; ?> 张<?php echo $canMutate ? ' · 拖动图片可调整顺序' : ' · 只读'; ?></span>
             <span class="pp-album-actions">
+              <a class="pp-meta" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page, 'q' => $query, 'open' => $cid])); ?>#albums">查看图片 / 无脚本编辑</a>
               <?php if ($canMutate): ?>
               <a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['append' => $cid])); ?>#upload" data-append-cid="<?php echo $cid; ?>" data-append-title="<?php echo htmlspecialchars($al['title']); ?>">追加图片</a>
-              <a class="pp-meta" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page, 'q' => $query, 'open' => $cid])); ?>#albums">查看图片 / 无脚本编辑</a>
               <?php if ($al['status'] === 'draft' && pp_can_publish()): ?>
               <form method="post" style="display:inline" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
                 <?php echo pp_csrf_input(); ?>
@@ -882,7 +885,7 @@ function pp_render_albums_card(array $result, $options): string
           ?></div>
         </details>
       <?php endforeach; endif; ?>
-      <nav class="pp-album-pagination" aria-label="图集分页">
+      <nav class="pp-album-pagination pp-pagination" aria-label="图集分页">
         <?php if ($page > 1): ?><a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page - 1, 'q' => $query])); ?>#albums">上一页</a><?php endif; ?>
         <span>第 <?php echo $page; ?> / <?php echo (int)$result['pages']; ?> 页</span>
         <?php if ($page < (int)$result['pages']): ?><a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page + 1, 'q' => $query])); ?>#albums">下一页</a><?php endif; ?>
@@ -900,7 +903,7 @@ function pp_render_album_thumbs(array $images, bool $canEdit = true): string
     <?php foreach ($images as $img): ?>
       <div class="pp-img">
         <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
-        <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
+        <div class="cap"><?php echo htmlspecialchars(pp_exif_summary((array)($img['exif'] ?? []))); ?></div>
         <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
         <?php if ($canEdit): ?>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">

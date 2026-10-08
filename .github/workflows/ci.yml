@@ -40,11 +40,17 @@ jobs:
           php tests/migration.php
           php tests/schema-sqlite.php
           php tests/admin-workflow.php
+          php tests/admin-panel.php
+          for mode in get-maintenance post-no-token post-wrong-token post-array-token post-token-unavailable post-non-album post-foreign-album post-contributor-published; do
+            php tests/admin-panel.php "$mode"
+          done
+          php tests/gallery-discovery.php
           php tests/upload-fallback.php
           php tests/theme-output.php
           node tests/admin-upload.cjs
           node tests/gallery.cjs
           node tests/gallery-loading.cjs
+          node tests/gallery-navigation.cjs
 
       - name: Version consistency
         run: |

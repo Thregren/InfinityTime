@@ -372,6 +372,9 @@
           if (!img || !d) return -1;
           const src = (img.getAttribute('src') || '').split('?')[0];
           if (!src) return -1;
+          var selected = window.InfinityGallery && window.InfinityGallery.getCurrent();
+          if (selected && (d.images[selected.index] || '').split('?')[0] === src &&
+              (selected.source || '').split('?')[0] === src) return selected.index;
           let idx = d.images.indexOf(src);
           if (idx < 0) {
             for (let i = 0; i < d.images.length; i++) {

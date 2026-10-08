@@ -207,6 +207,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var backgroundState = [];
     var poptroxRebindPending = false;
     var activeAlbum = null;
+    var activePhotoIndex = 0;
     var pendingPhoto = null;
     var lastSelection = null;
     var openRequestSeq = 0;
@@ -224,6 +225,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var current = albumForSrc(src);
         if (!current) return;
         activeAlbum = current.album;
+        activePhotoIndex = current.idx;
         var detail = selectionFor(current.album, current.idx);
         if (lastSelection && lastSelection.opener === detail.opener && lastSelection.index === detail.index) return;
         lastSelection = detail;
@@ -350,6 +352,7 @@ document.addEventListener('DOMContentLoaded', function() {
             galleryEvent('close', lastSelection);
             lastSelection = null;
             activeAlbum = null;
+            activePhotoIndex = 0;
             closeGalleryDialog();
             captionFadeOut();
             $body.removeClass('modal-active');
@@ -507,6 +510,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!a) return;
         galleryOpener = a;
         activeAlbum = ALBUMS.find(function(album) { return album.opener === a; }) || null;
+        activePhotoIndex = pendingPhoto && pendingPhoto.album === activeAlbum ? pendingPhoto.index : 0;
         try {
             var dims = JSON.parse(a.dataset.dims || '[]');
             var m = String(dims[0] || '').split('x');
@@ -725,6 +729,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         var requested = pendingPhoto;
                         pendingPhoto = null;
                         activeAlbum = requested.album;
+                        activePhotoIndex = requested.index;
                         if (img.getAttribute('src') !== requested.album.images[requested.index]) {
                             img.setAttribute('src', requested.album.images[requested.index]);
                             return;
@@ -748,6 +753,10 @@ document.addEventListener('DOMContentLoaded', function() {
     function albumForSrc(src) {
         var s = normUrl(src);
         if (!s) return null;
+        // 同相册的不同仓库行也可能复用 URL，优先保留明确导航的行索引。
+        if (activeAlbum && typeof activePhotoIndex === 'number' && normUrl(activeAlbum.images[activePhotoIndex]) === s) {
+            return { album: activeAlbum, idx: activePhotoIndex };
+        }
         var ordered = activeAlbum ? [activeAlbum].concat(ALBUMS.filter(function(album) { return album !== activeAlbum; })) : ALBUMS;
         for (var i = 0; i < ordered.length; i++) {
             var imgs = ordered[i].images;
@@ -784,6 +793,8 @@ document.addEventListener('DOMContentLoaded', function() {
         setTimeout(function() {
             // 灯箱可能已关闭 / 图片元素已被移除：此时不再操作 DOM，避免报错
             if (!isPopupActive || seq !== popup.__switchSeq || !img.isConnected || !popup.isConnected) return;
+            activeAlbum = cur.album;
+            activePhotoIndex = ni;
             img.setAttribute('src', nextSrc);
             img.style.opacity = '1';
         }, 220); // 略大于半程，让淡出先发生，再换图并淡入
@@ -846,6 +857,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     setTimeout(start, 25); return;
                 }
                 activeAlbum = album;
+                activePhotoIndex = index;
                 pendingPhoto = { album: album, index: index };
                 popup.__switchSeq = (popup.__switchSeq || 0) + 1;
                 popup.__switching = false;
@@ -897,6 +909,17 @@ document.addEventListener('DOMContentLoaded', function() {
         var popup = t.closest('.poptrox-popup');
         var delta = t.classList.contains('nav-next') ? 1 : -1;
         if (inAlbumNav(popup, delta)) { e.preventDefault(); e.stopImmediatePropagation(); }
+        else {
+            // 跨相册时先记录目标卡片；不同相册可能复用同一图片 URL，
+            // 不能只等 src 改变后再用 URL 反查，否则会沿用旧相册标题和 ID。
+            var image = popup && popup.querySelector('.pic img');
+            var current = albumForSrc(image && image.getAttribute('src'));
+            var index = current ? ALBUMS.indexOf(current.album) : -1;
+            if (index >= 0 && ALBUMS.length) {
+                activeAlbum = ALBUMS[(index + delta + ALBUMS.length) % ALBUMS.length];
+                activePhotoIndex = 0;
+            }
+        }
     }, true);
 
     // 灯箱内禁止页面滚动（切图改用底部按钮，已移除滑动切图）

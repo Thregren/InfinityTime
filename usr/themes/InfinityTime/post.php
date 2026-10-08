@@ -1,9 +1,9 @@
 <?php if (!defined('__TYPECHO_ROOT_DIR__')) exit; ?>
 <?php
 /**
- * 单篇（相册）模板：纯图集站相册统一在首页网格展示，单篇入口自动回到首页。
+ * 单篇（相册）模板：纯图集站相册统一在首页网格展示，单篇入口保留稳定相册 ID 跳转到图集。
  */
-$home = rtrim((string)$this->options->siteUrl, '/');
+$home = rtrim((string)$this->options->siteUrl, '/') . '/?album=' . (int)$this->cid;
 ?>
 <!DOCTYPE html>
 <html>
@@ -17,3 +17,4 @@ $home = rtrim((string)$this->options->siteUrl, '/');
 </body>
 </html>
    
+

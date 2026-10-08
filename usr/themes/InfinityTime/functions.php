@@ -122,3 +122,6 @@ function get_theme_info() {
         'version' => isset($matches[1]) ? trim($matches[1]) : '0.0'
     ];
 }
+
+
+require_once __DIR__ . '/lib/gallery.php';

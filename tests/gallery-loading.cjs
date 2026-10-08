@@ -79,6 +79,30 @@ class Element {
     for (let i = 0; i < 100; i++) context.preloadUrl('/' + i + '.webp');
     assert.equal(context.__preloaded.size, 64);
   }
+  // 跨相册导航也必须保留卡片身份，不能被重复图片 URL 混淆。
+  {
+    const source = read('main');
+    const first = { images: ['/shared.webp'] }, second = { images: ['/shared.webp'] };
+    const image = { getAttribute: () => '/shared.webp' };
+    const popup = { querySelector: () => image };
+    const nav = { closest: () => popup, classList: { contains: () => true } };
+    let click;
+    const context = {
+      ALBUMS: [first, second], activeAlbum: first, normUrl: value => value,
+      document: { addEventListener: (_, handler) => { click = handler; } },
+      inAlbumNav: () => false, captionFadeOut() {}
+    };
+    vm.createContext(context); vm.runInContext(helper(source, 'albumForSrc', 4), context);
+    const start = source.indexOf("    document.addEventListener('click', function(e) {", source.indexOf('// 捕获阶段拦截'));
+    const end = source.indexOf('    }, true);', start) + '    }, true);'.length;
+    vm.runInContext(source.slice(start, end), context);
+    click({ target: { closest: () => nav } });
+    assert.equal(context.activeAlbum, second);
+    assert.equal(context.albumForSrc('/shared.webp').album, second, '相同 URL 在跨相册后匹配新卡片');
+    second.images.push('/shared.webp');
+    context.activePhotoIndex = 1;
+    assert.equal(context.albumForSrc('/shared.webp').idx, 1, '同一相册内复用 URL 的仓库行也保留明确索引');
+  }
   // 主题色采样复用已解码主图，并保留原有三种代表色。
   // 跨域限制导致采样失败时，只能请求独立缩略图。
   {
