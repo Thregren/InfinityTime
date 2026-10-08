@@ -17,9 +17,9 @@ final class AdminWorkflow
         if ($title === '') { throw new \InvalidArgumentException('请填写图集标题'); }
         $db = Db::get();
         $now = time();
-        $db->query('BEGIN', Db::WRITE);
+        Database::query('BEGIN');
         try {
-            $cid = (int)$db->query($db->insert($db->getPrefix() . 'contents')->rows([
+            $cid = (int)Database::query($db->insert($db->getPrefix() . 'contents')->rows([
                 'title' => $title, 'slug' => 'album-' . date('YmdHis', $now) . '-' . bin2hex(random_bytes(6)),
                 'created' => $now, 'modified' => $now, 'text' => '', 'authorId' => $uid,
                 'type' => 'post', 'status' => 'draft', 'allowComment' => '0', 'allowPing' => '0',
@@ -31,9 +31,9 @@ final class AdminWorkflow
             foreach (['device' => 'device', 'tags' => 'tags', 'location' => 'address'] as $name => $input) {
                 AdminRepository::setField($cid, $name, trim((string)($data[$input] ?? '')));
             }
-            $db->query('COMMIT', Db::WRITE);
+            Database::query('COMMIT');
         } catch (\Throwable $e) {
-            $db->query('ROLLBACK', Db::WRITE);
+            Database::query('ROLLBACK');
             throw $e;
         }
         return ['cid' => $cid, 'title' => $title, 'status' => 'draft', 'replayed' => false];
@@ -136,6 +136,6 @@ final class AdminWorkflow
         if (($counts[$cid] ?? 0) < 1) { throw new \InvalidArgumentException('请先上传至少一张图片再发布'); }
         ImageRepository::syncPostFields($cid);
         $db = Db::get();
-        $db->query($db->update($db->getPrefix() . 'contents')->rows(['status' => 'publish', 'modified' => time()])->where('cid = ?', $cid));
+        Database::query($db->update($db->getPrefix() . 'contents')->rows(['status' => 'publish', 'modified' => time()])->where('cid = ?', $cid));
     }
 }

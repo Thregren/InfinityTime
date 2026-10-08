@@ -110,6 +110,7 @@ namespace {
     use TypechoPlugin\InfinityTime\Lib\AdminRepository as Repository;
     use TypechoPlugin\InfinityTime\Lib\AdminWorkflow as Workflow;
     use TypechoPlugin\InfinityTime\Lib\ImageRepository as Images;
+    require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/Database.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Lib/AdminSecurity.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Lib/AdminRepository.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Lib/AdminWorkflow.php';

@@ -7,7 +7,8 @@ namespace Typecho {
         public string $table = '';
         public array $values = [];
         public array $conditions = [];
-        public function __construct(public string $kind) {}
+        public string $kind;
+        public function __construct(string $kind) { $this->kind = $kind; }
         public function from($table): self { $this->table = $table; return $this; }
         public function rows($values): self { $this->values = $values; return $this; }
         public function where($clause, ...$values): self { $this->conditions[$clause] = $values; return $this; }
@@ -24,6 +25,8 @@ namespace Typecho {
         public array $legacyFields = [];
         public static function get(): self { return self::$instance; }
         public function getPrefix(): string { return 'test_'; }
+        public function getAdapterName(): string { return 'Pdo_SQLite'; }
+        public function selectDb($op) { return $this; }
         public function select(...$args): Query { return new Query('select'); }
         public function insert($table): Query { return (new Query('insert'))->from($table); }
         public function delete($table): Query { return (new Query('delete'))->from($table); }
@@ -32,8 +35,11 @@ namespace Typecho {
         public function query($query, $op = null) {
             if (is_string($query) && strpos($query, 'fixture:') === 0) {
                 if ($op !== self::WRITE) { throw new \RuntimeException('Locked reads must use writer'); }
-                return unserialize(base64_decode(substr($query, 8)));
+                $query = unserialize(base64_decode(substr($query, 8)));
+                if ($query->kind === 'select') { return $query; }
             }
+            // 此替身只测字段内容；真实事务边界由 field-sync.php 覆盖。
+            if (is_string($query)) { return; }
             if ($query->table === 'test_infinitytime_images' && $query->kind === 'update') {
                 foreach ($this->images as &$image) {
                     if (($image['id'] ?? null) === $query->conditions['id = ?'][0]) { $image = array_merge($image, $query->values); }
@@ -73,6 +79,7 @@ namespace {
     use TypechoPlugin\InfinityTime\Lib\ImageRepository as Repository;
     use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
 
+    require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/Database.php';
     require __DIR__ . '/../usr/plugins/InfinityTime/Lib/ImageRepository.php';
     $root = sys_get_temp_dir() . '/infinitytime-test-' . bin2hex(random_bytes(8));
     mkdir($root, 0700);

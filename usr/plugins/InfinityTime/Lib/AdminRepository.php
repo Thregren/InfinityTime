@@ -26,14 +26,14 @@ final class AdminRepository
     {
         $db = Db::get();
         if ($writer && is_object($query) && method_exists($query, 'prepare')) { $query = $query->prepare((string)$query); }
-        return $db->fetchRow($writer ? $db->query($query, Db::WRITE) : $query) ?: [];
+        return $db->fetchRow($writer ? Database::query($query) : $query) ?: [];
     }
 
     public static function readAll($query, bool $writer = false): array
     {
         $db = Db::get();
         if ($writer && is_object($query) && method_exists($query, 'prepare')) { $query = $query->prepare((string)$query); }
-        return $db->fetchAll($writer ? $db->query($query, Db::WRITE) : $query);
+        return $db->fetchAll($writer ? Database::query($query) : $query);
     }
 
     /** 所有参数均由 Typecho 适配器转义；不直接拼接用户输入。 */
@@ -138,9 +138,9 @@ final class AdminRepository
     {
         $db = Db::get();
         $table = $db->getPrefix() . 'fields';
-        $db->query($db->delete($table)->where('cid = ?', $cid)->where('name = ?', $name));
+        Database::query($db->delete($table)->where('cid = ?', $cid)->where('name = ?', $name));
         if ($value !== '') {
-            $db->query($db->insert($table)->rows(['cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value]));
+            Database::query($db->insert($table)->rows(['cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value]));
         }
     }
 

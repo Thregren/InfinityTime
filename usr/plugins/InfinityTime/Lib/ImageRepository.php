@@ -244,7 +244,7 @@ class ImageRepository
         self::lockMedia();
         $db = \Typecho\Db::get();
         $table = self::table();
-        return (int)$db->query($db->insert($table)->rows([
+        return (int)Database::query($db->insert($table)->rows([
             'cid' => $cid,
             'original' => $meta['original'],
             'full' => $meta['full'],
@@ -274,7 +274,7 @@ class ImageRepository
     {
         if (is_resource(self::$mediaLock)) {
             // Typecho 会按 Query 类型重新选择连接池；先编译绑定参数，再显式选择主库。
-            $query = $db->query($query->prepare((string)$query), \Typecho\Db::WRITE);
+            $query = Database::query($query->prepare((string)$query));
         }
         return $db->fetchAll($query);
     }
@@ -337,7 +337,7 @@ class ImageRepository
     public static function setImageMeta(int $rowId, string $title, string $desc, string $address): void
     {
         $db = \Typecho\Db::get();
-        $db->query($db->update(self::table())->rows([
+        Database::query($db->update(self::table())->rows([
             'title' => $title,
             'desc' => $desc,
             'address' => $address,
@@ -357,15 +357,201 @@ class ImageRepository
         foreach (['width', 'height', 'size'] as $field) {
             if (isset($result[$field])) { $values[$field] = (int)$result[$field]; }
         }
-        $db->query($db->update(self::table())->rows($values)->where('id = ?', $rowId));
+        Database::query($db->update(self::table())->rows($values)->where('id = ?', $rowId));
+    }
+
+    /** 主库上的原子字段替换；保存点不会提交或回滚调用方的其他写入。 */
+    public static function syncPostFields(int $cid, bool $clearEmpty = false): void
+    {
+        self::fieldTransaction(static function (callable $write) use ($cid, $clearEmpty): void {
+            self::writePostFields($cid, $clearEmpty, $write);
+        });
+    }
+
+    /** 共用字段同步事务协议；返回 true 仅表示本方法已提交自己开启的事务。 */
+    private static function fieldTransaction(callable $operation, bool $mutatesImages = false, bool $mutatesContents = false): bool
+    {
+        self::lockMedia();
+        $db = \Typecho\Db::get();
+        $adapter = strtolower($db->getAdapterName());
+        $handle = $db->selectDb(\Typecho\Db::WRITE);
+        $write = static function ($query) {
+            // 所有同步语句编译后固定走主库；不需要 INSERT 的生成主键。
+            return Database::query(is_string($query) ? $query : $query->prepare((string)$query));
+        };
+        $savepoint = 'infinitytime_fields_' . bin2hex(random_bytes(8));
+        $owned = false;
+        $mysql = strpos($adapter, 'mysql') !== false;
+        if ($mysql) {
+            // MyISAM 等表忽略回滚，不能宣称字段替换是原子的；不自动 ALTER 用户表。
+            $tables = [$db->getPrefix() . 'fields'];
+            if ($mutatesImages) { $tables[] = self::table(); }
+            if ($mutatesContents) { $tables[] = $db->getPrefix() . 'contents'; }
+            foreach ($tables as $name) {
+                $query = $db->select();
+                $sql = $query->prepare('SHOW TABLE STATUS WHERE Name = ' . $query->quoteValue($name));
+                $table = $db->fetchRow($write($sql));
+                if (strcasecmp((string)($table['Engine'] ?? ''), 'InnoDB') !== 0) {
+                    throw new \RuntimeException('图片字段同步需要相关表使用 InnoDB 事务引擎，请先备份并由管理员迁移表引擎');
+                }
+            }
+            // MySQL 在 autocommit 下静默忽略 SAVEPOINT；必须在写入前验证它实际存在。
+            // 不用 BEGIN 探测：它会隐式提交已有事务。也兼容调用方 SET autocommit=0。
+            $write('SAVEPOINT ' . $savepoint);
+            try {
+                // 直接检查驱动错误码，避免 Typecho PDO 包装丢失 MySQL errno。
+                $result = $handle->query('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                if ($result === false) {
+                    $code = $handle instanceof \PDO ? (int)($handle->errorInfo()[1] ?? 0) : (int)$handle->errno;
+                    throw new \RuntimeException('无法验证字段同步保存点', $code);
+                }
+            } catch (\Throwable $e) {
+                $code = $e instanceof \PDOException ? (int)($e->errorInfo[1] ?? 0) : (int)$e->getCode();
+                if ($code !== 1305) { throw $e; }
+                $write('BEGIN');
+                $owned = true;
+            }
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            if ($handle instanceof \PDO) {
+                $active = $handle->inTransaction();
+            } elseif (function_exists('pg_transaction_status')) {
+                $status = pg_transaction_status($handle);
+                if (!in_array($status, [PGSQL_TRANSACTION_IDLE, PGSQL_TRANSACTION_INTRANS], true)) {
+                    throw new \RuntimeException('数据库事务不可用，请先结束当前失败的事务');
+                }
+                $active = $status === PGSQL_TRANSACTION_INTRANS;
+            } else {
+                throw new \RuntimeException('无法安全检测数据库事务状态');
+            }
+            if (!$active) { $write('BEGIN'); $owned = true; }
+        } elseif (strpos($adapter, 'sqlite') !== false) {
+            // SQLite BEGIN 不会隐式提交已有事务。PDO 可直接检测；原生 SQLite3
+            // 没有跨版本可用的状态 API，只接受明确的“已有事务”错误，其余错误上抛。
+            if (!($handle instanceof \PDO) || !$handle->inTransaction()) {
+                try { @$write('BEGIN'); $owned = true; }
+                catch (\Throwable $e) {
+                    if (strpos($e->getMessage(), 'cannot start a transaction within a transaction') === false) { throw $e; }
+                }
+            }
+        } else {
+            throw new \RuntimeException('当前数据库适配器不支持安全的字段同步事务');
+        }
+        // 嵌套 RELEASE 不会提交外层 BEGIN/SAVEPOINT；只有 owned 才能删除实体文件。
+        $started = false;
+        try {
+            $write('SAVEPOINT ' . $savepoint);
+            $started = true;
+            $operation($write);
+            $write('RELEASE SAVEPOINT ' . $savepoint);
+            if ($owned) { $write('COMMIT'); }
+        } catch (\Throwable $e) {
+            try {
+                if ($owned) { $write('ROLLBACK'); }
+                elseif ($started) {
+                    $write('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                    $write('RELEASE SAVEPOINT ' . $savepoint);
+                }
+            } catch (\Throwable $rollbackError) {
+                // 保留最初的错误，同时明确记录连接丢失等导致无法确认回滚的情况。
+                Plugin::log('field sync rollback failed: ' . $rollbackError->getMessage());
+            }
+            throw $e;
+        }
+        return $owned;
+    }
+
+    /**
+     * 删除图片行并同步文章字段。调用方先验证 cid 的编辑权限。
+     * DB 回滚时保留实体文件；外层事务存在时不清理文件（留待提交后的孤儿清理）。
+     * DB 与文件系统无法跨系统原子提交：提交后清理失败只留下可安全清理的孤儿。
+     */
+    public static function deleteImage(int $rowId, int $cid): bool
+    {
+        self::lockMedia();
+        $deleted = false;
+        $candidates = [];
+        $committed = self::fieldTransaction(static function (callable $write) use ($rowId, $cid, &$deleted, &$candidates): void {
+            $db = \Typecho\Db::get();
+            $row = $db->fetchRow($write($db->select()->from(self::table())
+                ->where('id = ?', $rowId)->where('cid = ?', $cid)->limit(1)));
+            if (!$row) { return; }
+            $candidates = self::deletionCandidates($row);
+            $write($db->delete(self::table())->where('id = ?', $rowId)->where('cid = ?', $cid));
+            self::writePostFields($cid, true, $write);
+            $deleted = true;
+        }, true);
+        if ($deleted && $committed) { self::cleanupDeletedFiles($candidates); }
+        return $deleted;
+    }
+
+    /** 删除图集的现有三表数据；不扩大到评论、分类关系或其他 cid。调用方先验证编辑权限。 */
+    public static function deleteAlbum(int $cid): bool
+    {
+        if ($cid <= 0) { return false; }
+        $deleted = false;
+        $candidates = [];
+        $committed = self::fieldTransaction(static function (callable $write) use ($cid, &$deleted, &$candidates): void {
+            $db = \Typecho\Db::get();
+            $prefix = $db->getPrefix();
+            $content = $db->fetchRow($write($db->select('cid')->from($prefix . 'contents')->where('cid = ?', $cid)->limit(1)));
+            if (!$content) { return; }
+            // 单次扫描本图集路径，避免逐图同步及反复扫描全站引用的 O(N²) 开销。
+            $rows = $db->fetchAll($write($db->select('original', 'full', 'thumb', 'mid', 'avif', 'mid_avif')
+                ->from(self::table())->where('cid = ?', $cid)));
+            foreach ($rows as $row) { $candidates += self::deletionCandidates($row); }
+            $write($db->delete(self::table())->where('cid = ?', $cid));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid));
+            $write($db->delete($prefix . 'contents')->where('cid = ?', $cid));
+            $deleted = true;
+        }, true, true);
+        // 不提交调用方事务；与单图删除相同，未自提交时保留文件供后续安全清理。
+        if ($deleted && $committed) { self::cleanupDeletedFiles($candidates); }
+        return $deleted;
+    }
+
+    private static function deletionCandidates(array $row): array
+    {
+        $candidates = [];
+        foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
+            $path = $row[$field] ?? null;
+            // 污染路径不能经 toAbs 的容错归一化变成另一个有效文件。
+            if (!is_string($path) || $path === '' || $path[0] !== '/'
+                || strpos($path, "\\") !== false || strpos($path, "\0") !== false
+                || preg_match('#(?:^|/)\.\.?(?:/|$)#', $path)) { continue; }
+            $candidate = self::orphanFingerprint(self::toAbs($path), false);
+            if ($candidate !== null) { $candidates[$candidate['path']] = $candidate; }
+        }
+        return $candidates;
+    }
+
+    /** 仅在确认提交后调用；文件系统失败只留下孤儿，不改变已提交的成功结果。 */
+    private static function cleanupDeletedFiles(array $candidates): void
+    {
+        if (!$candidates) { return; }
+        // 锁持续覆盖提交后的引用重查；任何异常都不能把已提交的删除伪报为失败。
+        try {
+            $referenced = self::referencedPaths();
+            foreach ($candidates as $path => $candidate) {
+                if (!isset($referenced[$path]) && self::orphanFingerprint($path, false) === $candidate) {
+                    if (!@unlink($path)) { Plugin::log('image delete left an orphan file for later cleanup'); }
+                }
+            }
+        } catch (\Throwable $e) {
+            Plugin::log('image delete cleanup deferred: ' . $e->getMessage());
+        }
     }
 
     /** 按图片行的顺序同步路径与元数据，避免排序/删除后文章字段错位。 */
-    public static function syncPostFields(int $cid, bool $clearEmpty = false): void
+    private static function writePostFields(int $cid, bool $clearEmpty, callable $write): void
     {
         $db = \Typecho\Db::get();
         $prefix = $db->getPrefix();
-        $rows = self::rowsFor($cid);
+        // 不在调用方可能已开启的事务内运行 schema 迁移（MySQL DDL 会隐式提交）。
+        $query = $db->select()->from(self::table())->where('cid = ?', $cid)
+            ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC);
+        $rows = $db->fetchAll($write($query));
+        foreach ($rows as &$row) { $row['exif'] = json_decode($row['exif'] ?? '{}', true); }
+        unset($row);
         // 历史文章可能仅有自定义字段。无图片行时不覆盖，删除最后一张图则显式清空。
         if (!$rows && !$clearEmpty) {
             return;
@@ -408,15 +594,15 @@ class ImageRepository
             $exifs[] = $e;
         }
         foreach (['img' => $images, 'thumb' => $thumbs] as $name => $paths) {
-            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
             // 保留空 img 标记，使删除最后一张图片后的空图集仍可识别。
-            $db->query($db->insert($prefix . 'fields')->rows([
+            $write($db->insert($prefix . 'fields')->rows([
                 'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => implode("\n", $paths),
             ]));
         }
         $map = ['addresses' => $addresses, 'titles' => $titles, 'descs' => $descs, 'panos' => $panos, 'dims' => $dims, 'variants' => $variants, 'exif' => $exifs, 'photo_ids' => $photoIds, 'months' => $months];
         foreach (['addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'exif', 'photo_ids', 'months'] as $f) {
-            $db->query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
+            $write($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $f));
             $val = $map[$f];
             // 注意：variants 的元素是数组，不能直接用 array_filter($val, 'strlen')（PHP 8 会对数组调 strlen 报错）
             $nonEmpty = false;
@@ -427,9 +613,9 @@ class ImageRepository
                 }
             }
             if ($nonEmpty) {
-                $db->query($db->insert($prefix . 'fields')->rows([
+                $write($db->insert($prefix . 'fields')->rows([
                     'cid' => $cid, 'name' => $f, 'type' => 'str',
-                    'str_value' => json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'str_value' => json_encode($val, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
                 ]));
             }
         }
@@ -454,11 +640,11 @@ class ImageRepository
             self::unlinkFiles($r['original'], $r['full'], $r['mid'] ?? null, $r['avif'] ?? null, $r['mid_avif'] ?? null, $r['thumb']);
         }
         $db = \Typecho\Db::get();
-        $db->query($db->delete(self::table())->where('cid = ?', $cid));
+        Database::query($db->delete(self::table())->where('cid = ?', $cid));
     }
 
-    /** 仅处理真实上传目录内的普通文件；旧快照、软链接与新文件一律跳过。 */
-    private static function orphanFingerprint(string $path): ?array
+    /** 仅接受白名单真实目录内的普通文件；孤儿扫描额外跳过宽限期内的新文件。 */
+    private static function orphanFingerprint(string $path, bool $oldOnly = true): ?array
     {
         clearstatcache(true, $path);
         if (is_link($path) || !is_file($path)) { return null; }
@@ -473,7 +659,7 @@ class ImageRepository
         if (!$inside) { return null; }
         $stat = @stat($path);
         // 保守宽限期：给升级前的上传进程及失败后的人工恢复留出时间。
-        if (!$stat || $stat['mtime'] > time() - 3600) { return null; }
+        if (!$stat || ($oldOnly && $stat['mtime'] > time() - 3600)) { return null; }
         return ['path' => $path, 'dev' => $stat['dev'], 'ino' => $stat['ino'],
             'size' => $stat['size'], 'mtime' => $stat['mtime'], 'ctime' => $stat['ctime']];
     }
@@ -485,14 +671,31 @@ class ImageRepository
         $add = static function ($value) use (&$referenced): void {
             if (!is_string($value) || trim($value) === '') { return; }
             $value = trim($value);
-            if (preg_match('#^https?://#i', $value)) { $value = (string)parse_url($value, PHP_URL_PATH); }
+            if (preg_match('#^(?:https?:)?//#i', $value)) { $value = (string)parse_url($value, PHP_URL_PATH); }
             if ($value === '') { return; }
-            $path = self::toAbs($value);
-            $referenced[$path] = true;
-            $real = realpath($path);
-            if ($real !== false) { $referenced[$real] = true; }
+            // 历史字段可含缓存参数、片段和 URL 编码；浏览器仍在读取同一个实体文件。
+            $urlPath = preg_split('/[?#]/', $value, 2)[0];
+            foreach (array_unique([$value, $urlPath, rawurldecode($urlPath)]) as $candidate) {
+                if (strpos($candidate, "\0") !== false) { continue; }
+                // 浏览器会折叠 URL 点目录，即使被折叠的目录实际不存在也一样。
+                // toAbs 的防穿越容错只删除 .. 段，不能用于判断这种历史 URL 引用。
+                $segments = [];
+                foreach (explode('/', str_replace("\\", '/', $candidate)) as $segment) {
+                    if ($segment === '' || $segment === '.') { continue; }
+                    if ($segment === '..') { array_pop($segments); }
+                    else { $segments[] = $segment; }
+                }
+                // 额外保留旧解释，仅扩大保护集合，不放宽删除候选的路径白名单。
+                foreach (array_unique([$candidate, '/' . implode('/', $segments)]) as $protected) {
+                    $path = self::toAbs($protected);
+                    $referenced[$path] = true;
+                    $real = realpath($path);
+                    if ($real !== false) { $referenced[$real] = true; }
+                }
+            }
         };
-        foreach (self::fetchRows($db, $db->select()->from(self::table())) as $row) {
+        // 只读引用路径；扫描孤儿文件不需要搬运可能很大的 EXIF/标题等元数据。
+        foreach (self::fetchRows($db, $db->select('original', 'full', 'thumb', 'mid', 'avif', 'mid_avif')->from(self::table())) as $row) {
             foreach (['original', 'full', 'thumb', 'mid', 'avif', 'mid_avif'] as $field) {
                 $add($row[$field] ?? null);
             }

@@ -11,13 +11,17 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.2', '8.4']
     steps:
       - uses: actions/checkout@v4
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
-          extensions: pdo_sqlite
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, gd, exif, dom
 
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +43,14 @@ jobs:
           php tests/repository.php
           php tests/migration.php
           php tests/schema-sqlite.php
+          php tests/field-sync.php
+          php tests/image-delete.php
+          php tests/media-lifetime.php
+          php tests/media-gd.php
+          php tests/maintenance-state.php
+          for mode in rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
+            php tests/maintenance-panel.php "$mode"
+          done
           php tests/admin-workflow.php
           php tests/admin-panel.php
           for mode in get-maintenance post-no-token post-wrong-token post-array-token post-token-unavailable post-non-album post-foreign-album post-contributor-published; do
@@ -48,6 +60,8 @@ jobs:
           php tests/upload-fallback.php
           php tests/theme-output.php
           node tests/admin-upload.cjs
+          node tests/maintenance-client.cjs
+          node --test tests/release-guards.cjs
           node tests/gallery.cjs
           node tests/gallery-loading.cjs
           node tests/gallery-navigation.cjs
@@ -68,7 +82,13 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    env:
+      PLAYWRIGHT_BROWSER: ${{ matrix.engine }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -77,7 +97,7 @@ jobs:
       - name: Install isolated browser test dependencies
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps ${{ matrix.engine }}
       - name: 图库基础浏览器回归
         run: node tests/gallery-browser.cjs
       - name: 图库加载与历史导航回归
@@ -86,3 +106,67 @@ jobs:
       - name: 后台上传浏览器回归
         if: ${{ !cancelled() }}
         run: node tests/admin-upload.cjs --browser
+
+  typecho-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.2', '8.4']
+        typecho:
+          - version: '1.2.1'
+            ref: '206880ba714d80bfb0638aeacb49c58b8fb1b327'
+          - version: '1.3.0'
+            ref: 'e9f23304bf20c0c355ef1df9634d42148cbc53b5'
+        database: [sqlite, mysql, pgsql]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: infinitytime_test
+          MYSQL_ROOT_PASSWORD: integration-test-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pintegration-test-only"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: infinitytime_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: integration-test-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U postgres -d infinitytime_test"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: typecho/typecho
+          ref: ${{ matrix.typecho.ref }}
+          path: .typecho-test
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, sqlite3, pdo_mysql, mysqli, pdo_pgsql, pgsql
+          coverage: none
+      - name: PHP 代码与集成测试语法
+        run: find usr tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: 真实 Typecho 数据库集成
+        env:
+          TYPECHO_ROOT: ${{ github.workspace }}/.typecho-test
+          IT_DB_HOST: 127.0.0.1
+          IT_DB_NAME: infinitytime_test
+          IT_DB_USER: ${{ matrix.database == 'mysql' && 'root' || 'postgres' }}
+          IT_DB_PASSWORD: integration-test-only
+        run: |
+          case '${{ matrix.database }}' in
+            sqlite) adapters='Pdo_SQLite SQLite' ;;
+            mysql) adapters='Pdo_Mysql Mysqli' ;;
+            pgsql) adapters='Pdo_Pgsql Pgsql' ;;
+          esac
+          for adapter in $adapters; do
+            php tests/typecho-integration.php "$adapter"
+          done

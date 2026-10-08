@@ -1,9 +1,11 @@
-// 使用本地 Chromium，全量拦截请求，不访问线上图册。
-// 运行：CHROMIUM_PATH=/usr/bin/chromium node tests/gallery-loading-browser.cjs
+// 全量拦截请求，不访问线上图册。PLAYWRIGHT_BROWSER 可选 chromium/firefox/webkit。
+// 本地 Chromium：CHROMIUM_PATH=/usr/bin/chromium node tests/gallery-loading-browser.cjs
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const playwright = require('playwright');
+const browserName = process.env.PLAYWRIGHT_BROWSER || 'chromium';
+assert.ok(['chromium', 'firefox', 'webkit'].includes(browserName), 'valid PLAYWRIGHT_BROWSER');
 const theme = path.resolve(__dirname, '../usr/themes/InfinityTime');
 const origin = 'https://gallery.test';
 const url = name => `${origin}/${name}.webp`;
@@ -25,7 +27,7 @@ const initial = card('a', 1, [url('a'), url('b'), url('pano'), url('slow')], ['p
 }) + card('same-album', 1, [url('other-month')], ['p-5']) + card('broken', 2, [url('broken')], ['p-6']);
 const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400"><rect width="640" height="400" fill="#556677"/></svg>';
 (async () => {
-  const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
+  const browser = await playwright[browserName].launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
   try {
     for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
@@ -52,7 +54,7 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       const page = await context.newPage();
       const errors = [], requests = [];
       page.on('pageerror', e => errors.push(e.message));
-      let broken = true, page2Fails = true, includeHistory = false;
+      let broken = true, page2Fails = true, includeHistory = false, fallbackWebpFails = true;
       const delayed = new Map();
       await page.route('**/*', async route => {
         const pathname = new URL(route.request().url()).pathname;
@@ -71,6 +73,10 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
         }
         if (pathname === '/page4') return route.fulfill({ contentType: 'text/html', body: pageHtml(card('fresh', 5, [url('fresh')], ['p-9']), '') });
         if (pathname === '/empty') return route.fulfill({ contentType: 'text/html', body: pageHtml('', '') });
+        if (/^\/fallback-.*\.avif$/.test(pathname)) return route.fulfill(pathname.startsWith('/fallback-decode')
+          ? { contentType: 'image/avif', body: 'corrupt AVIF bytes' }
+          : { status: 404, body: '' });
+        if (/^\/fallback-all.*\.webp$/.test(pathname) && fallbackWebpFails) return route.fulfill({ status: 503, body: '' });
         if (pathname === '/broken.webp' && broken) return route.fulfill({ status: 503, body: '' });
         if (pathname === '/slow.webp') {
           await new Promise(resolve => delayed.set('slow', resolve));
@@ -163,6 +169,26 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await page.evaluate(() => InfinityWaterfall.reset({ nextUrl: '/empty' }));
       assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true, '合法的搜索末尾空批次能正常结束');
       assert.equal(await page.locator('.pp-load-retry').isVisible(), false);
+      // AVIF 请求和解码失败均必须尝试可用 WebP，不能仅显示永久失败。
+      await page.evaluate(html => {
+        document.querySelector('#waterfall').insertAdjacentHTML('beforeend', html);
+        window.__rebindPoptrox();
+      }, card('fallback', 6, ['fallback-404', 'fallback-decode', 'fallback-all'].map(url), ['p-10', 'p-11', 'p-12'], {
+        variants: ['fallback-404', 'fallback-decode', 'fallback-all'].map(variants)
+      }));
+      await open('6', 'p-10'); await ready('fallback-404');
+      assert.ok(await page.locator('.pic img').evaluate(img => img.currentSrc.endsWith('/fallback-404-1600.webp')));
+      assert.equal(await page.locator('.pp-image-error').count(), 0);
+      assert.equal(await page.locator('.pic source[type="image/avif"]').count(), 0);
+      await page.keyboard.press('ArrowRight'); await ready('fallback-decode');
+      assert.ok(await page.locator('.pic img').evaluate(img => img.currentSrc.endsWith('/fallback-decode-1600.webp')));
+      await page.keyboard.press('ArrowRight');
+      await page.waitForSelector('.pp-image-error button', { state: 'visible' });
+      assert.equal(await page.locator('.poptrox-popup').evaluate(p => p.classList.contains('loading')), false);
+      fallbackWebpFails = false;
+      await page.locator('.pp-image-error button').click(); await ready('fallback-all');
+      assert.equal(await page.locator('.pp-image-error').count(), 0, '全格式失败仍可手动重试');
+      await close();
       // 与真实历史模块整合：切图只替换一条灯箱记录，返回恢复列表滚动；
       // 前进和刷新恢复同一照片，直接分享链接关闭后保留相册筛选。
       includeHistory = true;
@@ -188,7 +214,7 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       assert.equal(new URL(page.url()).searchParams.get('album'), '1');
       assert.deepEqual(errors, []);
       await context.close();
-      console.log(`图册加载、降级和重试回归测试通过：${viewport.width}px`);
+      console.log(`图册加载、降级和重试回归测试通过：${browserName} ${viewport.width}px`);
     }
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

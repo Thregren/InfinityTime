@@ -139,8 +139,8 @@ class MediaProcessor
         // 全图宽度上限：先把超宽图片等比缩小，再编码 WebP
         if ($maxWidth > 0 && $width > $maxWidth) {
             $scale = $maxWidth / $width;
-            $nw = (int)round($width * $scale);
-            $nh = (int)round($height * $scale);
+            $nw = max(1, (int)round($width * $scale));
+            $nh = max(1, (int)round($height * $scale));
             $scaled = imagescale($img, $nw, $nh, IMG_BILINEAR_FIXED);
             if ($scaled) {
                 $img = $scaled;
@@ -152,9 +152,9 @@ class MediaProcessor
         self::ensureDir(dirname($fullPath));
         self::ensureDir(dirname($thumbPath));
 
-        if (!imagewebp($img, $fullPath, $fullQuality)) {
-            throw new \RuntimeException('全图 WebP 写入失败（最常见是目录不可写）: ' . $fullPath);
-        }
+        $staged = [];
+        try {
+        $staged[$fullPath] = self::stageWebp($img, $fullPath, $fullQuality);
 
         // 缩略图
         if ($thumbMax > 0) {
@@ -180,7 +180,7 @@ class MediaProcessor
                     // 裁好后缩放到缩略图目标最长边
                     $scale = min(1.0, $thumbMax / max($cropW, $cropH));
                     if ($scale < 1.0) {
-                        $resized = imagescale($thumb, (int)round($cropW * $scale), (int)round($cropH * $scale), IMG_BILINEAR_FIXED);
+                        $resized = imagescale($thumb, max(1, (int)round($cropW * $scale)), max(1, (int)round($cropH * $scale)), IMG_BILINEAR_FIXED);
                         if ($resized) {
                             $thumb = $resized;
                         }
@@ -188,8 +188,8 @@ class MediaProcessor
                 }
             } else {
                 $scale = min(1.0, $thumbMax / max($width, $height));
-                $tw = (int)round($width * $scale);
-                $th = (int)round($height * $scale);
+                $tw = max(1, (int)round($width * $scale));
+                $th = max(1, (int)round($height * $scale));
                 if ($scale < 1.0) {
                     $thumb = imagescale($img, $tw, $th, IMG_BILINEAR_FIXED);
                     if (!$thumb) {
@@ -200,13 +200,20 @@ class MediaProcessor
                     $thumb = $img;
                 }
             }
-            if (!imagewebp($thumb, $thumbPath, max(60, $quality - 7))) {
-                throw new \RuntimeException('缩略图 WebP 写入失败（最常见是目录不可写）: ' . $thumbPath);
-            }
+            $staged[$thumbPath] = self::stageWebp($thumb, $thumbPath, max(60, $quality - 7));
+        }
+
+        // 两份主输出全部编码/校验成功后才发布，缩略图编码失败不会提前覆盖旧全图。
+        // 多文件 rename 不能跨文件系统原子提交；异常时已发布文件仍各自完整可读。
+        foreach ($staged as $destination => $tmp) {
+            if (!@rename($tmp, $destination)) { throw new \RuntimeException('WebP 文件替换失败，请检查目录权限'); }
+        }
+        } finally {
+            foreach ($staged as $tmp) { if (is_file($tmp)) { @unlink($tmp); } }
         }
 
         // 先释放 GD 位图，再用 Imagick 生成变体：避免 8K 图「GD 全图 + Imagick 全图」内存叠加
-        unset($img, $thumb);
+        unset($img, $thumb, $scaled, $resized);
         $variants = self::generateVariants($fullPath, $fullQuality);
 
         return [
@@ -219,6 +226,30 @@ class MediaProcessor
             'avif' => $variants['avif'] ?? null,
             'mid_avif' => $variants['mid_avif'] ?? null,
         ];
+    }
+
+    /** 编码器可能返回 true 却输出空文件；只生成并验证临时结果，调用方统一发布。 */
+    private static function stageWebp($image, string $path, int $quality): string
+    {
+        $width = imagesx($image); $height = imagesy($image);
+        // libwebp 的编码器单边硬限制；不为绕过限制而偷偷降低用户全景分辨率。
+        if ($width > 16383 || $height > 16383) {
+            throw new \RuntimeException('WebP 单边不能超过 16383px，请明确调整输出尺寸后重试');
+        }
+        $tmp = $path . '.tmp.' . bin2hex(random_bytes(8));
+        try {
+            if (!imagewebp($image, $tmp, $quality)) { throw new \RuntimeException('WebP 编码或写入失败'); }
+            clearstatcache(true, $tmp);
+            $info = @getimagesize($tmp);
+            if (!is_file($tmp) || filesize($tmp) < 12 || !is_array($info)
+                || (int)$info[0] !== $width || (int)$info[1] !== $height || ($info['mime'] ?? '') !== 'image/webp') {
+                throw new \RuntimeException('WebP 输出不完整，旧图片已保留，请检查编码器和磁盘空间');
+            }
+            return $tmp;
+        } catch (\Throwable $e) {
+            if (is_file($tmp)) { @unlink($tmp); }
+            throw $e;
+        }
     }
 
     /**
