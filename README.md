@@ -12,6 +12,8 @@
 
 分页自动滚动与主动调用共享同一请求结果；无 AbortController 或网络实现忽略 abort 时，超时/取消也会结束等待并隔离迟到响应。后台编辑字段、图集标题、图片元数据和排序使用同一主库保存点协议，字段失败不会留下半套新值，外层事务保持由调用方决定提交。本轮保留版本1.14.1，不自动合并、发布或部署。
 
+外部转换用 PHP 7.4+ 的 argv 数组直接启动实际工具，避免只终止中间 shell 而让工具继续写入；日志输出被直接丢弃至系统空设备。Windows 禁止 .bat/.cmd 包装，须配置直接可执行的工具。该管理仅覆盖直接子进程，工具自行创建的后代仍须由主机/工具管理。临时 JPEG 使用随机目录（POSIX 0700；Windows 遵循主机临时目录 ACL），统一清理所有多帧结果；清理被权限或文件系统阻止时记录警告，不掩盖原转换错误。
+
 ### v1.14.1 性能与可靠性加固
 
 维护任务身份与原子检查点、聚合字段事务回滚、Mysqli 主库一致性修复、低内存孤儿引用扫描，并扩充官方 Typecho、多 PHP 和多数据库集成验证。1.14.0 的相册工作流与浏览功能全部保留。
@@ -100,6 +102,8 @@ php tests/field-sync.php
 php tests/image-delete.php
 php tests/media-lifetime.php
 php tests/media-gd.php
+php tests/media-command.php
+php tests/media-temp.php
 php tests/maintenance-state.php
 php tests/maintenance-panel.php
 php tests/admin-workflow.php

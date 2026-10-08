@@ -393,39 +393,25 @@ class MediaProcessor
             }
         }
 
-        $jpeg = tempnam(sys_get_temp_dir(), 'pp_heic_');
-        $done = false;
-
-        if ($tools['magick']) {
-            $code = self::runCmd(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), 30);
-            $done = $code === 0 && is_file($jpeg) && filesize($jpeg) > 0;
-        }
-        if (!$done && $tools['convert']) {
-            $code = self::runCmd(escapeshellarg($tools['convert']) . ' ' . escapeshellarg($srcPath) . '[0] -colorspace sRGB -quality 92 ' . escapeshellarg($jpeg), 30);
-            $done = $code === 0 && is_file($jpeg) && filesize($jpeg) > 0;
-        }
-        if (!$done && $tools['heif']) {
-            $bin = is_string($tools['heif']) ? $tools['heif'] : 'heif-convert';
-            // heif-convert 要求输出名带 .jpg；多图时会在扩展名前加 -N（base.jpg -> base-1.jpg）
-            $code = self::runCmd(escapeshellarg($bin) . ' ' . escapeshellarg($srcPath) . ' ' . escapeshellarg($jpeg . '.jpg'), 30);
-            $found = self::findProducedJpeg($jpeg);
-            $done = $code === 0 && $found !== null;
-            if ($done) {
-                $jpeg = $found;
+        $directory = self::conversionDirectory();
+        try {
+            $jpeg = null;
+            foreach (['magick', 'convert'] as $tool) {
+                if (!$tools[$tool]) { continue; }
+                $candidate = $directory . '/' . $tool . '.jpg';
+                $code = self::runCmd([$tools[$tool], $srcPath . '[0]', '-colorspace', 'sRGB', '-quality', '92', $candidate], 30);
+                clearstatcache(true, $candidate);
+                if ($code === 0 && is_file($candidate) && filesize($candidate) > 0) { $jpeg = $candidate; break; }
             }
-        }
-
-        if (!$done || !$jpeg || !is_file($jpeg) || filesize($jpeg) === 0) {
-            @unlink($jpeg);
-            throw new \RuntimeException(
-                'HEIC 解码失败：Imagick 无法读取该文件，且没有可用的 heif-convert/ImageMagick（或服务器 PHP 禁用了 exec/shell_exec）。'
-                . ' 请改传 JPG/PNG/WebP；若必须用 HEIC，请在插件设置填入 heif-convert 路径并确保 PHP 未禁用 exec。'
-            );
-        }
-
-        $img = imagecreatefromjpeg($jpeg);
-        @unlink($jpeg);
-        return $img;
+            if ($jpeg === null && $tools['heif']) {
+                $bin = is_string($tools['heif']) ? $tools['heif'] : 'heif-convert';
+                $base = $directory . '/heif';
+                $code = self::runCmd([$bin, $srcPath, $base . '.jpg'], 30);
+                if ($code === 0) { $jpeg = self::findProducedJpeg($base); }
+            }
+            if ($jpeg === null) { throw new \RuntimeException('HEIC 解码失败，请检查转换工具支持，或改传 JPG/PNG/WebP'); }
+            return self::readConvertedJpeg($jpeg);
+        } finally { self::clearConversionDirectory($directory); }
     }
 
     /**
@@ -473,78 +459,89 @@ class MediaProcessor
             return imagecreatefromstring($data);
         }
 
-        $jpeg = tempnam(sys_get_temp_dir(), 'pp_avif_');
-        if ($tools['magick']) {
-            $code = self::runCmd(escapeshellarg($tools['magick']) . ' ' . escapeshellarg($srcPath) . '[0] -quality 92 ' . escapeshellarg($jpeg), 30);
-            if ($code === 0 && is_file($jpeg) && filesize($jpeg) > 0) {
-                $img = imagecreatefromjpeg($jpeg);
-                @unlink($jpeg);
-                return $img;
+        $directory = self::conversionDirectory();
+        try {
+            $jpeg = $directory . '/decoded.jpg';
+            if ($tools['magick']) {
+                $code = self::runCmd([$tools['magick'], $srcPath . '[0]', '-quality', '92', $jpeg], 30);
+                clearstatcache(true, $jpeg);
+                if ($code === 0 && is_file($jpeg) && filesize($jpeg) > 0) { return self::readConvertedJpeg($jpeg); }
             }
+            throw new \RuntimeException('AVIF 需要 ImageMagick（安装 libavif）支持');
+        } finally { self::clearConversionDirectory($directory); }
+    }
+
+    /** 临时解码结果可能含原图信息；使用随机私有目录隔离多帧和失败残留。 */
+    private static function conversionDirectory(): string
+    {
+        $directory = rtrim(sys_get_temp_dir(), '/\\') . '/infinitytime-codec-' . bin2hex(random_bytes(16));
+        if (!@mkdir($directory, 0700)) { throw new \RuntimeException('无法创建转换临时目录，请检查磁盘空间与临时目录权限'); }
+        return $directory;
+    }
+
+    private static function readConvertedJpeg(string $path)
+    {
+        if (!is_file($path) || is_link($path)) { throw new \RuntimeException('转换工具未输出有效的普通图片文件'); }
+        // HEIC 等格式可能无法在初始 getimagesize 阶段读取尺寸，解码成 JPEG 后再次限制像素。
+        self::assertImageSize($path);
+        $image = @imagecreatefromjpeg($path);
+        if (!$image) { throw new \RuntimeException('转换工具输出不是有效的 JPEG 图片'); }
+        return $image;
+    }
+
+    private static function clearConversionDirectory(string $directory): void
+    {
+        if (is_link($directory)) { @unlink($directory); return; }
+        if (!is_dir($directory)) { return; }
+        try {
+            foreach (new \FilesystemIterator($directory, \FilesystemIterator::SKIP_DOTS) as $file) {
+                if ($file->isFile() || $file->isLink()) { @unlink($file->getPathname()); }
+            }
+            if (!@rmdir($directory)) { \TypechoPlugin\InfinityTime\Plugin::log('conversion temporary directory cleanup incomplete'); }
+        } catch (\Throwable $e) {
+            // 清理失败不能掩盖原来的转换错误；私有目录留给管理员核查。
+            \TypechoPlugin\InfinityTime\Plugin::log('conversion temporary directory cleanup failed');
         }
-        @unlink($jpeg);
-        throw new \RuntimeException('AVIF 需要 ImageMagick（安装 libavif）支持');
     }
 
     /**
-     * 以带超时的方式运行外部命令。
-     *
-     * PHP 的 exec() 会无限期阻塞在外部子进程上（max_execution_time 并不覆盖系统调用等待），
-     * 一旦 magick/heif-convert 卡死会拖住整个 PHP 工作进程。这里改用 proc_open 并强制超时，
-     * 超时即 kill，避免后端“网页卡死”。
-     *
-     * @param string $cmd     拼接好的命令行（参数已 escapeshellarg）
-     * @param int    $timeout 超时秒数
-     * @return int 退出码
-     * @throws \RuntimeException 进程无法启动或超时
+     * 直接启动编码器，不经过额外 shell；超时终止的是实际工具进程。
+     * PHP 7.4+ 支持 argv 数组。输出原本即被丢弃，直接接系统空设备，
+     * 避免海量日志占内存及 Windows 管道无法可靠非阻塞造成的等待。
+     * 仅管理直接子进程；工具自行创建的后代进程仍受工具/主机进程管理约束。
      */
-    private static function runCmd(string $cmd, int $timeout = 60): int
+    private static function runCmd(array $command, int $timeout = 60): int
     {
-        if (!function_exists('proc_open')) {
-            throw new \RuntimeException('proc_open 被禁用，无法执行外部命令');
+        foreach (['proc_open', 'proc_get_status', 'proc_terminate', 'proc_close'] as $function) {
+            if (!function_exists($function)) { throw new \RuntimeException('外部命令管理函数被禁用，无法安全启动转换工具'); }
         }
-        $proc = @proc_open($cmd, [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ], $pipes);
-        if (!is_resource($proc)) {
-            throw new \RuntimeException('无法启动外部命令: ' . $cmd);
+        if (!$command || $timeout < 1) { throw new \InvalidArgumentException('外部命令或超时参数无效'); }
+        foreach ($command as $argument) {
+            if (!is_string($argument) || strpos($argument, "\0") !== false) { throw new \InvalidArgumentException('外部命令参数无效'); }
         }
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
+        if ($command[0] === '' || (PHP_OS_FAMILY === 'Windows' && preg_match('/\.(?:bat|cmd)$/i', $command[0]))) {
+            throw new \RuntimeException('请配置可直接执行的转换工具，不支持 Windows 批处理包装');
+        }
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $proc = @proc_open($command, [0 => ['file', $null, 'r'], 1 => ['file', $null, 'w'], 2 => ['file', $null, 'w']], $pipes, null, null, ['bypass_shell' => true]);
+        if (!is_resource($proc)) { throw new \RuntimeException('无法启动转换工具：' . basename($command[0])); }
         $start = microtime(true);
-        $status = proc_get_status($proc);
-        while ($status['running']) {
-            // 尽量抽空子进程输出，避免管道填满导致子进程阻塞
-            @stream_get_contents($pipes[1]);
-            @stream_get_contents($pipes[2]);
-
-            if ((microtime(true) - $start) > $timeout) {
-                proc_terminate($proc, 9);
-                usleep(300000);
-                if (proc_get_status($proc)['running']) {
+        $exit = -1;
+        try {
+            do {
+                $status = proc_get_status($proc);
+                if (!$status['running']) { $exit = (int)($status['exitcode'] ?? -1); break; }
+                if (microtime(true) - $start >= $timeout) {
                     proc_terminate($proc, 9);
-                    usleep(100000);
+                    throw new \RuntimeException('外部转换工具超时（' . $timeout . 's）：' . basename($command[0]));
                 }
-                @fclose($pipes[1]);
-                @fclose($pipes[2]);
-                proc_close($proc);
-                throw new \RuntimeException('外部命令超时（' . $timeout . 's）: ' . $cmd);
-            }
-            usleep(50000);
-            $status = proc_get_status($proc);
+                usleep(50000);
+            } while (true);
+        } finally {
+            if (proc_get_status($proc)['running']) { proc_terminate($proc, 9); }
+            $closed = proc_close($proc);
         }
-
-        $exit = isset($status['exitcode']) ? (int)$status['exitcode'] : -1;
-        @fclose($pipes[1]);
-        @fclose($pipes[2]);
-        $closed = proc_close($proc);
-        if ($closed !== -1) {
-            $exit = $closed;
-        }
-        return $exit;
+        return $closed !== -1 ? $closed : $exit;
     }
 
     /** 依据 EXIF Orientation（1-8）对位图做旋转/镜像修正（GD 不会自动处理）。 */
