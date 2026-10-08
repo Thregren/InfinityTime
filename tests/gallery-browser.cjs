@@ -67,6 +67,16 @@ const image = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
         return Object.values(events).flat().filter(h => /^poptrox\d+$/.test(h.namespace || '')).length;
       });
       const initialHandlers = await handlerCount();
+      if (initialHandlers !== 3) {
+        console.error('Poptrox initialization diagnostics', await page.evaluate(() => ({
+          jquery: jQuery.fn.jquery,
+          handlers: Object.entries(jQuery._data(window, 'events') || {}).flatMap(([type, handlers]) => handlers.map(h => ({ type, namespace: h.namespace }))),
+          hasDestroy: typeof document.querySelector('#main')._poptroxDestroy,
+          patchedVendor: jQuery.fn.poptrox.toString().includes('eventNamespace'),
+          cards: document.querySelectorAll('#main .thumb > a.image').length,
+          dialogs: document.querySelectorAll('.poptrox-overlay').length
+        })), errors);
+      }
       assert.equal(initialHandlers, 3, 'one instance has resize, orientation and keyboard handlers');
       assert.equal(await page.locator('#a').getAttribute('role'), 'button');
       assert.equal(await page.locator('#a').getAttribute('tabindex'), '0');
