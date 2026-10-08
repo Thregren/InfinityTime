@@ -11,13 +11,18 @@ namespace Typecho {
         public function where(...$args): self { return $this; }
         public function limit($limit): self { return $this; }
         public function rows($values): self { $this->values = $values; return $this; }
+        public function __toString(): string { return 'SELECT option_fixture'; }
+        public function prepare(string $sql): string { return $sql; }
     }
     class Db {
+        public const WRITE = 2;
         public static self $instance;
         public array $columns = [];
         public array $alters = [];
         public ?string $failColumn = null;
         public bool $race = false;
+        public bool $indexExists = false;
+        public bool $failIndex = false;
         public string $adapter = 'SQLite';
         public static function get(): self { return self::$instance; }
         public function getPrefix(): string { return 'test_'; }
@@ -26,8 +31,29 @@ namespace Typecho {
         public function insert($table): Query { return new Query(); }
         public function update($table): Query { return new Query(); }
         public function fetchRow($query) { return false; }
-        public function query($query): void {
+        public function fetchAll($query): array {
+            if (!$this->indexExists) { return []; }
+            $index = 'it_upload_' . substr(sha1('test_infinitytime_images'), 0, 16);
+            if (strpos($query, 'SHOW INDEX') === 0) { return [
+                ['Seq_in_index' => 1, 'Non_unique' => 0, 'Column_name' => 'cid'],
+                ['Seq_in_index' => 2, 'Non_unique' => 0, 'Column_name' => 'upload_key'],
+            ]; }
+            if (strpos($query, 'SELECT indexdef') === 0) { return [['indexdef' => 'CREATE UNIQUE INDEX ' . $index . ' ON test_infinitytime_images USING btree (cid, upload_key)']]; }
+            if (strpos($query, 'PRAGMA index_list') === 0) { return [['name' => $index, 'unique' => 1]]; }
+            if (strpos($query, 'PRAGMA index_info') === 0) { return [['name' => 'cid'], ['name' => 'upload_key']]; }
+            throw new \RuntimeException('Unexpected index probe');
+        }
+        public function query($query, $op = null) {
+            if (is_string($query) && $op !== self::WRITE) { throw new \RuntimeException('Schema SQL must use writer'); }
+            if ($query === 'SELECT option_fixture') { return null; }
+            if (is_string($query) && preg_match('/^(SHOW INDEX|SELECT indexdef|PRAGMA)/', $query)) { return $query; }
             if (!is_string($query)) { return; }
+            if (strpos($query, 'CREATE UNIQUE INDEX') === 0) {
+                if ($this->failIndex) { throw new \RuntimeException('index permission denied'); }
+                if ($this->indexExists) { throw new \RuntimeException('index already exists'); }
+                $this->indexExists = true;
+                return;
+            }
             if (preg_match('/^SELECT ["`]test_infinitytime_images["`]\.["`]([a-z_]+)["`]/', $query, $match)) {
                 if (!in_array($match[1], $this->columns, true)) { throw new \RuntimeException('missing column'); }
                 return;
@@ -68,7 +94,7 @@ namespace {
     checkMigration(\Utils\Helper::$options->infinitytimeSchemaVersion === 0, 'Failure must not advance schema version');
     $db->failColumn = null;
     ImageRepository::ensureSchema();
-    checkMigration((int)\Utils\Helper::$options->infinitytimeSchemaVersion === 3, 'Same-process retry completes');
+    checkMigration((int)\Utils\Helper::$options->infinitytimeSchemaVersion === 4, 'Same-process retry completes');
     checkMigration(count(array_filter($db->alters, static function ($c) { return $c === 'desc'; })) === 1, 'Retry skips already-created columns');
     checkMigration(!in_array('title', $db->alters, true), 'Existing columns need no ALTER');
     $count = count($db->alters);
@@ -77,14 +103,23 @@ namespace {
     $db->columns = ['title', 'desc'];
     \Utils\Helper::$options->infinitytimeSchemaVersion = 2;
     Plugin::migrateSchema();
-    checkMigration(in_array('mid', $db->columns, true) && in_array('avif', $db->columns, true) && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 3, 'Repair old falsely successful v2 migration');
+    checkMigration(in_array('mid', $db->columns, true) && in_array('avif', $db->columns, true) && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 4, 'Repair old falsely successful v2 migration');
     foreach (['SQLite', 'Mysql', 'Pgsql'] as $adapter) {
         $db->adapter = $adapter;
         $db->columns = [];
         $db->race = true;
         \Utils\Helper::$options->infinitytimeSchemaVersion = 0;
         Plugin::migrateSchema();
-        checkMigration(count($db->columns) === 5 && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 3, 'Concurrent duplicate is accepted only after verification: ' . $adapter);
+        checkMigration(count($db->columns) === 7 && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 4, 'Concurrent duplicate is accepted only after verification: ' . $adapter);
     }
+    $db->indexExists = false;
+    $db->failIndex = true;
+    \Utils\Helper::$options->infinitytimeSchemaVersion = 3;
+    $failed = false;
+    try { Plugin::migrateSchema(); } catch (RuntimeException $e) { $failed = true; }
+    checkMigration($failed && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 3, 'Index failure must not advance schema');
+    $db->failIndex = false;
+    Plugin::migrateSchema();
+    checkMigration($db->indexExists && (int)\Utils\Helper::$options->infinitytimeSchemaVersion === 4, 'Index retry completes safely');
     echo "Migration failure / retry / verification passed\n";
 }

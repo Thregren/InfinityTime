@@ -1,0 +1,23 @@
+/* 渐进增强：禁用 JavaScript 时，搜索控件和分页仍可使用。 */
+.gallery-discovery { padding: 1rem; color: #ddd; }
+#gallery-search { display: flex; flex-wrap: wrap; align-items: end; gap: .8rem; }
+#gallery-search label { display: flex; flex-direction: column; gap: .3rem; font-size: .9rem; }
+#gallery-search input, #gallery-search select { width: auto; min-height: 2.75rem; max-width: 100%; }
+#gallery-search input[type="search"] { min-width: min(18rem, 70vw); }
+#gallery-search button, #gallery-search > a { min-height: 2.75rem; padding: .4rem .9rem; }
+.gallery-filter-help { margin: .8rem 0 0; font-size: .8rem; color: #aaa; }
+.gallery-month-nav { display: flex; flex-wrap: wrap; gap: .5rem 1rem; padding-top: .7rem; }
+#waterfall .gallery-month-label { column-span: all; margin: .75rem 0; padding: .7rem 1rem; font-size: 1.05rem; scroll-margin-top: 5rem; }
+#gallery-pagination { display: flex; justify-content: center; gap: 1.5rem; padding: 1.25rem; }
+#gallery-pagination a { padding: .7rem 1rem; border: 1px solid #555; border-radius: .3rem; }
+#gallery-status { margin: 0; padding: 0 1rem; }
+#gallery-status:empty { display: none; }
+.gallery-photo-list { list-style: none; margin: 0; padding: .5rem; }
+.gallery-photo-list img { display: block; width: 100%; height: auto; }
+.gallery-photo-list li { margin: 0 0 1rem; }
+.gallery-album-link { font-size: .8rem; }
+:target.gallery-month-label { outline: 2px solid currentColor; }
+
+#main > #waterfall .thumb > h2 { position: static; padding: .6rem .75rem .2rem; }
+.gallery-card-links { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: .25rem .65rem; padding: .25rem .75rem .6rem; font-size: .8rem; }
+.gallery-card-links a { display: inline-block; padding: .25rem 0; }

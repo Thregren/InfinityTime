@@ -13,6 +13,9 @@ use Utils\Helper;
 use TypechoPlugin\InfinityTime\Plugin;
 use TypechoPlugin\InfinityTime\Lib\ImageRepository;
 use TypechoPlugin\InfinityTime\Lib\MediaProcessor;
+use TypechoPlugin\InfinityTime\Lib\AdminRepository;
+use TypechoPlugin\InfinityTime\Lib\AdminSecurity;
+use TypechoPlugin\InfinityTime\Lib\AdminWorkflow;
 
 $db = Db::get();
 $user = User::alloc();
@@ -25,7 +28,7 @@ if (!$user->pass('contributor', true)) {
 
 /* ---------------------------------- 工具函数 ---------------------------------- */
 
-function pp_reply(string $msg = '', string $type = 'success'): void
+function pp_reply(string $msg = '', string $type = 'success', int $cid = 0): void
 {
     $options = Helper::options();
     $url = Helper::url('InfinityTime/panel.php');
@@ -33,16 +36,19 @@ function pp_reply(string $msg = '', string $type = 'success'): void
         $sep = strpos($url, '?') === false ? '?' : '&';
         $url .= $sep . 'notice=' . urlencode($msg) . '&noticeType=' . $type;
     }
+    if ($cid > 0) { $url .= (strpos($url, '?') === false ? '?' : '&') . 'append=' . $cid . '#upload'; }
     \Typecho\Response::getInstance()->setStatus(302);
     @header('Location: ' . $url);
     exit;
 }
 
 /** 供 AJAX 使用的 JSON 响应。 */
-function pp_reply_json(bool $ok, string $msg): void
+function pp_reply_json(bool $ok, string $msg, array $data = [], int $status = 200): void
 {
+    http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(['ok' => $ok, 'msg' => $msg], JSON_UNESCAPED_UNICODE);
+    header('Cache-Control: no-store');
+    echo json_encode(['ok' => $ok, 'msg' => $msg] + $data, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -53,11 +59,17 @@ function pp_is_admin(): bool
     return $user->pass('administrator', true);
 }
 
+function pp_can_publish(): bool
+{
+    global $user;
+    return $user->pass('editor', true);
+}
+
 /** 统一权限拒绝：AJAX 返回 JSON，普通请求跳回面板提示。 */
 function pp_deny(string $msg): void
 {
     if (!empty($_POST['ajax']) || !empty($_GET['ajax'])) {
-        pp_reply_json(false, _t($msg));
+        pp_reply_json(false, _t($msg), [], 403);
     }
     pp_reply(_t($msg), 'error');
 }
@@ -70,18 +82,12 @@ function pp_require_admin(): void
     }
 }
 
-/** 当前用户能否编辑指定图集：管理员，或该图集的作者本人。 */
+/** 管理员与作者都必须指向真实的 InfinityTime 图集。 */
 function pp_can_edit_cid(int $cid): bool
 {
-    global $user, $db, $prefix;
-    if ($cid <= 0) {
-        return false;
-    }
-    if (pp_is_admin()) {
-        return true;
-    }
-    $r = $db->fetchRow($db->select('authorId')->from($prefix . 'contents')->where('cid = ?', $cid)->limit(1));
-    return $r && (int)$r['authorId'] === (int)$user->uid;
+    global $user;
+    $album = AdminRepository::album($cid, (int)$user->uid, pp_is_admin(), ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST');
+    return $album !== null && ($album['status'] === 'draft' || pp_can_publish());
 }
 
 /** 后台 CSRF token（绑定当前登录用户，同一会话内稳定）。 */
@@ -94,21 +100,21 @@ function pp_csrf_token(): string
     }
 }
 
-/** 校验 CSRF：优先比对 token；缺失时回退到“非空且同源 referer”。 */
+/** 严格校验，不回退到 Referer；原生表单及维护任务同样适用。 */
 function pp_csrf_check(): bool
 {
-    $t = pp_csrf_token();
-    if ($t !== '' && isset($_POST['_']) && hash_equals($t, (string)$_POST['_'])) {
-        return true;
-    }
-    // AJAX 请求必须带有效 token（前端统一附带）；token 不可用/原生提交时回退到同源 referer
-    if (!empty($_POST['ajax']) && $t !== '') {
-        return false;
-    }
-    $ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
-    $reqHost = (string)($_SERVER['HTTP_HOST'] ?? '');
-    $refHost = $ref !== '' ? (string)parse_url($ref, PHP_URL_HOST) : '';
-    return $refHost !== '' && strcasecmp($refHost, $reqHost) === 0;
+    return AdminSecurity::validMutation((string)($_SERVER['REQUEST_METHOD'] ?? ''), pp_csrf_token(), $_POST['_'] ?? null);
+}
+
+function pp_csrf_input(): string
+{
+    return '<input type="hidden" name="_" value="' . htmlspecialchars(pp_csrf_token(), ENT_QUOTES, 'UTF-8') . '">';
+}
+
+function pp_panel_url(array $query = []): string
+{
+    $url = Helper::url('InfinityTime/panel.php');
+    return $url . ($query ? (strpos($url, '?') === false ? '?' : '&') . http_build_query($query) : '');
 }
 
 /** 清洗“关于介绍”里的 HTML：保留常规排版标签，去掉脚本/事件/危险协议。 */
@@ -265,35 +271,34 @@ function pp_exif_summary(array $exif): string
 
 /* ---------------------------------- AJAX 进度 ---------------------------------- */
 
-if (!empty($_GET['ajax'])) {
-    $job = (string)($_GET['job'] ?? '');
-    // 写操作类 job 需要 CSRF token：否则可被 <img src="...&job=cleanup"> 之类的 GET 请求触发
-    if (in_array($job, ['rebuild', 'cleanup', 'resync'], true)) {
-        // 维护任务会批量改动全站文件：仅管理员
-        if (!$user->pass('administrator', true)) {
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '需要管理员权限'], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-        $__t = pp_csrf_token();
-        $__ok = $__t !== '' && isset($_GET['_']) && hash_equals($__t, (string)$_GET['_']);
-        if (!$__ok && $__t === '') {
-            // token 不可用时回退到同源 referer（GET 由前端同源 fetch 发起）
-            $__ref = (string)($_SERVER['HTTP_REFERER'] ?? '');
-            $__refHost = $__ref !== '' ? (string)parse_url($__ref, PHP_URL_HOST) : '';
-            $__ok = $__refHost !== '' && strcasecmp($__refHost, (string)($_SERVER['HTTP_HOST'] ?? '')) === 0;
-        }
-        if (!$__ok) {
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '安全校验失败，请刷新后台页面后重试'], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-        // 原子锁串行化维护状态，并与上传的落盘/入库临界区互斥。
-        try { ImageRepository::lockMedia(); } catch (\Throwable $e) {
-            header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
+$ppMethod = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
+$ppAction = is_string($_POST['action'] ?? null) ? $_POST['action'] : '';
+$ppMaintenance = $ppMethod === 'POST' && $ppAction === 'maintenance';
+if ($ppMethod === 'POST') {
+    if (empty($_POST) && empty($_FILES) && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > 0) {
+        pp_reply_json(false, '没有收到表单内容，可能超过服务器 post_max_size 限制。请减少单次上传大小后重试', [], 413);
+    }
+    if (!pp_csrf_check()) {
+        pp_reply_json(false, _t('安全校验失败，请刷新后台页面后重试'), [], 403);
+    }
+    // 锁覆盖权限检查、数据库及文件写入，避免并发丢失更新。
+    try { ImageRepository::lockMedia(); } catch (\Throwable $e) {
+        pp_reply_json(false, $e->getMessage(), ['retryable' => true, 'finished' => true], 409);
+    }
+}
+if (!$ppMaintenance && in_array((string)($_GET['job'] ?? ''), ['rebuild', 'cleanup', 'resync'], true)) {
+    header('Allow: POST');
+    pp_reply_json(false, '维护任务只接受 POST 请求', ['finished' => true], 405);
+}
+
+if (!empty($_GET['ajax']) || $ppMaintenance) {
+    header('Cache-Control: no-store');
+    $job = $ppMaintenance ? (string)($_POST['job'] ?? '') : (string)($_GET['job'] ?? '');
+    if ($ppMaintenance && !in_array($job, ['rebuild', 'cleanup', 'resync'], true)) {
+        pp_reply_json(false, '未知维护任务', ['finished' => true], 400);
+    }
+    if ($ppMaintenance) {
+        pp_require_admin();
         // 简单并发锁：同一时间只允许一个维护任务（不同管理员 90 秒内不能抢跑）
         $__uid = (int)($user->uid ?? 0);
         $__lockFile = pp_data_file() . '/job.lock';
@@ -465,158 +470,95 @@ if (!empty($_GET['ajax'])) {
     } elseif ($job === 'albums_html') {
         // 局部刷新图集列表：只返回卡片 HTML，避免为刷新列表重新渲染整个后台页面
         header('Content-Type: text/html; charset=utf-8');
-        echo pp_render_albums_card(pp_albums($prefix, pp_is_admin() ? 0 : (int)$user->uid), $options);
+        echo pp_render_albums_card(pp_albums(), $options);
         exit;
+    } elseif ($job === 'album_status') {
+        $cid = (int)($_GET['cid'] ?? 0);
+        $album = AdminRepository::album($cid, (int)$user->uid, pp_is_admin());
+        if (!$album) { pp_reply_json(false, '图集不存在或没有权限', [], 404); }
+        $counts = AdminRepository::counts([$cid]);
+        pp_reply_json(true, '', ['cid' => $cid, 'title' => (string)$album['title'], 'status' => $album['status'], 'count' => $counts[$cid] ?? 0]);
     } elseif ($job === 'album_images') {
         // 图集图片按需加载：展开某个图集时才拉取它的图片列表
         header('Content-Type: text/html; charset=utf-8');
         $cid = (int)($_GET['cid'] ?? 0);
-        if (!pp_can_edit_cid($cid)) {
-            echo '<div class="pp-meta">没有权限查看该图集</div>';
+        if (!AdminRepository::album($cid, (int)$user->uid, pp_is_admin())) {
+            http_response_code(403);
+            echo '<div class="pp-meta">图集不存在或没有权限查看</div>';
             exit;
         }
-        echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : []);
+        echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : [], pp_can_edit_cid($cid));
         exit;
     }
 
+    if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
+    if ($ppMaintenance && empty($_POST['ajax'])) {
+        pp_reply('维护任务已处理 ' . (int)($result['done'] ?? 0) . ' / ' . (int)($result['total'] ?? 0) . (!empty($result['finished']) ? '，已完成' : '；再次提交可继续'));
+    }
     header('Content-Type: application/json');
-    if (!empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
     echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 /* ---------------------------------- POST 处理 ---------------------------------- */
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // CSRF：优先校验 Typecho token；旧表单/无 token 时至少要求“非空且同源”的 referer
-    if (!pp_csrf_check()) {
-        pp_reply_json(false, _t('安全校验失败，请刷新后台页面后重试'));
-    }
-    $action = (string)($_POST['action'] ?? '');
+if ($ppMethod === 'POST') {
+    $action = $ppAction;
+    $ajax = !empty($_POST['ajax']);
 
-    if ($action === 'create_album') {
-        $ajax = !empty($_POST['ajax']);
-        $title = trim((string)($_POST['title'] ?? ''));
-        $address = trim((string)($_POST['address'] ?? ''));
-        $device = trim((string)($_POST['device'] ?? ''));
-        $tags = trim((string)($_POST['tags'] ?? ''));
-        if ($title === '') {
-            if ($ajax) { pp_reply_json(false, _t('请填写图集标题')); }
-            pp_reply(_t('请填写图集标题'), 'error');
-        }
-        // When post_max_size is exceeded PHP drops the entire $_FILES array.
-        // Report that explicitly instead of silently returning to the panel.
-        if (empty($_FILES['files']) && !empty($_SERVER['CONTENT_LENGTH'])) {
-            if ($ajax) { pp_reply_json(false, _t('上传内容超过服务器 post_max_size 限制，请调大 post_max_size 后重试')); }
-            pp_reply(_t('上传内容超过服务器 post_max_size 限制，请调大 post_max_size 后重试'), 'error');
-        }
-        if (empty($_FILES['files']['name'][0]) || !is_array($_FILES['files']['name'])) {
-            if ($ajax) { pp_reply_json(false, _t('请至少选择一张图片')); }
-            pp_reply(_t('请至少选择一张图片'), 'error');
-        }
-
-        $now = time();
-        $slug = 'album-' . date('YmdHis', $now) . '-' . random_int(100, 999);
-        $cid = (int)$db->query($db->insert($prefix . 'contents')->rows([
-            'title' => $title, 'slug' => $slug, 'created' => $now, 'modified' => $now,
-            'text' => '', 'authorId' => $user->uid, 'type' => 'post', 'status' => 'publish',
-            'allowComment' => '0', 'allowPing' => '0', 'allowFeed' => '0', 'template' => '', 'password' => '',
-        ]));
-
-        $imgs = [];
-        $firstExif = null; $index = 0; $fail = 0;
-        $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
-        $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
-        $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);
-        $fullQuality = (int)Plugin::opt('infinitytimeFullQuality', Plugin::DEFAULT_FULL_QUALITY);
-        $keep = (bool)Plugin::opt('infinitytimeKeepOriginal', Plugin::DEFAULT_KEEP_ORIGINAL);
-        $panoWidth = (int)Plugin::opt('infinitytimePanoWidth', Plugin::DEFAULT_PANO_WIDTH);
-        $panoQuality = (int)Plugin::opt('infinitytimePanoQuality', Plugin::DEFAULT_PANO_QUALITY);
-
-        $count = count($_FILES['files']['name']);
-        // 逐图标题/描述（与 files[] 同序，后端据此写入每张图的 title/desc）
-        $postTitles = (array)($_POST['img_titles'] ?? []);
-        $postDescs = (array)($_POST['img_descs'] ?? []);
-        $uploadErr = 0;
-        $oversize = 0;
-        $overpx = 0;
-        $maxFileBytes = 64 * 1024 * 1024; // 单文件 64MB 上限
-        $maxPixels = 20000;               // 单边 20000px 上限
-        for ($i = 0; $i < $count; $i++) {
-            $fe = (int)($_FILES['files']['error'][$i] ?? UPLOAD_ERR_NO_FILE);
-            if ($fe !== UPLOAD_ERR_OK) {
-                if ($uploadErr === 0) {
-                    $uploadErr = $fe;
+    if (in_array($action, ['create_draft', 'upload_image', 'publish_album', 'create_album'], true)) {
+        try {
+            if ($action === 'create_draft') {
+                $draft = AdminWorkflow::draft((int)$user->uid, $_POST, (string)($_POST['operation_key'] ?? ''));
+                pp_reply_json(true, '草稿已保存', $draft);
+            }
+            $cid = (int)($_POST['cid'] ?? 0);
+            if ($action === 'publish_album') {
+                AdminWorkflow::publish($cid, (int)$user->uid, pp_is_admin(), pp_can_publish());
+                if ($ajax) { pp_reply_json(true, '图集已发布', ['cid' => $cid, 'status' => 'publish']); }
+                pp_reply('图集已发布');
+            }
+            if ($action === 'upload_image') {
+                $result = AdminWorkflow::upload($cid, (int)$user->uid, pp_is_admin(), (array)($_FILES['file'] ?? []), $_POST, (string)($_POST['item_key'] ?? ''), pp_can_publish());
+                pp_reply_json(true, !empty($result['replayed']) ? '图片已保存（已恢复上传结果）' : '图片已保存', $result);
+            }
+            // 无 JavaScript 的原生回退：沿用草稿与幂等规则，每次处理有上限的一批。
+            $key = (string)($_POST['operation_key'] ?? '');
+            if (!AdminSecurity::validKey($key)) { throw new \InvalidArgumentException('上传标识无效，请刷新页面'); }
+            if (empty($_FILES['files']['name']) || !is_array($_FILES['files']['name'])) {
+                throw new \InvalidArgumentException('没有收到图片，请检查上传限制并重新选择文件');
+            }
+            if ($cid > 0) { AdminWorkflow::requireAlbum($cid, (int)$user->uid, pp_is_admin(), pp_can_publish()); }
+            else {
+                $draft = AdminWorkflow::draft((int)$user->uid, $_POST, $key);
+                $cid = (int)$draft['cid'];
+            }
+            $saved = 0; $failed = 0; $errors = [];
+            $count = count($_FILES['files']['name']);
+            for ($i = 0; $i < min(50, $count); $i++) {
+                $file = [];
+                foreach (['name', 'tmp_name', 'size', 'error'] as $field) { $file[$field] = $_FILES['files'][$field][$i] ?? null; }
+                try {
+                    AdminWorkflow::upload($cid, (int)$user->uid, pp_is_admin(), $file, [
+                        'title' => $_POST['img_titles'][$i] ?? '', 'desc' => $_POST['img_descs'][$i] ?? '',
+                        'address' => $_POST['address'] ?? '',
+                    ], hash('sha256', $key . ':' . $i), pp_can_publish());
+                    $saved++;
+                } catch (\Throwable $e) {
+                    $failed++;
+                    $errors[] = (string)$file['name'] . '：' . $e->getMessage();
                 }
-                $fail++;
-                continue;
             }
-            // 前置校验：超大文件 / 超大像素直接跳过，避免拖垮 GD 内存
-            if ((int)($_FILES['files']['size'][$i] ?? 0) > $maxFileBytes) {
-                $oversize++;
-                $fail++;
-                continue;
-            }
-            $__dim = @getimagesize((string)($_FILES['files']['tmp_name'][$i] ?? ''));
-            if (is_array($__dim) && (($__dim[0] ?? 0) > $maxPixels || ($__dim[1] ?? 0) > $maxPixels)) {
-                $overpx++;
-                $fail++;
-                continue;
-            }
-            $meta = ImageRepository::ingest([
-                'name' => $_FILES['files']['name'][$i],
-                'tmp_name' => $_FILES['files']['tmp_name'][$i],
-                'size' => $_FILES['files']['size'][$i] ?? 0,
-                'error' => $_FILES['files']['error'][$i] ?? UPLOAD_ERR_OK,
-            ], ['quality' => $quality, 'thumb_max' => $thumbMax, 'max_width' => $maxWidth, 'pano_width' => $panoWidth, 'pano_quality' => $panoQuality, 'full_quality' => $fullQuality, 'keep_original' => $keep, 'address' => $address]);
-            if (!$meta) {
-                $fail++;
-                continue;
-            }
-            $imgTitle = isset($postTitles[$i]) ? trim((string)$postTitles[$i]) : '';
-            $imgDesc = isset($postDescs[$i]) ? trim((string)$postDescs[$i]) : '';
-            $meta['title'] = $imgTitle;
-            $meta['desc'] = $imgDesc;
-            try {
-                $rowId = ImageRepository::insertRow($cid, $meta, $index);
-                if ($rowId <= 0) { throw new \RuntimeException('图片记录写入失败'); }
-            } catch (\Throwable $e) {
-                Plugin::log('create_album insertRow: ' . $e->getMessage());
-                ImageRepository::$lastError = '图片记录写入失败，请稍后重试';
-                $fail++;
-                continue;
-            }
-            $imgs[] = $meta['full'];
-            if ($firstExif === null) {
-                $firstExif = $meta['exif'];
-            }
-            $index++;
+            $failed += max(0, $count - 50);
+            $msg = '图集 #' . $cid . ' 已保存 ' . $saved . ' 张图片。新图集保留为草稿，请在图集列表中确认发布。';
+            if ($failed) { $msg .= '失败 ' . $failed . ' 张；成功项目已保留。' . implode('；', array_slice($errors, 0, 3)); }
+            if ($ajax) { pp_reply_json(!$failed, $msg, ['cid' => $cid, 'saved' => $saved, 'failed' => $failed]); }
+            pp_reply($msg, $failed ? 'error' : 'success', $cid);
+        } catch (\Throwable $e) {
+            Plugin::log('admin upload workflow: ' . $e->getMessage());
+            if ($ajax) { pp_reply_json(false, $e->getMessage(), ['retryable' => $e instanceof \RuntimeException], $e instanceof \DomainException ? 403 : 400); }
+            pp_reply($e->getMessage(), 'error');
         }
-
-        if (empty($imgs)) {
-            ImageRepository::removeFor($cid);
-            $db->query($db->delete($prefix . 'contents')->where('cid = ?', $cid));
-            $reason = trim((string)(ImageRepository::$lastError ?? ''));
-            $msg = $uploadErr !== 0
-                ? pp_upload_error($uploadErr)
-                : ($oversize > 0
-                    ? sprintf(_t('有 %d 张图片超过 64MB 上限，已跳过'), $oversize)
-                    : ($overpx > 0
-                        ? sprintf(_t('有 %d 张图片单边超过 20000px 上限，已跳过'), $overpx)
-                        : ($reason !== '' ? $reason : _t('没有图片成功入库（可能格式不支持或缺少转换工具）'))));
-            if ($ajax) { pp_reply_json(false, $msg); }
-            pp_reply($msg, 'error');
-        }
-
-        ImageRepository::syncPostFields($cid);
-        pp_set_field($cid, 'device', $device !== '' ? $device : trim((string)($firstExif['make'] ?? '') . ' ' . (string)($firstExif['model'] ?? '')));
-        pp_set_field($cid, 'location', $address);
-        if ($tags !== '') {
-            pp_set_field($cid, 'tags', $tags);
-        }
-        $msg = sprintf(_t('已发布图集「%s」，共 %d 张图片'), $title, count($imgs));
-        if ($ajax) { pp_reply_json(true, $msg); }
-        pp_reply($msg);
     }
 
     if ($action === 'update_album') {
@@ -643,7 +585,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $desc = trim((string)($_POST['desc'] ?? ''));
         $addr = trim((string)($_POST['address'] ?? ''));
         if ($rowId > 0) {
-            $row = $db->fetchRow($db->select('cid')->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
+            $row = AdminRepository::readRow($db->select('cid')->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限修改该图片'); }
             ImageRepository::setImageMeta($rowId, $title, $desc, $addr);
             if ($row && (int)$row['cid'] > 0) {
@@ -660,7 +602,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
         if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
-        $rowIds = (array)($_POST['rowIds'] ?? []);
+        $rowIds = array_map('intval', (array)($_POST['rowIds'] ?? []));
+        $existing = array_map(static function ($row) { return (int)$row['id']; }, AdminRepository::readAll($db->select('id')->from(ImageRepository::table())->where('cid = ?', $cid), true));
+        $requested = $rowIds; sort($requested); sort($existing);
+        if ($requested !== $existing || count($rowIds) !== count(array_unique($rowIds))) {
+            pp_deny('图片列表已变化或包含其他图集图片，请刷新后重试');
+        }
         $order = 0;
         foreach ($rowIds as $rid) {
             $rid = (int)$rid;
@@ -681,7 +628,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $ajax = !empty($_POST['ajax']);
         $rowId = (int)($_POST['rowId'] ?? 0);
         if ($rowId > 0) {
-            $row = $db->fetchRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1));
+            $row = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限删除该图片'); }
             ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
             $db->query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
@@ -697,7 +644,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         pp_require_admin(); // 一键清理全站非插件文章：仅管理员
         // 汇总“本插件发布的图集”cid：有 img 自定义字段 或 在 infinitytime_images 表里
         $pluginCids = [];
-        foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name = ?', 'img')) as $f) {
+        foreach ($db->fetchAll($db->select('cid')->from($prefix . 'fields')->where('name IN (?, ?)', 'img', AdminRepository::MARKER)) as $f) {
             $pluginCids[(int)$f['cid']] = true;
         }
         foreach ($db->fetchAll($db->select('cid')->from(ImageRepository::table())) as $f) {
@@ -858,84 +805,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /* ---------------------------------- 数据准备 ---------------------------------- */
 
-function pp_albums(string $prefix, int $authorId = 0): array
+function pp_albums(): array
 {
-    $db = Db::get();
-    $q = $db->select('cid', 'title')->from($prefix . 'contents')->where('type = ?', 'post')->where('status = ?', 'publish');
-    if ($authorId > 0) {
-        // 贡献者只看到自己的图集（写操作已按作者校验，读取同样隔离）
-        $q->where('authorId = ?', $authorId);
-    }
-    $rows = $db->fetchAll($q->order('created', Db::SORT_DESC));
-    if (!$rows) {
-        return [];
-    }
-
-    // 一次性取回所有图集的 img/device/tags/location 字段，避免 N+1 查询
-    $cids = array_map(fn($r) => (int)$r['cid'], $rows);
-    $markers = implode(',', array_fill(0, count($cids), '?'));
-    $all = $db->fetchAll(
-        $db->select('cid', 'name', 'str_value')->from($prefix . 'fields')
-            ->where('cid IN (' . $markers . ')', ...$cids)
-            ->where("name IN ('img','device','tags','location')")
-    );
-    $byCid = [];
-    foreach ($all as $f) {
-        $byCid[(int)$f['cid']][$f['name']] = $f['str_value'];
-    }
-
-    $out = [];
-    foreach ($rows as $r) {
-        $cid = (int)$r['cid'];
-        $img = $byCid[$cid]['img'] ?? '';
-        if ($img !== '') {
-            $r['img_count'] = count(array_filter(explode("\n", $img)));
-            $r['device'] = $byCid[$cid]['device'] ?? '';
-            $r['tags'] = $byCid[$cid]['tags'] ?? '';
-            $r['location'] = $byCid[$cid]['location'] ?? '';
-            $out[] = $r;
-        }
-    }
-    return $out;
+    global $user;
+    return AdminRepository::page((int)$user->uid, pp_is_admin(), max(1, (int)($_GET['page'] ?? 1)), is_string($_GET['q'] ?? null) ? $_GET['q'] : '');
 }
 
-/** 渲染「已发布图集」卡片：面板主视图与 AJAX 局部刷新共用。 */
-function pp_render_albums_card(array $albums, $options): string
+/** 仅渲染当前页的图集摘要；图片列表按需读取。 */
+function pp_render_albums_card(array $result, $options): string
 {
+    $albums = $result['items'];
+    $page = (int)$result['page'];
+    $query = (string)$result['query'];
     ob_start();
     ?>
-    <div class="pp-card" id="pp-albums-card">
-      <h2>已发布图集 <span class="pp-sub">拖动图片可调整顺序</span></h2>
+    <div class="pp-card" id="pp-albums-card" data-page="<?php echo $page; ?>" data-query="<?php echo htmlspecialchars($query); ?>">
+      <h2>图集 <span class="pp-sub">共 <?php echo (int)$result['total']; ?> 组 · 每页 <?php echo AdminRepository::PAGE_SIZE; ?> 组</span></h2>
+      <form method="get" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>#albums" class="pp-album-search">
+        <input type="hidden" name="panel" value="InfinityTime/panel.php">
+        <label for="pp-album-query">搜索图集标题</label>
+        <input id="pp-album-query" type="search" name="q" maxlength="100" value="<?php echo htmlspecialchars($query); ?>">
+        <button type="submit" class="pp-btn gray pp-small">搜索</button>
+      </form>
       <?php if (!$albums): ?>
         <div class="pp-meta">暂无图集。</div>
-      <?php else:
-          $imagesByCid = ImageRepository::rowsForCids(array_column($albums, 'cid'));
-          foreach ($albums as $al): $images = $imagesByCid[(int)$al['cid']] ?? []; ?>
-        <details class="pp-album">
+      <?php else: foreach ($albums as $al):
+          $cid = (int)$al['cid'];
+          $open = (int)($_GET['open'] ?? 0) === $cid;
+          $count = (int)$al['img_count'];
+          $canMutate = $al['status'] === 'draft' || pp_can_publish(); ?>
+        <details class="pp-album"<?php echo $open ? ' open' : ''; ?>>
           <summary class="pp-album-summary">
-            <strong><?php echo htmlspecialchars($al['title']); ?>
-              <span class="pp-meta">（<?php echo count($images) ?: $al['img_count']; ?> 张）</span>
-            </strong>
+            <strong><?php echo htmlspecialchars($al['title']); ?></strong>
+            <span class="pp-meta">（<?php echo $count; ?> 张）· <?php echo $al['status'] === 'draft' ? '草稿' : '已发布'; ?></span>
           </summary>
           <div class="pp-album-toolbar">
-            <span class="pp-meta">共 <?php echo count($images) ?: $al['img_count']; ?> 张</span>
+            <span class="pp-meta">共 <?php echo $count; ?> 张<?php echo $canMutate ? ' · 拖动图片可调整顺序' : ' · 只读'; ?></span>
             <span class="pp-album-actions">
-              <a class="pp-meta" target="_blank" href="<?php echo htmlspecialchars(Helper::url('index.php', $options->siteUrl)); ?>">前台查看</a>
-              <form method="post" style="display:inline" class="pp-delete-album">
+              <a class="pp-meta" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page, 'q' => $query, 'open' => $cid])); ?>#albums">查看图片 / 无脚本编辑</a>
+              <?php if ($canMutate): ?>
+              <a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['append' => $cid])); ?>#upload" data-append-cid="<?php echo $cid; ?>" data-append-title="<?php echo htmlspecialchars($al['title']); ?>">追加图片</a>
+              <?php if ($al['status'] === 'draft' && pp_can_publish()): ?>
+              <form method="post" style="display:inline" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
+                <?php echo pp_csrf_input(); ?>
+                <input type="hidden" name="action" value="publish_album">
+                <input type="hidden" name="cid" value="<?php echo $cid; ?>">
+                <button class="pp-btn pp-small" type="submit">确认发布图集</button>
+              </form>
+              <?php endif; ?>
+              <form method="post" action="<?php echo htmlspecialchars(pp_panel_url()); ?>" style="display:inline" class="pp-delete-album">
+                <?php echo pp_csrf_input(); ?>
                 <input type="hidden" name="action" value="delete_album">
-                <input type="hidden" name="cid" value="<?php echo (int)$al['cid']; ?>">
+                <input type="hidden" name="cid" value="<?php echo $cid; ?>">
                 <button class="pp-btn red pp-small" type="submit" data-loading="删除中…">删除</button>
               </form>
+              <?php else: ?><span class="pp-meta">已发布图集只读；修改需编辑或管理员权限</span><?php endif; ?>
             </span>
           </div>
-
+          <?php if ($canMutate): ?>
           <details class="pp-album-edit">
             <summary>编辑图集信息</summary>
-            <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+            <form method="post" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
+              <?php echo pp_csrf_input(); ?>
               <input type="hidden" name="action" value="update_album">
-              <input type="hidden" name="cid" value="<?php echo (int)$al['cid']; ?>">
+              <input type="hidden" name="cid" value="<?php echo $cid; ?>">
               <div class="pp-grid" style="margin-top:10px">
-                <div class="pp-row"><label>标题</label><input type="text" name="title" value="<?php echo htmlspecialchars($al['title']); ?>"></div>
+                <div class="pp-row"><label>标题</label><input type="text" name="title" required value="<?php echo htmlspecialchars($al['title']); ?>"></div>
                 <div class="pp-row"><label>设备</label><input type="text" name="device" value="<?php echo htmlspecialchars($al['device']); ?>"></div>
                 <div class="pp-row"><label>标签</label><input type="text" name="tags" value="<?php echo htmlspecialchars($al['tags']); ?>"></div>
                 <div class="pp-row"><label>地点 / 地址</label><input type="text" name="address" value="<?php echo htmlspecialchars($al['location']); ?>"></div>
@@ -943,27 +878,36 @@ function pp_render_albums_card(array $albums, $options): string
               <button class="pp-btn" type="submit" style="margin-top:6px">保存</button>
             </form>
           </details>
-
-          <!-- 图片列表按需加载：展开时才 AJAX 拉取，避免图集多时首屏 DOM 过大 -->
-          <div class="pp-thumbs" data-cid="<?php echo (int)$al['cid']; ?>" data-loaded="0"><div class="pp-meta">展开后加载图片…</div></div>
+          <?php endif; ?>
+          <div class="pp-thumbs" data-cid="<?php echo $cid; ?>" data-loaded="<?php echo $open ? '1' : '0'; ?>"><?php
+            if ($open) { echo pp_render_album_thumbs(ImageRepository::rowsFor($cid), $canMutate); }
+            else { echo '<div class="pp-meta">展开后加载图片…</div>'; }
+          ?></div>
         </details>
       <?php endforeach; endif; ?>
+      <nav class="pp-album-pagination pp-pagination" aria-label="图集分页">
+        <?php if ($page > 1): ?><a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page - 1, 'q' => $query])); ?>#albums">上一页</a><?php endif; ?>
+        <span>第 <?php echo $page; ?> / <?php echo (int)$result['pages']; ?> 页</span>
+        <?php if ($page < (int)$result['pages']): ?><a class="pp-btn gray pp-small" href="<?php echo htmlspecialchars(pp_panel_url(['page' => $page + 1, 'q' => $query])); ?>#albums">下一页</a><?php endif; ?>
+      </nav>
     </div>
     <?php
     return (string)ob_get_clean();
 }
 
 /** 渲染单个图集的图片列表（展开时 AJAX 按需加载）。 */
-function pp_render_album_thumbs(array $images): string
+function pp_render_album_thumbs(array $images, bool $canEdit = true): string
 {
     ob_start();
     ?>
     <?php foreach ($images as $img): ?>
       <div class="pp-img">
         <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
-        <div class="cap"><?php echo htmlspecialchars(pp_exif_summary($img['exif'])); ?></div>
+        <div class="cap"><?php echo htmlspecialchars(pp_exif_summary((array)($img['exif'] ?? []))); ?></div>
         <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
+        <?php if ($canEdit): ?>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="set_image_meta">
           <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
           <label class="addr-label">图片标题</label>
@@ -975,10 +919,12 @@ function pp_render_album_thumbs(array $images): string
           <button class="pp-btn gray" type="submit">保存图片信息</button>
         </form>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="delete_image">
           <input type="hidden" name="rowId" value="<?php echo $img['id']; ?>">
           <button class="pp-btn red" type="submit">删除</button>
         </form>
+        <?php endif; ?>
       </div>
     <?php endforeach; ?>
     <?php
@@ -987,7 +933,7 @@ function pp_render_album_thumbs(array $images): string
 
 $notice = $options->request->get('notice');
 $noticeType = $options->request->get('noticeType', 'success');
-$albums = pp_albums($prefix, pp_is_admin() ? 0 : (int)$user->uid);
+$albums = pp_albums();
 $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
 $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
 $maxWidth = (int)Plugin::opt('infinitytimeMaxWidth', Plugin::DEFAULT_MAX_WIDTH);
@@ -1006,6 +952,17 @@ $ppRel = str_replace('\\', '/', substr(__DIR__, strlen(rtrim((string)__TYPECHO_R
 if (strpos($ppRel, '/') !== 0) { $ppRel = '/usr/plugins/InfinityTime'; }
 $ppPluginWeb = rtrim((string)$options->siteUrl, '/') . $ppRel;
 $ppCsrf = pp_csrf_token();
+$ppUploadTarget = null;
+if (!empty($_GET['append'])) {
+    $ppUploadTarget = AdminRepository::album((int)$_GET['append'], (int)$user->uid, pp_is_admin());
+    if ($ppUploadTarget) {
+        $counts = AdminRepository::counts([(int)$ppUploadTarget['cid']]);
+        $ppUploadTarget['count'] = $counts[(int)$ppUploadTarget['cid']] ?? 0;
+    } else {
+        $notice = '图集不存在或没有权限追加图片'; $noticeType = 'error';
+    }
+}
+$ppOperationKey = bin2hex(random_bytes(16));
 $ppJobState = pp_read_json(pp_data_file() . '/job.json');
 
 /* ---------------------------------- 视图 ---------------------------------- */
@@ -1028,7 +985,7 @@ include $adminDir . '/menu.php';
       <div class="typecho-page-title"><h2>InfinityTime 图片分享</h2></div>
       <nav class="pp-tabs" role="tablist">
         <button type="button" class="pp-tab active" data-tab="upload">上传发布</button>
-        <button type="button" class="pp-tab" data-tab="albums">已发布图集</button>
+        <button type="button" class="pp-tab" data-tab="albums">图集与草稿</button>
         <button type="button" class="pp-tab" data-tab="site">站点信息</button>
         <button type="button" class="pp-tab" data-tab="contacts">联系方式</button>
         <button type="button" class="pp-tab" data-tab="convert">转换设置</button>
@@ -1037,13 +994,16 @@ include $adminDir . '/menu.php';
       <!-- 上传发布 -->
       <section class="pp-panel active" data-panel="upload">
       <div class="pp-card">
-        <h2>上传并发布图集</h2>
+        <h2>上传图片</h2>
+        <p class="pp-meta" id="pp-upload-target"><?php echo $ppUploadTarget ? '追加到「' . htmlspecialchars($ppUploadTarget['title']) . '」' : '新图集先保存草稿，上传完成后再确认发布。'; ?></p>
         <form id="pp-upload-form" method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="create_album">
-          <input type="hidden" name="_" value="<?php echo htmlspecialchars($ppCsrf); ?>">
+          <input type="hidden" name="operation_key" value="<?php echo $ppOperationKey; ?>">
+          <input type="hidden" name="cid" id="pp-upload-cid" value="<?php echo (int)($ppUploadTarget['cid'] ?? 0); ?>">
           <div class="pp-grid">
             <div>
-              <div class="pp-row"><label>图集标题 *</label><input type="text" name="title" required></div>
+              <div class="pp-row"><label>图集标题 *</label><input type="text" name="title" required value="<?php echo htmlspecialchars($ppUploadTarget['title'] ?? ''); ?>"></div>
               <div class="pp-row"><label>拍摄设备</label><input type="text" name="device" placeholder="如 Sony A7M4 / iPhone 17 Pro（留空取首图 EXIF）"></div>
               <div class="pp-row"><label>地点 / 地址</label><input type="text" name="address" placeholder="如 福建 福州 三坊七巷（手动填写）"></div>
               <div class="pp-row"><label>标签</label><input type="text" name="tags" placeholder="如 城市,夜景"></div>
@@ -1064,8 +1024,11 @@ include $adminDir . '/menu.php';
             <span class="pp-msg">上传中…</span>
           </div>
           <div class="pp-foot">
-            <button class="pp-btn" type="submit">发布图集</button>
-            <span class="pp-meta">每张自动转 WebP 全图 + 缩略图，并按设置保留原图；选择后可逐张填写标题/描述，拖动卡片可排序。</span>
+            <button class="pp-btn" id="pp-upload-submit" type="submit">保存图片到图集</button>
+            <button class="pp-btn gray" id="pp-upload-retry" type="button" hidden>仅重试失败图片</button>
+            <button class="pp-btn" id="pp-upload-publish" type="button" hidden>确认发布图集</button>
+            <button class="pp-btn gray" id="pp-upload-new" type="button" hidden>新建另一图集</button>
+            <span class="pp-meta">逐张上传并转换 WebP，按设置保留原图。已保存图片刷新后仍在图集中；未完成图片需重新选择本地文件。</span>
           </div>
         </form>
       </div>
@@ -1075,6 +1038,7 @@ include $adminDir . '/menu.php';
       <div class="pp-card">
         <h2>站点信息 / 关于</h2>
         <form method="post" enctype="multipart/form-data" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="save_site">
           <div class="pp-row"><label>头像 / 站点图标</label>
             <div class="pp-col">
@@ -1096,6 +1060,7 @@ include $adminDir . '/menu.php';
       <div class="pp-card">
         <h2>联系方式 / 联系我</h2>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="save_contacts">
           <div class="pp-note"><span class="pp-meta">加一个填一个；「状态」选“停用”即在前台隐藏（数据保留）。点击图标按钮即可选择联系方式图标。</span></div>
           <div id="pp-contact-rows">
@@ -1129,6 +1094,7 @@ include $adminDir . '/menu.php';
       <div class="pp-card">
         <h2>WebP 转换设置</h2>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="save_settings">
           <div class="pp-group">通用 · 上传保留原图</div>
           <div class="pp-row"><label>保留原图</label>
@@ -1192,16 +1158,34 @@ include $adminDir . '/menu.php';
         <div class="pp-maintain">
           <div>
             <button class="pp-btn gray" type="button" data-run="cleanup">清理孤儿文件</button>
+            <noscript><form method="post" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
+              <?php echo pp_csrf_input(); ?>
+              <input type="hidden" name="action" value="maintenance">
+              <input type="hidden" name="job" value="cleanup">
+              <button class="pp-btn gray" type="submit">清理孤儿文件（处理 / 继续一批）</button>
+            </form></noscript>
             <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-cleanup"></div></div><span class="pp-msg" id="pp-msg-cleanup"></span></div>
             <div class="pp-meta" style="margin-top:8px">删除所有不被任何图集引用的 original/full/thumb 文件，并清理空目录。</div>
           </div>
           <div>
             <button class="pp-btn gray" type="button" data-run="rebuild">重建缩略图/全图</button>
+            <noscript><form method="post" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
+              <?php echo pp_csrf_input(); ?>
+              <input type="hidden" name="action" value="maintenance">
+              <input type="hidden" name="job" value="rebuild">
+              <button class="pp-btn gray" type="submit">重建缩略图/全图（处理 / 继续一批）</button>
+            </form></noscript>
             <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-rebuild"></div></div><span class="pp-msg" id="pp-msg-rebuild"></span></div>
             <div class="pp-meta" style="margin-top:8px">按当前质量/尺寸设置，用原图重新生成全部 full/thumb（改设置后批量重做）。</div>
           </div>
           <div>
             <button class="pp-btn gray" type="button" data-run="resync">重建尺寸字段</button>
+            <noscript><form method="post" action="<?php echo htmlspecialchars(pp_panel_url()); ?>">
+              <?php echo pp_csrf_input(); ?>
+              <input type="hidden" name="action" value="maintenance">
+              <input type="hidden" name="job" value="resync">
+              <button class="pp-btn gray" type="submit">重建尺寸字段（处理 / 继续一批）</button>
+            </form></noscript>
             <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-resync"></div></div><span class="pp-msg" id="pp-msg-resync"></span></div>
             <div class="pp-meta" style="margin-top:8px">重算所有图集的文章字段（含缩略图宽高），供首页瀑布流按比例预占位，避免图片加载时顺序跳变。升级后跑一次即可。</div>
           </div>
@@ -1223,6 +1207,9 @@ include $adminDir . '/menu.php';
     window.PP_ADMIN = <?php echo json_encode([
       'url' => Helper::url('InfinityTime/panel.php'),
       'token' => $ppCsrf,
+      'userId' => (int)$user->uid,
+      'canPublish' => pp_can_publish(),
+      'uploadTarget' => $ppUploadTarget,
       'defaults' => [
         'quality' => Plugin::DEFAULT_QUALITY,
         'thumbMax' => Plugin::DEFAULT_THUMB_MAX,
@@ -1238,7 +1225,7 @@ include $adminDir . '/menu.php';
         'done' => (int)($ppJobState['done'] ?? 0),
         'finished' => !empty($ppJobState['finished']),
       ],
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+    ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
     </script>
     <script src="<?php echo htmlspecialchars($ppPluginWeb . '/assets/admin.js'); ?>"></script>
 </main>

@@ -3,13 +3,39 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.13.4
+ * @version 1.14.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>
 <?php
+// HTML、无 JavaScript 导航与 JSON 接口共用同一公开读取模型。
+$__galleryBase = (string)$this->options->siteUrl;
+$__galleryInput = $_GET;
+if ($this->is('category') && empty($__galleryInput['category'])) { $__galleryInput['category'] = $this->getArchiveSlug(); }
+if ($this->is('tag') && empty($__galleryInput['tag'])) { $__galleryInput['tag'] = (string)$this->getArchiveTitle(); }
+$__galleryRequest = pp_gallery_request($__galleryInput);
+$__galleryError = false;
+try { $__gallery = pp_gallery_read($__galleryRequest, $__galleryBase); }
+catch (\Throwable $e) {
+    $__galleryError = true;
+    $__gallery = ['albums' => [], 'next_cursor' => null, 'next_url' => null, 'scan_limited' => false];
+    if (!headers_sent()) { http_response_code(503); }
+}
+if (($_GET['infinitytime_api'] ?? '') === 'gallery') {
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=UTF-8');
+        header('Cache-Control: no-store');
+        header('X-Content-Type-Options: nosniff');
+    }
+    if ($__gallery['next_cursor'] !== null) {
+        $__gallery['next_url'] = pp_gallery_url($__galleryBase, $__galleryRequest, ['cursor' => $__gallery['next_cursor'], 'infinitytime_api' => 'gallery']);
+    }
+    echo json_encode(['version' => 1, 'ok' => !$__galleryError, 'filters' => $__galleryRequest] + $__gallery, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    exit;
+}
+$__galleryGroups = pp_gallery_groups($__gallery['albums']);
 // 静态资源版本号（以文件 mtime 生成，改动即失效缓存，避免改后还看到旧的 CSS/JS）
-$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js') . (string)@filemtime(__DIR__ . '/assets/js/init.js')), 0, 8);
+$__assetVer = substr(md5((string)@filemtime(__DIR__ . '/assets/css/main.css') . (string)@filemtime(__DIR__ . '/assets/js/main.js') . (string)@filemtime(__DIR__ . '/assets/js/lightbox.js') . (string)@filemtime(__DIR__ . '/assets/js/init.js') . (string)@filemtime(__DIR__ . '/assets/js/gallery-navigation.js') . (string)@filemtime(__DIR__ . '/assets/css/gallery.css')), 0, 8);
 // JSON 嵌入 HTML 属性时的安全标志：把 ' " & < > 转成 \uXXXX，
 // 防止用户标题/描述/文件名等含引号或尖括号时破坏属性或注入脚本（存储型 XSS）。
 $__jsonFlags = JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG;
@@ -37,6 +63,7 @@ if (!headers_sent()) {
   <link rel="icon" href="<?php echo htmlspecialchars(pp_opt('infinitytimeSiteLogo', (string)$this->options->IconUrl, $this->options), ENT_QUOTES); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/main.css?v=' . $__assetVer); ?>" />
   <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/iconfont.css'); ?>">
+  <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/gallery.css?v=' . $__assetVer); ?>">
   <link rel="stylesheet" type="text/css" href="<?php $this->options->themeUrl('assets/css/pannellum.css'); ?>" />
   <noscript>
     <link rel="stylesheet" href="<?php $this->options->themeUrl('assets/css/noscript.css'); ?>" />
@@ -68,124 +95,37 @@ if (!headers_sent()) {
     <!-- Main -->
     <div id="main">
 
+      <section class="gallery-discovery" aria-label="查找照片">
+        <form method="get" action="<?php echo htmlspecialchars(pp_gallery_url($__galleryBase), ENT_QUOTES); ?>" id="gallery-search">
+          <label>搜索标题和描述<input type="search" name="q" maxlength="120" value="<?php echo htmlspecialchars($__galleryRequest['q'], ENT_QUOTES); ?>" placeholder="相册或照片关键词" /></label>
+          <label>照片类型<select name="kind"><option value="all">全部</option><option value="pano"<?php if ($__galleryRequest['kind'] === 'pano') echo ' selected'; ?>>全景</option></select></label>
+          <label>拍摄月份<input type="month" name="month" value="<?php echo htmlspecialchars($__galleryRequest['month'], ENT_QUOTES); ?>" /></label>
+          <label>标签<input type="text" name="tag" maxlength="100" value="<?php echo htmlspecialchars($__galleryRequest['tag'], ENT_QUOTES); ?>" placeholder="完整标签" /></label>
+          <?php if ($__galleryRequest['category']): ?><input type="hidden" name="category" value="<?php echo htmlspecialchars($__galleryRequest['category'], ENT_QUOTES); ?>" /><?php endif; ?>
+          <?php if ($__galleryRequest['album']): ?><input type="hidden" name="album" value="<?php echo $__galleryRequest['album']; ?>" /><?php endif; ?>
+          <button type="submit">查找</button>
+          <a href="<?php echo htmlspecialchars(pp_gallery_url($__galleryBase), ENT_QUOTES); ?>">全部照片</a>
+        </form>
+        <p class="gallery-filter-help">关键词匹配标题或描述；多个筛选条件同时生效。月份优先使用拍摄时间，无拍摄时间时使用上传时间（历史照片使用相册时间）。</p>
+        <?php if ($__galleryGroups): ?><nav class="gallery-month-nav" aria-label="本页月份"><?php foreach ($__galleryGroups as $month => $items): ?><a href="#month-<?php echo htmlspecialchars($month, ENT_QUOTES); ?>"><?php echo $month === 'unknown' ? '日期未知' : htmlspecialchars($month); ?></a><?php endforeach; ?></nav><?php endif; ?>
+      </section>
+      <p id="gallery-status" role="status"><?php
+        if ($__galleryError) echo '照片暂时无法加载，请稍后重试。';
+        elseif (!$__gallery['albums']) echo $__gallery['next_url'] ? '本批次没有匹配的照片，继续搜索可查看更早的相册。' : '没有符合条件的照片。';
+      ?></p>
       <div id="waterfall">
-      <?php while ($this->next()): ?>
-        <article class="thumb img-area">
-          <?php
-          // 将多行图片链接分割成数组；无图文章直接跳过
-          $images = array_values(array_filter(array_map('trim', explode("\n", (string)$this->fields->img))));
-          $firstImage = $images[0] ?? '';
-          if (!$firstImage) {
-              continue;
-          }
-          // 缩略图字段（InfinityTime 插件生成），无则回退使用原图
-          $thumbs = $this->fields->thumb ? array_map('trim', array_filter(explode("\n", $this->fields->thumb))) : null;
-          $firstThumb = $thumbs ? $thumbs[0] : $firstImage;
-          // EXIF / 地址（插件写入 JSON，按图片顺序）
-          $exifList = json_decode($this->fields->exif, true);
-          $addrList = json_decode($this->fields->addresses, true);
-          $imgTitles = json_decode($this->fields->titles, true);
-          $imgDescs = json_decode($this->fields->descs, true);
-          $panoList = json_decode($this->fields->panos, true);
-          $dimsList = json_decode($this->fields->dims, true);
-          $variantsList = json_decode($this->fields->variants, true);
-          if (!is_array($exifList)) { $exifList = []; }
-          if (!is_array($addrList)) { $addrList = []; }
-          if (!is_array($imgTitles)) { $imgTitles = []; }
-          if (!is_array($imgDescs)) { $imgDescs = []; }
-          if (!is_array($panoList)) { $panoList = []; }
-          if (!is_array($dimsList)) { $dimsList = []; }
-          if (!is_array($variantsList)) { $variantsList = []; }
-          // 去掉 null/空 字段，压缩内嵌 JSON；前端对缺失字段同样按“无”处理，展示不受影响。
-          $exifList = array_map(function ($e) {
-              return is_array($e) ? array_filter($e, function ($v) { return $v !== null && $v !== ''; }) : $e;
-          }, $exifList);
-          $exif0 = $exifList[0] ?? [];
-          $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
-          $imageAlt = trim((string)($imgTitles[0] ?? '')) ?: (trim((string)$this->title) ?: '照片');
-          ?>
-          <a class="image my-photo" aria-label="<?php echo htmlspecialchars(trim((string)$this->title) ?: $imageAlt, ENT_QUOTES); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
-             data-images='<?php echo json_encode($images, $__jsonFlags); ?>'
-             data-previews='<?php echo json_encode($thumbs ?: $images ?: [], $__jsonFlags); ?>'
-             data-exif='<?php echo json_encode($exifList, $__jsonFlags); ?>'
-             data-addresses='<?php echo json_encode($addrList, $__jsonFlags); ?>'
-             data-titles='<?php echo json_encode($imgTitles, $__jsonFlags); ?>'
-             data-descs='<?php echo json_encode($imgDescs, $__jsonFlags); ?>'
-             data-panos='<?php echo json_encode($panoList, $__jsonFlags); ?>'
-             data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'
-             data-variants='<?php echo json_encode($variantsList, $__jsonFlags); ?>'>
-            <img class="zmki_px my-photo"
-              alt="<?php echo htmlspecialchars($imageAlt, ENT_QUOTES); ?>"
-              src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"
-              loading="lazy" decoding="async"
-              data-fallback="<?php $this->options->themeUrl('assets/img/loading.gif'); ?>"
-              data-src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>" />
-          </a>
-          <h2><?php echo htmlspecialchars((string)$this->title); ?></h2>
-          <?php if($this->content): ?>
-          <div class="content-wrapper">
-            <p><?php $this->content('内容加载中...'); ?></p>
-          </div>
-          <?php endif; ?>
-          <li class="tag-info tag-info-bottom">
-            <?php if($this->fields->device): ?>
-            <span class="tag-device"><i class="iconfont icon-camera-lens-line"></i><?php echo htmlspecialchars((string)$this->fields->device); ?></span>
-            <?php endif; ?>
-            <?php if($this->fields->location): ?>
-            <span class="tag-location"><i class="iconfont icon-map-pin-2-line"></i><?php echo htmlspecialchars((string)$this->fields->location); ?></span>
-            <?php endif; ?>
-            <?php if (!empty($exif0['datetime'])): ?>
-            <span class="tag-time"><i class="iconfont icon-time-line"></i><?php echo htmlspecialchars(pp_date_cn((string)$exif0['datetime'])); ?></span>
-            <?php endif; ?>
-          </li>
-          <li class="tag-info">
-            <span class="tag-categorys"><?php $this->category(''); ?></span>
-            <?php if($this->tags): ?>
-            <span class="tag-list"><?php $this->tags('', true); ?></span>
-            <?php endif; ?>
-          </li>
-          <!-- EXIF 参数面板（灯箱内显示，卡片上隐藏） -->
-          <div class="exif-panel">
-            <div class="exif-title">拍摄参数</div>
-            <div class="exif-grid">
-              <?php if(!empty($exif0['make']) || !empty($exif0['model'])): ?>
-                <div class="exif-item"><span>相机</span><b><?php echo htmlspecialchars(trim(($exif0['make'] ?? '') . ' ' . ($exif0['model'] ?? ''))); ?></b></div>
-              <?php endif; ?>
-              <?php $exifLens = pp_exif_lens($exif0); ?>
-              <?php if($exifLens !== ''): ?>
-                <div class="exif-item"><span>镜头</span><b><?php echo htmlspecialchars($exifLens); ?></b></div>
-              <?php endif; ?>
-              <?php if(!empty($exif0['iso'])): ?><div class="exif-item"><span>ISO</span><b><?php echo (int)$exif0['iso']; ?></b></div><?php endif; ?>
-              <?php if(!empty($exif0['fnumber'])): ?><div class="exif-item"><span>光圈</span><b>f/<?php echo htmlspecialchars((string)$exif0['fnumber']); ?></b></div><?php endif; ?>
-              <?php if(!empty($exif0['exposure'])): ?><div class="exif-item"><span>快门</span><b><?php echo htmlspecialchars($exif0['exposure']); ?></b></div><?php endif; ?>
-              <?php $focalShow = $exif0['focal35'] ?? $exif0['focal'] ?? ''; ?>
-              <?php if(!empty($focalShow)): ?><div class="exif-item"><span>焦距</span><b><?php echo htmlspecialchars((string)$focalShow); ?>mm</b></div><?php endif; ?>
-              <?php if(!empty($exif0['flash'])): ?><div class="exif-item"><span>闪光</span><b>是</b></div><?php endif; ?>
-              <?php if(!empty($exif0['datetime'])): ?><div class="exif-item"><span>时间</span><b><?php echo htmlspecialchars(pp_date_cn((string)$exif0['datetime'])); ?></b></div><?php endif; ?>
-            </div>
-            <div class="exif-addr"><i class="iconfont icon-map-pin-2-line"></i><span class="exif-addr-text"><?php echo htmlspecialchars($addr0 ?: ''); ?></span></div>
-          </div>
-          <?php if (in_array(1, $panoList, true)): ?>
-          <span class="pano-badge">全景</span>
-          <?php endif; ?>
-        </article>
-      <?php endwhile; ?>
+        <?php foreach ($__galleryGroups as $month => $items): ?>
+          <h2 class="gallery-month-label" id="month-<?php echo htmlspecialchars($month, ENT_QUOTES); ?>"><?php echo $month === 'unknown' ? '日期未知' : htmlspecialchars($month); ?></h2>
+          <?php foreach ($items as $album): include __DIR__ . '/lib/gallery-card.php'; endforeach; ?>
+        <?php endforeach; ?>
       </div>
-      
-      <!-- 无限瀑布流：不渲染分页页码，仅计算总量供 #load-more 滚动加载使用 -->
-      <?php
-        $total = ceil($this->getTotal() / $this->parameter->pageSize);
-        $category = $this->is('category') ? $this->getArchiveSlug() : '';
-      ?>
-
-      <!-- 原有的 load-more div -->
-      <div id="load-more" data-page="1" data-total-pages="<?php echo $total; ?>"
-           data-pager-base="<?php echo htmlspecialchars($this->is('category')
-               ? (rtrim((string)$this->options->siteUrl, '/') . '/index.php/category/' . $this->getArchiveSlug() . '/')
-               : (rtrim((string)$this->options->siteUrl, '/') . '/index.php/page/'), ENT_QUOTES); ?>"></div>
+      <nav id="gallery-pagination" aria-label="照片分页">
+        <?php if ($__galleryRequest['cursor']): ?><a class="gallery-first" href="<?php echo htmlspecialchars(pp_gallery_url($__galleryBase, $__galleryRequest, ['cursor' => '']), ENT_QUOTES); ?>">回到第一页</a><?php endif; ?>
+        <?php if ($__gallery['next_url']): ?><a rel="next" href="<?php echo htmlspecialchars($__gallery['next_url'], ENT_QUOTES); ?>"><?php echo $__gallery['scan_limited'] ? '继续搜索更早的照片' : '下一页'; ?></a><?php endif; ?>
+      </nav>
+      <div id="load-more" data-page="1" data-total-pages="<?php echo $__gallery['next_url'] ? 2 : 1; ?>" data-next-url="<?php echo htmlspecialchars($__gallery['next_url'] ?? '', ENT_QUOTES); ?>"></div>
     </div>
 
-    <body>
       <!-- Footer -->
       <footer id="footer" class="panel">
             <div id="about">
@@ -247,6 +187,7 @@ if (!headers_sent()) {
   <script src="<?php $this->options->themeUrl('assets/js/pannellum.js'); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/lightbox.js?v=' . $__assetVer); ?>"></script>
   <script src="<?php $this->options->themeUrl('assets/js/main.js?v=' . $__assetVer); ?>"></script>
+  <script src="<?php $this->options->themeUrl('assets/js/gallery-navigation.js?v=' . $__assetVer); ?>"></script>
 </body>
 
 </html>
