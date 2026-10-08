@@ -13,6 +13,7 @@ namespace Typecho {
         public function rows($values): self { $this->values = $values; return $this; }
         public function where($clause, ...$values): self { $this->conditions[$clause] = $values; return $this; }
         public function order(...$args): self { return $this; }
+        public function limit($limit): self { return $this; }
         public function __toString(): string { return 'fixture:' . base64_encode(serialize($this)); }
         public function prepare(string $sql): string { return $sql; }
     }
@@ -31,7 +32,11 @@ namespace Typecho {
         public function insert($table): Query { return (new Query('insert'))->from($table); }
         public function delete($table): Query { return (new Query('delete'))->from($table); }
         public function update($table): Query { return (new Query('update'))->from($table); }
-        public function fetchAll($query): array { return $query->table === 'test_fields' ? $this->legacyFields : $this->images; }
+        public function fetchAll($query): array {
+            $rows = $query->table === 'test_fields' ? $this->legacyFields : $this->images;
+            if (isset($query->conditions['id = ?'])) { $id = $query->conditions['id = ?'][0]; $rows = array_values(array_filter($rows, static function ($row) use ($id) { return $row['id'] === $id; })); }
+            return $rows;
+        }
         public function query($query, $op = null) {
             if (is_string($query) && strpos($query, 'fixture:') === 0) {
                 if ($op !== self::WRITE) { throw new \RuntimeException('Locked reads must use writer'); }

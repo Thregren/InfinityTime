@@ -307,15 +307,18 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
     $result = ['finished' => true, 'total' => 0, 'done' => 0, 'current' => ''];
 
     try {
+    if ($ppMaintenance && ($_POST['mode'] ?? '') === 'errors') {
+        [$state] = MaintenanceState::open(pp_data_file(), $job, 'errors', (string)($_POST['job_id'] ?? ''), static function () { return []; });
+        pp_reply_json(true, '', MaintenanceState::response($state, max(0, (int)($_POST['offset'] ?? 0))));
+    }
     if ($job === 'rebuild') {
         [$state, $list] = MaintenanceState::open(pp_data_file(), $job, (string)($_POST['mode'] ?? 'start'), (string)($_POST['job_id'] ?? ''), static function () use ($db) {
             $rows = AdminRepository::readAll($db->select('id')->from(ImageRepository::table())->where('original <> ?', ''), true);
             return array_map(static function ($row) { return (int)$row['id']; }, $rows);
         });
-        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        if (!empty($state['finished'])) { pp_reply_json(true, '', MaintenanceState::response($state)); }
         pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
-        $failed = (int)($state['failed'] ?? 0);
         $batch = 3;
         $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
@@ -333,56 +336,66 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
                 break;
             }
             $snapshot = $list[$idx];
-            $rowId = is_array($snapshot) ? (int)$snapshot[0] : (int)$snapshot;
-            // 快照只决定候选身份；路径与归属在每批主库重读，避免删除/改绑后重建旧记录。
-            $live = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
-            if (!$live || empty($live['original'])) { $idx++; continue; }
-            $item = [$rowId, $live['original'], $live['full'], $live['thumb'], (int)($live['cid'] ?? 0)];
-            $src = ImageRepository::toAbs((string)$item[1]);
-            if (is_file($src)) {
-                $mw = $maxWidth;
-                $fq = $fullQuality;
-                $__info = @getimagesize($src);
-                if (is_array($__info) && ($__info[0] ?? 0) > 0 && ($__info[1] ?? 0) > 0
-                    && ImageRepository::isPano((int)$__info[0], (int)$__info[1])) {
-                    $mw = $panoWidth > 0 ? (int)min((int)$__info[0], $panoWidth) : 0; // 全景：独立宽度，0=不裁剪
-                    $fq = $panoQuality;
-                }
-                try {
-                    $res = MediaProcessor::process($src, ImageRepository::toAbs($item[2]), ImageRepository::toAbs($item[3]), $thumbMax, $quality, $mw, $fq);
-                    ImageRepository::updateVariants((int)$item[0], $res);
-                    if (!empty($item[4])) {
-                        $syncedCids[(int)$item[4]] = true;
+            // 字段失败的重试只同步该图集，绝不重复图片编码。
+            if (is_array($snapshot) && ($snapshot['task'] ?? '') === 'resync') {
+                $syncedCids[(int)$snapshot['id']] = true;
+                $idx++;
+                continue;
+            }
+            $rowId = is_array($snapshot) ? (int)($snapshot['id'] ?? $snapshot[0] ?? 0) : (int)$snapshot;
+            $cid = 0;
+            $stage = 'image_record';
+            $state['current'] = '图片 ID ' . $rowId;
+            try {
+                // 快照只决定候选身份；路径与归属在每批主库重读，避免删除/改绑后重建旧记录。
+                $live = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
+                if (!$live) { MaintenanceState::clearFailure($state, 'rebuild', $rowId); $idx++; continue; }
+                $cid = (int)($live['cid'] ?? 0);
+                $src = ImageRepository::toAbs((string)$live['original']);
+                if (empty($live['original']) || !is_file($src)) {
+                    MaintenanceState::failure($state, 'rebuild', $rowId, $cid, 'missing_original');
+                    $state['current'] .= '（缺原图）';
+                } else {
+                    $mw = $maxWidth;
+                    $fq = $fullQuality;
+                    $__info = @getimagesize($src);
+                    if (is_array($__info) && ($__info[0] ?? 0) > 0 && ($__info[1] ?? 0) > 0
+                        && ImageRepository::isPano((int)$__info[0], (int)$__info[1])) {
+                        $mw = $panoWidth > 0 ? (int)min((int)$__info[0], $panoWidth) : 0;
+                        $fq = $panoQuality;
                     }
-                } catch (\Throwable $e) {
-                    Plugin::log('rebuild ajax: id=' . $item[0] . ' ' . $e->getMessage());
-                    $failed++;
+                    $stage = 'conversion';
+                    $res = MediaProcessor::process($src, ImageRepository::toAbs((string)$live['full']), ImageRepository::toAbs((string)$live['thumb']), $thumbMax, $quality, $mw, $fq);
+                    $stage = 'image_record';
+                    ImageRepository::updateVariants($rowId, $res);
+                    MaintenanceState::clearFailure($state, 'rebuild', $rowId);
+                    if ($cid > 0) { $syncedCids[$cid] = true; }
                 }
-                $state['current'] = basename($src);
-            } else {
-                // 原图缺失：无法重建，计为失败（不要静默跳过）
-                $failed++;
-                $state['current'] = basename($src) . '（缺原图）';
+            } catch (\Throwable $e) {
+                Plugin::log('rebuild ajax: id=' . $rowId . ' ' . $e->getMessage());
+                MaintenanceState::failure($state, 'rebuild', $rowId, $cid, $stage);
             }
             $idx++;
         }
         foreach (array_keys($syncedCids) as $__c) {
-            try { ImageRepository::syncPostFields((int)$__c); } catch (\Throwable $e) {
+            try {
+                ImageRepository::syncPostFields((int)$__c);
+                MaintenanceState::clearFailure($state, 'resync', (int)$__c);
+            } catch (\Throwable $e) {
                 Plugin::log('rebuild sync: cid=' . $__c . ' ' . $e->getMessage());
-                $failed++;
+                MaintenanceState::failure($state, 'resync', (int)$__c, (int)$__c, 'field_sync');
                 $state['current'] = 'cid ' . $__c . '（字段同步失败，可重建字段重试）';
             }
         }
         $state['done'] = $idx;
-        $state['failed'] = $failed;
         $state['finished'] = $idx >= $total;
         MaintenanceState::save(pp_data_file(), $state);
-        $result = $state;
+        $result = MaintenanceState::response($state);
     } elseif ($job === 'cleanup') {
         [$state, $list] = MaintenanceState::open(pp_data_file(), $job, (string)($_POST['mode'] ?? 'start'), (string)($_POST['job_id'] ?? ''), static function () {
             return ImageRepository::orphanCandidates();
         });
-        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        if (!empty($state['finished'])) { pp_reply_json(true, '', MaintenanceState::response($state)); }
         pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
         $batch = 50;
@@ -394,7 +407,7 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
         $state['done'] = $idx;
         $state['finished'] = $idx >= count($list);
         MaintenanceState::save(pp_data_file(), $state);
-        $result = $state;
+        $result = MaintenanceState::response($state);
     } elseif ($job === 'resync') {
         // 重算每篇图集的聚合字段（addresses/titles/descs/panos，并补上 dims 宽高数组）。
         // 用于给已发布的历史文章补齐文章字段，使首页瀑布流能拿到图片比例做占位。
@@ -410,10 +423,9 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
             sort($list);
             return $list;
         });
-        if (!empty($state['finished'])) { pp_reply_json(true, '', $state); }
+        if (!empty($state['finished'])) { pp_reply_json(true, '', MaintenanceState::response($state)); }
         pp_write_json($__lockFile, ['uid' => $__uid, 'job' => $job, 'time' => time()]);
         $idx = (int)($state['done'] ?? 0);
-        $failed = (int)($state['failed'] ?? 0);
         $batch = 12; // 每次处理 12 篇，避免单次 AJAX 超时
         $started = microtime(true);
         $budget = 20;
@@ -422,24 +434,24 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
             if ((microtime(true) - $started) > $budget) {
                 break;
             }
-            $cid = (int)($list[$idx] ?? 0);
+            $cid = is_array($list[$idx]) ? (int)($list[$idx]['id'] ?? 0) : (int)$list[$idx];
             if ($cid > 0) {
                 try {
                     ImageRepository::syncPostFields($cid);
+                    MaintenanceState::clearFailure($state, 'resync', $cid);
                     $state['current'] = 'cid ' . $cid;
                 } catch (\Throwable $e) {
                     Plugin::log('resync ajax: cid=' . $cid . ' ' . $e->getMessage());
-                    $failed++;
+                    MaintenanceState::failure($state, 'resync', $cid, $cid, 'field_sync');
                     $state['current'] = 'cid ' . $cid . '（失败）';
                 }
             }
             $idx++;
         }
         $state['done'] = $idx;
-        $state['failed'] = $failed;
         $state['finished'] = $idx >= $total;
         MaintenanceState::save(pp_data_file(), $state);
-        $result = $state;
+        $result = MaintenanceState::response($state);
     } elseif ($job === 'albums_html') {
         // 局部刷新图集列表：只返回卡片 HTML，避免为刷新列表重新渲染整个后台页面
         header('Content-Type: text/html; charset=utf-8');
@@ -466,7 +478,8 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
 
     } catch (\Throwable $e) {
         Plugin::log('maintenance: ' . $e->getMessage());
-        pp_reply_json(false, $e->getMessage(), ['retryable' => true], 500);
+        $safeMessage = $e instanceof \TypechoPlugin\InfinityTime\Lib\MaintenanceException ? $e->getMessage() : '维护请求未完成，请刷新核对任务状态并检查服务器日志';
+        pp_reply_json(false, $safeMessage, ['retryable' => true], 500);
     }
 
     if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }
@@ -894,7 +907,7 @@ function pp_render_album_thumbs(array $images, bool $canEdit = true): string
     ?>
     <?php foreach ($images as $img): ?>
       <div class="pp-img">
-        <img src="<?php echo htmlspecialchars(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb']))); ?>" alt="" loading="lazy" decoding="async">
+        <img src="<?php echo htmlspecialchars(ImageRepository::versionUrl(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb'])), (array)($img['exif'] ?? []))); ?>" alt="" loading="lazy" decoding="async">
         <div class="cap"><?php echo htmlspecialchars(pp_exif_summary((array)($img['exif'] ?? []))); ?></div>
         <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
         <?php if ($canEdit): ?>
@@ -955,7 +968,7 @@ if (!empty($_GET['append'])) {
     }
 }
 $ppOperationKey = bin2hex(random_bytes(16));
-try { $ppJobState = pp_read_json(pp_data_file() . '/job.json'); }
+try { $ppJobState = pp_is_admin() ? MaintenanceState::response(pp_read_json(pp_data_file() . '/job.json')) : []; }
 catch (\Throwable $e) { $ppJobState = []; $notice = $e->getMessage(); $noticeType = 'error'; }
 
 /* ---------------------------------- 视图 ---------------------------------- */
@@ -1146,6 +1159,7 @@ include $adminDir . '/menu.php';
 
       <!-- 维护 -->
       <section class="pp-panel" data-panel="maintain">
+      <?php if (pp_is_admin()) { include __DIR__ . '/health-panel.php'; } ?>
       <div class="pp-card">
         <h2>维护</h2>
         <div class="pp-maintain">
@@ -1182,6 +1196,15 @@ include $adminDir . '/menu.php';
             <div class="pp-progress"><div class="pp-bar-outer"><div class="pp-bar" id="pp-bar-resync"></div></div><span class="pp-msg" id="pp-msg-resync"></span></div>
             <div class="pp-meta" style="margin-top:8px">重算所有图集的文章字段（含缩略图宽高），供首页瀑布流按比例预占位，避免图片加载时顺序跳变。升级后跑一次即可。</div>
           </div>
+          <div id="pp-maintenance-failures" hidden>
+            <h3>维护失败清单</h3>
+            <p id="pp-failure-summary" role="status"></p>
+            <ol id="pp-failure-list"></ol>
+            <button class="pp-btn gray pp-small" type="button" id="pp-failure-prev">上一页</button>
+            <button class="pp-btn gray pp-small" type="button" id="pp-failure-next">下一页</button>
+            <button class="pp-btn pp-small" type="button" id="pp-retry-failures">仅重试失败项</button>
+            <p class="pp-meta">图片失败重建该图片；图集字段失败只重建该图集字段。清单保留到开始下一次新任务。</p>
+          </div>
           <div>
             <button class="pp-btn red" type="button" id="pp-clean-posts">清理非插件文章</button>
             <div class="pp-meta" style="margin-top:8px">删除所有不是 InfinityTime 发布的 type=post 文章（不含本插件图集；会连同自定义字段一起删除）。</div>
@@ -1212,12 +1235,7 @@ include $adminDir . '/menu.php';
         'panoWidth' => Plugin::DEFAULT_PANO_WIDTH,
         'panoQuality' => Plugin::DEFAULT_PANO_QUALITY,
       ],
-      'job' => [
-        'job' => (string)($ppJobState['job'] ?? ''),
-        'total' => (int)($ppJobState['total'] ?? 0),
-        'done' => (int)($ppJobState['done'] ?? 0),
-        'finished' => !empty($ppJobState['finished']),
-      ],
+      'job' => $ppJobState,
     ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
     </script>
     <script src="<?php echo htmlspecialchars($ppPluginWeb . '/assets/admin.js'); ?>"></script>

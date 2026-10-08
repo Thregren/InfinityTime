@@ -145,6 +145,7 @@
       update();
     }
     function loadMore(manual) {
+      if (!manual && (document.hidden || (window.InfinityDataSaver && !window.InfinityDataSaver.allowBackground()))) return Promise.resolve(false);
       // 自动滚动与主动请求共享结果；busy 不能被调用方当作分页失败。
       if (activeRequest) return activeRequest.promise;
       if (!hasMore() || (failed && !manual)) return Promise.resolve(false);

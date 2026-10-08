@@ -116,6 +116,20 @@ function pp_gallery_variant($input): array
     return $out;
 }
 
+/** 只改变公开 URL，数据库文件路径保持不变，删除和重建仍定位原文件。 */
+function pp_gallery_version_url(string $url, array $exif): string
+{
+    $version = $exif['_infinity_media_version'] ?? '';
+    if ($url === '' || !is_string($version) || !preg_match('/^[a-f0-9]{32}$/D', $version)) { return $url; }
+    $fragment = explode('#', $url, 2);
+    $parts = explode('?', $fragment[0], 2);
+    $query = array_filter(explode('&', $parts[1] ?? ''), static function ($part) {
+        return $part !== '' && rawurldecode(explode('=', $part, 2)[0]) !== 'itv';
+    });
+    $query[] = 'itv=' . $version;
+    return $parts[0] . '?' . implode('&', $query) . (isset($fragment[1]) ? '#' . $fragment[1] : '');
+}
+
 /** 仓库照片和仅有自定义字段的历史照片使用相同公开结构。 */
 function pp_gallery_photo(array $row, int $cid, int $albumCreated, bool $legacy = false): ?array
 {
@@ -127,13 +141,18 @@ function pp_gallery_photo(array $row, int $cid, int $albumCreated, bool $legacy 
     $id = (int)($row['id'] ?? 0) > 0 ? 'p-' . (int)$row['id'] : 'l-' . substr(hash('sha256', $cid . "\n" . $url), 0, 20);
     $month = pp_gallery_month($exif, (int)($row['created'] ?? 0) ?: $albumCreated);
     if ($legacy && preg_match('/^[1-9]\d{3}-(0[1-9]|1[0-2])$/D', (string)($row['month'] ?? ''))) { $month = $row['month']; }
+    $revision = !$legacy ? pp_gallery_json_array($row['exif'] ?? []) : [];
+    $variants = pp_gallery_variant($row['variants'] ?? []);
+    foreach (['webp', 'avif'] as $format) {
+        $variants[$format] = array_map(static function ($value) use ($revision) { return pp_gallery_version_url($value, $revision); }, $variants[$format]);
+    }
     return [
-        'id' => $id, 'url' => $url, 'preview' => pp_gallery_media_url($row['thumb'] ?? '') ?: $url,
+        'id' => $id, 'url' => pp_gallery_version_url($url, $revision), 'preview' => pp_gallery_version_url(pp_gallery_media_url($row['thumb'] ?? '') ?: $url, $revision),
         'title' => pp_gallery_text($row['title'] ?? '', 300), 'description' => pp_gallery_text($row['desc'] ?? ''),
         'address' => pp_gallery_text($row['address'] ?? '', 300), 'exif' => $exif,
         'pano' => ($width > 0 && $height > 0) ? ($width / $height >= 1.98 && $width / $height <= 2.02) : !empty($row['pano']),
         'width' => $width, 'height' => $height, 'month' => $month,
-        'variants' => pp_gallery_variant($row['variants'] ?? []),
+        'variants' => $variants,
     ];
 }
 

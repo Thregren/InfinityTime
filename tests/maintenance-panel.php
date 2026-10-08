@@ -49,6 +49,7 @@ namespace Typecho {
         public array $reads = [];
         public array $operations = [];
         public bool $failDelete = false;
+        public bool $failScan = false;
         public string $adapter = 'Pdo_SQLite';
         public function __construct() { $this->pdo = new \PDO('sqlite::memory:', null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]); }
         public static function get(): self { return self::$instance; }
@@ -62,6 +63,7 @@ namespace Typecho {
         public function fetchAll($query): array { if ($query instanceof \PDOStatement) { return $query->fetchAll(\PDO::FETCH_ASSOC); } $this->reads[] = (string)$query; return $this->pdo->query((string)$query)->fetchAll(\PDO::FETCH_ASSOC); }
         public function query($query, $op = self::READ) {
             $this->operations[] = ['sql' => (string)$query, 'op' => $op, 'object' => is_object($query)];
+            if ($this->failScan && strpos((string)$query, 'original <>') !== false) { throw new \RuntimeException('SQL SELECT original FROM private_table /private/server/database.sqlite'); }
             if (preg_match('/^SELECT /i', (string)$query)) { $this->reads[] = (string)$query; return $this->pdo->query((string)$query); }
             if ($this->failDelete && strpos((string)$query, 'DELETE FROM "admin_contents"') === 0) { throw new \RuntimeException('模拟文章删除故障'); }
             $affected = $this->pdo->exec((string)$query);
@@ -112,7 +114,7 @@ namespace TypechoPlugin\InfinityTime\Lib {
         public static function syncPostFields(int $cid): void {
             if (!self::$locked) { throw new \RuntimeException('字段同步必须持有媒体锁'); }
             self::$synced[] = $cid;
-            if (self::$failSync) { throw new \RuntimeException('模拟字段同步故障'); }
+            if (self::$failSync) { throw new \RuntimeException('模拟字段同步故障 /private/server/database.sqlite'); }
         }
     }
     class MediaProcessor {
@@ -120,7 +122,7 @@ namespace TypechoPlugin\InfinityTime\Lib {
         public static int $calls = 0;
         public static function process(...$args): array {
             self::$calls++;
-            if (self::$fail) { throw new \RuntimeException('模拟编码故障'); }
+            if (self::$fail) { throw new \RuntimeException('模拟编码故障 /private/server/original.png'); }
             return ['width' => 1, 'height' => 1];
         }
     }
@@ -139,9 +141,11 @@ namespace {
         rmdir($dir);
     }
     $mode = $argv[1] ?? 'rebuild-sync-failure';
-    $modes = ['rebuild-sync-failure', 'rebuild-success', 'rebuild-batch', 'rebuild-restart', 'rebuild-resume', 'rebuild-start-reuse',
+    $modes = ['scan-failure', 'rebuild-sync-failure', 'rebuild-success', 'rebuild-batch', 'rebuild-restart', 'rebuild-resume', 'rebuild-start-reuse',
         'rebuild-no-original', 'rebuild-missing-original', 'rebuild-conversion-failure', 'stale-poll', 'finished-poll',
-        'delete-non-plugin', 'delete-rollback', 'lease-conflict'];
+        'delete-non-plugin', 'delete-rollback', 'lease-conflict',
+        'retry-image', 'retry-fields', 'retry-mixed', 'retry-resync', 'retry-repeat', 'retry-finished',
+        'retry-stale', 'retry-empty', 'retry-unfinished', 'retry-other-job', 'errors-page', 'errors-stale', 'resync-failure'];
     expect(in_array($mode, $modes, true), '未知测试模式：' . $mode);
     $source = dirname(__DIR__) . '/usr/plugins/InfinityTime';
     require $source . '/Lib/Database.php';
@@ -194,6 +198,37 @@ namespace {
     if ($mode === 'lease-conflict') {
         State::write($root . '/data/job.lock', ['uid' => 7, 'job' => 'cleanup', 'time' => time()]);
     }
+    $retryModes = ['retry-image', 'retry-fields', 'retry-mixed', 'retry-resync', 'retry-repeat', 'retry-finished',
+        'retry-stale', 'retry-empty', 'retry-unfinished', 'retry-other-job', 'errors-page', 'errors-stale'];
+    if (in_array($mode, $retryModes, true)) {
+        $state['done'] = 3; $state['finished'] = true;
+        $db->query("INSERT INTO admin_infinitytime_images VALUES (2,20,'/original.png','/full2.webp','/thumb2.webp'),(3,30,'/original.png','/full3.webp','/thumb3.webp')");
+        if ($mode === 'retry-resync') { $state['job'] = 'resync'; }
+        if (!in_array($mode, ['retry-fields', 'retry-resync', 'retry-empty', 'errors-page'], true)) { State::failure($state, 'rebuild', 1, 10, 'conversion'); }
+        if (in_array($mode, ['retry-fields', 'retry-mixed'], true)) { State::failure($state, 'resync', 30, 30, 'field_sync'); }
+        if ($mode === 'retry-resync') { State::failure($state, 'resync', 10, 10, 'field_sync'); }
+        if (in_array($mode, ['retry-repeat', 'retry-finished'], true)) { State::failure($state, 'rebuild', 3, 30, 'conversion'); }
+        if ($mode === 'errors-page') {
+            for ($id = 1; $id <= 123; $id++) { State::failure($state, 'rebuild', $id, 10, 'conversion'); }
+        }
+        if (in_array($mode, ['retry-unfinished', 'retry-other-job'], true)) {
+            $state['done'] = 1; $state['finished'] = false;
+            State::write(State::listFile($root . '/data', $state), [1, 2, 3]);
+        }
+        State::save($root . '/data', $state);
+        $_POST['job'] = $state['job']; $_POST['mode'] = 'retry'; $_POST['job_id'] = $oldId;
+        if ($mode === 'retry-repeat' || $mode === 'retry-finished') {
+            [$state] = State::open($root . '/data', 'rebuild', 'retry', $oldId, static function () { throw new RuntimeException('不得重扫'); });
+            $state['done'] = $mode === 'retry-repeat' ? 1 : 2;
+            $state['finished'] = $mode === 'retry-finished';
+            State::save($root . '/data', $state);
+        }
+        if ($mode === 'retry-stale' || $mode === 'errors-stale') { $_POST['job_id'] = str_repeat('b', 32); }
+        if ($mode === 'retry-other-job') { $_POST['job'] = 'cleanup'; $_POST['mode'] = 'start'; unset($_POST['job_id']); }
+        if (strpos($mode, 'errors-') === 0) { $_POST['mode'] = 'errors'; $_POST['offset'] = 100; }
+    }
+    if ($mode === 'scan-failure') { $db->failScan = true; }
+    if ($mode === 'resync-failure') { $_POST['job'] = 'resync'; Images::$failSync = true; }
     $beforeState = is_file($root . '/data/job.json') ? file_get_contents($root . '/data/job.json') : null;
     $beforeLock = is_file($root . '/data/job.lock') ? file_get_contents($root . '/data/job.lock') : null;
     $beforeFiles = glob($root . '/data/*');
@@ -210,7 +245,32 @@ namespace {
                     expect($operation['op'] === \Typecho\Db::WRITE && !$operation['object'], '快照、实时读取与事务必须使用主库连接');
                 }
             }
-            if ($mode === 'lease-conflict') {
+            expect(strpos($output, '/private/server/') === false && strpos($output, $root) === false, '失败响应不能泄漏服务器路径');
+            if (in_array($mode, ['retry-stale', 'retry-empty', 'retry-unfinished', 'retry-other-job', 'errors-stale'], true)) {
+                expect($json['ok'] === false, '不合法重试必须明确拒绝');
+                expect(file_get_contents($root . '/data/job.json') === $beforeState && glob($root . '/data/*') === $beforeFiles, '拒绝不能覆盖或增添检查点');
+                expect(Media::$calls === 0 && Images::$synced === [] && $db->operations === [], '拒绝必须先于任何扫描或媒体操作');
+            } elseif ($mode === 'scan-failure') {
+                expect(http_response_code() === 500 && $json['ok'] === false && strpos($output, 'private') === false && strpos($output, 'SELECT') === false, '候选扫描异常不得泄漏SQL或服务器路径');
+                expect(strpos($json['msg'], '服务器日志') !== false && Media::$calls === 0, '扫描失败应提供安全恢复提示');
+            } elseif ($mode === 'errors-page') {
+                expect($json['ok'] === true && $json['failure_total'] === 123 && $json['failure_offset'] === 100 && count($json['failures']) === 23 && $json['failure_next'] === null, '最后一页失败必须完整可达');
+                expect($json['failures'][22]['id'] === 123 && $json['job_id'] === $oldId, '分页必须保留原任务身份且包含最后项目');
+                expect(file_get_contents($root . '/data/job.json') === $beforeState && glob($root . '/data/*') === $beforeFiles && $db->operations === [], '翻页不能处理媒体或改写状态');
+            } elseif (in_array($mode, ['retry-image', 'retry-fields', 'retry-mixed', 'retry-resync', 'retry-repeat', 'retry-finished'], true)) {
+                expect($json['finished'] === true && $json['failed'] === 0 && $json['retry_of'] === $oldId && $json['job_id'] !== $oldId, '重试必须完成独立子任务并保留原任务身份');
+                $expectedImages = $mode === 'retry-repeat' ? [3] : (in_array($mode, ['retry-image', 'retry-mixed'], true) ? [1] : []);
+                $expectedAlbums = $mode === 'retry-finished' ? [] : (in_array($mode, ['retry-fields', 'retry-repeat'], true) ? [30] : ($mode === 'retry-mixed' ? [10, 30] : [10]));
+                expect(Images::$updated === $expectedImages && Media::$calls === count($expectedImages) && Images::$synced === $expectedAlbums, '只能处理指定失败图片及字段失败图集');
+                foreach ($db->reads as $sql) { expect(strpos($sql, 'WHERE (id = ') !== false, '重试不得再次扫描全库图片或字段'); }
+                $persisted = State::read($root . '/data/job.json');
+                unset($json['ok'], $json['msg']);
+                expect(State::response($persisted) === $json, '重试响应必须与持久化检查点一致');
+                if ($mode === 'retry-finished') { expect(file_get_contents($root . '/data/job.json') === $beforeState && $db->operations === [], '重试首批完成且丢失响应后不能再次执行'); }
+            } elseif ($mode === 'resync-failure') {
+                expect($json['finished'] === true && $json['failed'] === 1 && Media::$calls === 0 && Images::$synced === [10], '字段失败独立于图片编码');
+                expect($json['failures'][0]['task'] === 'resync' && $json['failures'][0]['id'] === 10 && $json['failures'][0]['code'] === 'field_sync', '字段失败必须保留图集身份及安全原因');
+            } elseif ($mode === 'lease-conflict') {
                 expect($json['finished'] === true && strpos($json['msg'], '另一个维护任务') !== false, '同一管理员不同任务的有效租约必须拒绝');
                 expect(file_get_contents($root . '/data/job.lock') === $beforeLock && glob($root . '/data/*') === $beforeFiles, '租约冲突不得写入检查点或修改锁');
                 expect(Media::$calls === 0 && Images::$updated === [] && Images::$synced === [] && $db->operations === [], '租约冲突必须在数据库读取和媒体处理前停止');
@@ -238,7 +298,7 @@ namespace {
                 expect($json['finished'] === false && $json['total'] === 5 && $json['done'] === 3 && $json['failed'] === 0, '首个请求必须在批次上限停止并保留可继续进度');
                 expect(Images::$updated === [1, 2, 3] && Media::$calls === 3, '首批必须恰好处理三条图片记录');
                 expect(Images::$synced === [10], '同一图集的多图每批只同步一次聚合字段');
-                expect(State::read($root . '/data/job.json') === $json, '未完成的持久化检查点必须与响应一致');
+                expect(State::response(State::read($root . '/data/job.json')) === $json, '未完成的持久化检查点必须与响应一致');
                 expect(State::read(State::listFile($root . '/data', $json)) === [1, 2, 3, 4, 5], '未完成任务必须保留完整稳定快照');
                 $lock = State::read($root . '/data/job.lock');
                 expect($lock['uid'] === 7 && $lock['job'] === 'rebuild', '未完成任务必须保留用户及任务锁');
@@ -246,12 +306,19 @@ namespace {
                 expect(($json['finished'] ?? false) === true && !isset($json['ok']), '维护必须返回终态进度而非错误响应');
                 $failed = in_array($mode, ['rebuild-sync-failure', 'rebuild-missing-original', 'rebuild-conversion-failure'], true) ? 1 : 0;
                 expect($json['failed'] === $failed, '失败计数必须在响应中可见');
+                expect($json['failure_total'] === $failed && count($json['failures']) === $failed, '新任务每个失败必须有可恢复的明细');
+                if ($failed) {
+                    $failure = $json['failures'][0];
+                    expect($failure['cid'] === 10 && !empty($failure['reason']), '失败必须包含相册身份和安全原因');
+                    expect($failure['task'] === ($mode === 'rebuild-sync-failure' ? 'resync' : 'rebuild'), '字段失败只能计划字段重试');
+                    expect($failure['id'] === ($mode === 'rebuild-sync-failure' ? 10 : 1), '失败项必须指向真实图片或相册身份');
+                }
                 $expectedIds = in_array($mode, ['rebuild-resume', 'rebuild-start-reuse'], true) ? [3] : ($mode === 'rebuild-restart' ? [1,3,4] : (in_array($mode, ['rebuild-no-original', 'rebuild-missing-original', 'rebuild-conversion-failure'], true) ? [] : [1]));
                 expect(Images::$updated === $expectedIds, '重建必须使用正确的快照与实时记录');
                 expect($json['total'] === ($mode === 'rebuild-no-original' ? 0 : (in_array($mode, ['rebuild-restart', 'rebuild-resume', 'rebuild-start-reuse'], true) ? 3 : 1)), '快照总数必须准确');
                 expect($json['done'] === $json['total'], '终态偏移必须等于总数');
                 expect(!is_file($root . '/data/job.lock'), '完成维护后必须释放任务锁');
-                expect(State::read($root . '/data/job.json') === $json, '持久化状态必须与响应一致');
+                expect(State::response(State::read($root . '/data/job.json')) === $json, '持久化状态必须与响应一致');
                 expect(!is_file(State::listFile($root . '/data', $json)), '已完成的快照必须清理');
                 if (in_array($mode, ['rebuild-resume', 'rebuild-start-reuse'], true)) { expect($json['job_id'] === $oldId, '未完成任务必须复用身份与偏移'); }
                 if ($mode === 'rebuild-restart') { expect($json['job_id'] !== $oldId, '重新开始必须生成新身份并包含新增图片'); }

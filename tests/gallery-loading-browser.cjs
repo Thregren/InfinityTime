@@ -19,8 +19,8 @@ function card(id, cid, images, ids, options = {}) {
     data-exif='[]' data-descs='[]' data-addresses='[]'><img class="my-photo" src="${previews[0]}" alt="Album ${id}"></a><h2>Album ${id}</h2></article>`;
 }
 function pageHtml(cards, next = '/page2', navigation = false) {
-  return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/css/main.css"><link rel="stylesheet" href="/assets/css/gallery.css"><style>#main{display:block;min-height:2000px}.thumb{max-width:240px}</style></head><body><header id="header"></header><div id="wrapper"><main id="main"><div id="waterfall"><h2 class="gallery-month-label" id="month-2026-10">2026-10</h2>${cards}</div><nav id="gallery-pagination"><a rel="next" href="${next}">下一页</a></nav><div id="load-more" data-next-url="${next}" data-page="1" data-total-pages="2"></div></main></div>
-  ${['init', 'jquery.min', 'jquery.poptrox.min', 'browser.min', 'breakpoints.min', 'lightbox', 'main'].concat(navigation ? ['gallery-navigation'] : []).map(n => `<script src="/assets/js/${n}.js"></script>`).join('')}</body></html>`;
+  return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/css/main.css"><link rel="stylesheet" href="/assets/css/gallery.css"><style>#main{display:block;min-height:2000px}.thumb{max-width:240px}</style></head><body><header id="header"></header><div id="wrapper"><main id="main"><label hidden><select id="gallery-data-saver"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select><span id="gallery-data-saver-status"></span></label><div id="waterfall"><h2 class="gallery-month-label" id="month-2026-10">2026-10</h2>${cards}</div><nav id="gallery-pagination"><a rel="next" href="${next}">下一页</a></nav><div id="load-more" data-next-url="${next}" data-page="1" data-total-pages="2"></div></main></div>
+  ${['data-saver', 'init', 'jquery.min', 'jquery.poptrox.min', 'browser.min', 'breakpoints.min', 'lightbox', 'main'].concat(navigation ? ['gallery-navigation'] : []).map(n => `<script src="/assets/js/${n}.js"></script>`).join('')}</body></html>`;
 }
 const initial = card('a', 1, [url('a'), url('b'), url('pano'), url('slow')], ['p-1', 'p-2', 'p-3', 'p-4'], {
   variants: [variants('a'), variants('b'), variants('pano')], panos: [0, 0, 1, 0]
@@ -100,10 +100,20 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
         assert.equal(await page.evaluate(target => InfinityGallery.open(target), { albumId, photoId }), true);
       }
       async function ready(name) {
-        await page.waitForFunction(source => {
-          const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
-          return img && img.getAttribute('src') === source && img.complete && img.naturalWidth && !p.classList.contains('loading') && img.style.opacity === '1';
-        }, url(name));
+        try {
+          await page.waitForFunction(source => {
+            const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
+            return img && img.getAttribute('src') === source && img.complete && img.naturalWidth && !p.classList.contains('loading') && img.style.opacity === '1';
+          }, url(name));
+        } catch (error) {
+          console.error('图片就绪超时诊断', await page.evaluate(() => {
+            const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
+            return { hidden: document.hidden, src: img && img.getAttribute('src'), selected: img && img.currentSrc,
+              complete: img && img.complete, width: img && img.naturalWidth, opacity: img && img.style.opacity,
+              popup: p && p.className, switching: p && p.__switching, events: window.__galleryEvents.slice(-8) };
+          }));
+          throw error;
+        }
         await page.waitForTimeout(500);
       }
       async function close() {
@@ -289,9 +299,31 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
       await page.waitForFunction(() => getComputedStyle(document.querySelector('.poptrox-overlay')).display === 'none');
       await page.goto(origin + '/?album=1&photo=p-5'); await ready('other-month');
-      await page.keyboard.press('Escape');
+      // 关闭直接分享链接会真正重载相册页，不能只等 replaceState 改了地址。
+      await Promise.all([page.waitForEvent('load'), page.keyboard.press('Escape')]);
       await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
       assert.equal(new URL(page.url()).searchParams.get('album'), '1');
+      // 省流模式在真实浏览器中禁止自动分页和相邻大图预取，主动操作仍能成功。
+      await page.goto(origin);
+      await page.selectOption('#gallery-data-saver', 'on');
+      await page.reload();
+      assert.equal(await page.locator('#gallery-data-saver').inputValue(), 'on', '刷新保留显式省流选择');
+      const pageRequestsBefore = requests.filter(path => path === '/page2').length;
+      await page.evaluate(() => { window.scrollTo(0, document.documentElement.scrollHeight); window.dispatchEvent(new Event('scroll')); });
+      await page.waitForTimeout(150);
+      assert.equal(requests.filter(path => path === '/page2').length, pageRequestsBefore, '省流禁止自动下一页');
+      assert.equal(await page.evaluate(() => InfinityWaterfall.loadMore()), true, '省流允许手动加载下一页');
+      await page.evaluate(html => {
+        document.querySelector('#waterfall').insertAdjacentHTML('beforeend', html);
+        window.__rebindPoptrox();
+      }, card('saving', 99, [url('saving-current'), url('saving-next')], ['p-991', 'p-992']));
+      await open('99', 'p-991'); await ready('saving-current');
+      await page.waitForTimeout(150);
+      assert.equal(requests.some(path => path.includes('saving-next')), false, '省流不预取邻图');
+      await page.keyboard.press('ArrowRight'); await ready('saving-next');
+      await close();
+      await page.selectOption('#gallery-data-saver', 'off');
+      assert.equal(await page.evaluate(() => InfinityDataSaver.isEnabled()), false, '可以恢复正常模式');
       assert.deepEqual(errors, []);
       await context.close();
       console.log(`图册加载、降级和重试回归测试通过：${browserName} ${viewport.width}px`);

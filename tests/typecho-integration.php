@@ -578,6 +578,29 @@ namespace {
         check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', '显式清空删除最后一张图的元数据');
         check(AdminRepository::album($cid, 7, false) !== null, '清空后的图集保留识别标记');
 
+        // 重建改变公开资源版本而不改数据库路径；重复同秒重建也产生新版本。
+        $versionCid = post([]);
+        $versionPhoto = photo($versionCid);
+        $rawBefore = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $versionPhoto), true);
+        ImageRepository::updateVariants($versionPhoto, ['width' => 1200, 'height' => 600]);
+        ImageRepository::syncPostFields($versionCid);
+        $rawAfter = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $versionPhoto), true);
+        $versionExif = json_decode($rawAfter['exif'], true);
+        check($rawAfter['full'] === $rawBefore['full'] && $rawAfter['thumb'] === $rawBefore['thumb'], '重建版本不改变物理路径');
+        check($versionExif['make'] === 'Camera' && isset($versionExif['gps']), '重建版本保留私有原始EXIF');
+        $firstUrl = AdminRepository::field($versionCid, 'img', true);
+        check(strpos($firstUrl, '?itv=' . $versionExif['_infinity_media_version']) !== false, '公开聚合图片URL带重建版本');
+        $publicExif = json_decode(AdminRepository::field($versionCid, 'exif', true), true);
+        check(!isset($publicExif[0]['gps']) && !isset($publicExif[0]['_infinity_media_version']), '公开EXIF不包含GPS或内部版本键');
+        ImageRepository::updateVariants($versionPhoto, ['width' => 1200, 'height' => 600]);
+        ImageRepository::syncPostFields($versionCid);
+        check(AdminRepository::field($versionCid, 'img', true) !== $firstUrl, '同秒再次重建也更新缓存标识');
+        require_once __DIR__ . '/../usr/plugins/InfinityTime/Lib/HealthDiagnostics.php';
+        $healthRowsBefore = fields($versionCid);
+        $health = \TypechoPlugin\InfinityTime\Lib\HealthDiagnostics::collect($db, $tmp, []);
+        $health = array_column($health, null, 'name');
+        check($health['数据库事务']['status'] === ($dialect === 'Mysql' ? 'ok' : 'manual'), '真实适配器健康检查不虚报表引擎');
+        check(fields($versionCid) === $healthRowsBefore, '健康检查不改动已存字段');
         // 真实旧表迁移：缺少元数据及重试列时，补齐列并保留已有记录。
         Database::query('DROP TABLE ' . table('infinitytime_images'), Db::WRITE);
         $pk = $dialect === 'Mysql' ? 'id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY'

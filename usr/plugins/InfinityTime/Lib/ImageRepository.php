@@ -381,12 +381,33 @@ class ImageRepository
         }, true);
     }
 
+    /** 只改变公开 URL，数据库文件路径保持不变，删除和重建仍定位原文件。 */
+    public static function versionUrl(string $url, array $exif): string
+    {
+        $version = $exif['_infinity_media_version'] ?? '';
+        if ($url === '' || !is_string($version) || !preg_match('/^[a-f0-9]{32}$/D', $version)) { return $url; }
+        $fragment = explode('#', $url, 2);
+        $parts = explode('?', $fragment[0], 2);
+        $query = array_filter(explode('&', $parts[1] ?? ''), static function ($part) {
+            return $part !== '' && rawurldecode(explode('=', $part, 2)[0]) !== 'itv';
+        });
+        $query[] = 'itv=' . $version;
+        return $parts[0] . '?' . implode('&', $query) . (isset($fragment[1]) ? '#' . $fragment[1] : '');
+    }
+
     /** 重建后同步实际输出尺寸、大小与响应式变体路径。 */
     public static function updateVariants(int $rowId, array $result): void
     {
         self::lockMedia();
         $db = \Typecho\Db::get();
+        $rows = self::fetchRows($db, $db->select('exif')->from(self::table())->where('id = ?', $rowId)->limit(1));
+        $row = $rows[0] ?? null;
+        if (!$row) { throw new \RuntimeException('图片记录已变化，请刷新后重试'); }
+        $exif = is_array($row['exif'] ?? null) ? $row['exif'] : (json_decode((string)($row['exif'] ?? '{}'), true) ?: []);
+        if (!is_array($exif)) { $exif = []; }
+        $exif['_infinity_media_version'] = bin2hex(random_bytes(16));
         $values = [
+            'exif' => json_encode($exif, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR),
             'mid' => !empty($result['mid']) ? self::toWeb((string)$result['mid']) : null,
             'avif' => !empty($result['avif']) ? self::toWeb((string)$result['avif']) : null,
             'mid_avif' => !empty($result['mid_avif']) ? self::toWeb((string)$result['mid_avif']) : null,
@@ -506,7 +527,7 @@ class ImageRepository
         $query = $db->select()->from(self::table())->where('cid = ?', $cid)
             ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC);
         $rows = $db->fetchAll($write($query));
-        foreach ($rows as &$row) { $row['exif'] = json_decode($row['exif'] ?? '{}', true); }
+        foreach ($rows as &$row) { $parsed = json_decode($row['exif'] ?? '{}', true); $row['exif'] = is_array($parsed) ? $parsed : []; }
         unset($row);
         // 历史文章可能仅有自定义字段。无图片行时不覆盖，删除最后一张图则显式清空。
         if (!$rows && !$clearEmpty) {
@@ -526,8 +547,8 @@ class ImageRepository
         foreach ($rows as $r) {
             $photoIds[] = (int)($r['id'] ?? 0);
             $months[] = self::photoMonth(is_array($r['exif'] ?? null) ? $r['exif'] : [], (int)($r['created'] ?? 0));
-            $images[] = (string)($r['full'] ?? '');
-            $thumbs[] = (string)($r['thumb'] ?? '');
+            $images[] = self::versionUrl((string)($r['full'] ?? ''), is_array($r['exif'] ?? null) ? $r['exif'] : []);
+            $thumbs[] = self::versionUrl((string)($r['thumb'] ?? ''), is_array($r['exif'] ?? null) ? $r['exif'] : []);
             $addresses[] = (string)($r['address'] ?? '');
             $titles[] = (string)($r['title'] ?? '');
             $descs[] = (string)($r['desc'] ?? '');
@@ -541,12 +562,12 @@ class ImageRepository
             // 响应式变体：webp=[full, mid]，avif=[full, mid]（缺失的自动过滤）
             $variants[] = [
                 'w' => $w,
-                'webp' => array_values(array_filter([(string)($r['full'] ?? ''), (string)($r['mid'] ?? '')])),
-                'avif' => array_values(array_filter([(string)($r['avif'] ?? ''), (string)($r['mid_avif'] ?? '')])),
+                'webp' => array_values(array_filter(array_map(static function ($url) use ($r) { return self::versionUrl($url, $r['exif']); }, [(string)($r['full'] ?? ''), (string)($r['mid'] ?? '')]))),
+                'avif' => array_values(array_filter(array_map(static function ($url) use ($r) { return self::versionUrl($url, $r['exif']); }, [(string)($r['avif'] ?? ''), (string)($r['mid_avif'] ?? '')]))),
             ];
             // 重建文章里的 exif 字段时同样剔除 gps（历史数据也据此清掉）
             $e = is_array($r['exif'] ?? null) ? $r['exif'] : [];
-            unset($e['gps']);
+            unset($e['gps'], $e['_infinity_media_version']);
             $exifs[] = $e;
         }
         foreach (['img' => $images, 'thumb' => $thumbs] as $name => $paths) {
