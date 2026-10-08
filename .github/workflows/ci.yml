@@ -78,8 +78,11 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
           npx playwright install --with-deps chromium
-      - name: Gallery browser regressions
-        run: |
-          node tests/gallery-browser.cjs
-          node tests/gallery-loading-browser.cjs
-          node tests/admin-upload.cjs --browser
+      - name: 图库基础浏览器回归
+        run: node tests/gallery-browser.cjs
+      - name: 图库加载与历史导航回归
+        if: ${{ !cancelled() }}
+        run: node tests/gallery-loading-browser.cjs
+      - name: 后台上传浏览器回归
+        if: ${{ !cancelled() }}
+        run: node tests/admin-upload.cjs --browser

@@ -79,6 +79,44 @@ class Element {
     for (let i = 0; i < 100; i++) context.preloadUrl('/' + i + '.webp');
     assert.equal(context.__preloaded.size, 64);
   }
+  // 关闭动画超过预期时，重绑必须等实际淡出完成，不能遗失待处理任务。
+  {
+    const source = read('main'), vendor = read('jquery.poptrox.min');
+    let visible = true, rebuilds = 0;
+    const collection = { is: () => visible, remove() {} };
+    const anchors = { each() {}, off() {} };
+    const context = {
+      isPopupActive: true, poptroxRebindPending: false,
+      document: { querySelectorAll: () => [] },
+      window: {}, $: () => collection,
+      $main: { 0: {}, find: () => anchors, poptrox: () => rebuilds++ },
+      PP_CONFIG: {}, prepareGalleryDialog() {}, rebuildLightboxData() {}
+    };
+    vm.createContext(context);
+    const start = source.indexOf('    window.__rebindPoptrox = function() {');
+    const end = source.indexOf('    };', start) + '    };'.length;
+    vm.runInContext(source.slice(start, end), context);
+    const closedStart = source.indexOf('        onPopupClosed: function() {');
+    const closedEnd = source.indexOf('        },', closedStart);
+    vm.runInContext('var afterClose = ' + source.slice(closedStart, closedEnd).replace('        onPopupClosed: ', '') + '};', context);
+    context.window.__rebindPoptrox();
+    assert.equal(context.poptroxRebindPending, true);
+    context.isPopupActive = false;
+    for (let frame = 0; frame < 30; frame++) context.window.__rebindPoptrox();
+    assert.equal(rebuilds, 0, '慢动画尚未隐藏覆盖层时不可销毁灯箱');
+    assert.equal(context.poptroxRebindPending, true);
+    const fadeCallback = vendor.match(/a\.fadeOut\(s\.fadeSpeed,(function\(\)\{[^}]*\})\)/);
+    assert.ok(fadeCallback, '实际淡出完成回调仍在供应商代码中');
+    context.s = { useBodyOverflow: false, onPopupClosed: context.afterClose };
+    context.h = true;
+    visible = false;
+    vm.runInContext('(' + fadeCallback[1] + ')()', context);
+    assert.equal(context.h, false, '完成回调先释放内部切换锁');
+    assert.equal(rebuilds, 1, '实际关闭完成后恰好重绑一次');
+    assert.equal(context.poptroxRebindPending, false);
+    context.afterClose();
+    assert.equal(rebuilds, 1, '重复完成通知不会重复创建灯箱');
+  }
   // 跨相册导航也必须保留卡片身份，不能被重复图片 URL 混淆。
   {
     const source = read('main');

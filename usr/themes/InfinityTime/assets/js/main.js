@@ -376,11 +376,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 delete p.__ppIndex;
                 delete p.__ppArticle;
             });
-            // Newly loaded cards may have arrived while the modal was open.
-            // Rebuild only after its closing animation no longer owns the overlay.
-            if (poptroxRebindPending) setTimeout(function() {
-                if (poptroxRebindPending) window.__rebindPoptrox();
-            }, PP_CONFIG.fadeSpeed + 20);
+        },
+        onPopupClosed: function() {
+            // 由 Poptrox 的实际淡出完成回调触发；固定延时可能早于最后一帧，
+            // 导致覆盖层仍可见，待重绑任务被再次延后后无人处理。
+            if (poptroxRebindPending) window.__rebindPoptrox();
         },
         onPopupOpen: function() { 
             isPopupActive = true;
