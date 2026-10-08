@@ -1,12 +1,13 @@
 <?php
-/** 可执行的公开图集契约测试：需要 PHP 8.2+，无需安装 Typecho。 */
+/** 可执行的公开图集契约测试：需要 PHP 7.4+，无需安装 Typecho。 */
 declare(strict_types=1);
 namespace Typecho {
     class Query {
         public string $table = '';
         public array $conditions = [];
         public int $maximum = 0, $start = 0;
-        public function __construct(public array $columns) {}
+        public array $columns;
+        public function __construct(array $columns) { $this->columns = $columns; }
         public function from(string $table): self { $this->table = $table; return $this; }
         public function where(string $sql, ...$args): self { $this->conditions[$sql] = $args; return $this; }
         public function order(...$args): self { return $this; }
@@ -23,24 +24,23 @@ namespace Typecho {
         public function select(...$columns): Query { return new Query($columns); }
         public function fetchAll(Query $query): array {
             $this->queries[] = $query;
-            $rows = match ($query->table) {
-                'test_contents' => $this->albums, 'test_infinitytime_images' => $this->images,
-                'test_fields' => $this->fields, 'test_relationships' => $this->metas,
-                default => throw new \RuntimeException('未预期的数据表：' . $query->table),
-            };
+            $tables = ['test_contents' => $this->albums, 'test_infinitytime_images' => $this->images,
+                'test_fields' => $this->fields, 'test_relationships' => $this->metas];
+            if (!isset($tables[$query->table])) { throw new \RuntimeException('未预期的数据表：' . $query->table); }
+            $rows = $tables[$query->table];
             foreach ($query->conditions as $sql => $values) {
                 $rows = array_values(array_filter($rows, static function ($r) use ($sql, $values): bool {
-                    return match ($sql) {
-                        'type = ?' => $r['type'] === $values[0],
-                        'status = ?' => $r['status'] === $values[0],
-                        '(password IS NULL OR password = ?)' => ($r['password'] ?? '') === '',
-                        'created <= ?' => $r['created'] <= $values[0],
-                        'cid <= ?' => $r['cid'] <= $values[0],
-                        'cid = ?' => $r['cid'] === $values[0],
-                        'id = ?' => $r['id'] === $values[0],
-                        default => str_contains($sql, 'cid IN') ? in_array($r['cid'], $values, true)
-                            : (str_contains($sql, 'name IN') ? in_array($r['name'], $values, true) : true),
-                    };
+                    switch ($sql) {
+                        case 'type = ?': return $r['type'] === $values[0];
+                        case 'status = ?': return $r['status'] === $values[0];
+                        case '(password IS NULL OR password = ?)': return ($r['password'] ?? '') === '';
+                        case 'created <= ?': return $r['created'] <= $values[0];
+                        case 'cid <= ?': return $r['cid'] <= $values[0];
+                        case 'cid = ?': return $r['cid'] === $values[0];
+                        case 'id = ?': return $r['id'] === $values[0];
+                        default: return strpos($sql, 'cid IN') !== false ? in_array($r['cid'], $values, true)
+                            : (strpos($sql, 'name IN') !== false ? in_array($r['name'], $values, true) : true);
+                    }
                 }));
             }
             if ($query->table === 'test_contents') { usort($rows, static fn($a, $b) => $b['cid'] <=> $a['cid']); }
@@ -72,7 +72,11 @@ namespace {
     }
     class GalleryFixture {
         public GalleryFixtureOptions $options;
-        public function __construct(public string $archiveType = '', public string $archiveTitle = '', public string $archiveSlug = '') { $this->options = new GalleryFixtureOptions(); }
+        public string $archiveType, $archiveTitle, $archiveSlug;
+        public function __construct(string $archiveType = '', string $archiveTitle = '', string $archiveSlug = '') {
+            $this->archiveType = $archiveType; $this->archiveTitle = $archiveTitle; $this->archiveSlug = $archiveSlug;
+            $this->options = new GalleryFixtureOptions();
+        }
         public function is(string $type): bool { return $type === $this->archiveType; }
         public function getArchiveTitle(): string { return $this->archiveTitle; }
         public function getArchiveSlug(): string { return $this->archiveSlug; }
@@ -178,8 +182,8 @@ namespace {
     $album['photos'][0]['title'] = "'\"><script>alert(2)</script>";
     $__galleryBase = 'https://example.test/'; $__galleryRequest = pp_gallery_request([]); $month = '2026-04';
     ob_start(); include __DIR__ . '/../usr/themes/InfinityTime/lib/gallery-card.php'; $html = ob_get_clean();
-    check(!str_contains($html, '<script>') && str_contains($html, 'data-photo-ids=') && str_contains($html, 'data-cid="7"'), '渲染器转义存储文本并提供稳定数据接口');
-    check(str_contains($html, '<noscript>') && str_contains($html, 'class="gallery-photo-list"') && str_contains($html, '/uploads/full/149.webp'), '无 JavaScript 渲染包含可直接打开的照片链接');
+    check(!(strpos($html, '<script>') !== false) && (strpos($html, 'data-photo-ids=') !== false) && (strpos($html, 'data-cid="7"') !== false), '渲染器转义存储文本并提供稳定数据接口');
+    check((strpos($html, '<noscript>') !== false) && (strpos($html, 'class="gallery-photo-list"') !== false) && (strpos($html, '/uploads/full/149.webp') !== false), '无 JavaScript 渲染包含可直接打开的照片链接');
     // 执行完整 index.php，而不只测可注入的数据函数或片段模板。
     $db->albums = [album(7, ['title' => '城市风景']), album(6, ['title' => '更早的照片'])];
     $db->images = [photo(91), photo(92, ['cid' => 6])];
@@ -187,13 +191,13 @@ namespace {
     $db->metas = [];
     $_GET = ['tag' => '城市', 'limit' => '1'];
     ob_start(); (new GalleryFixture())->render(); $fullHtml = ob_get_clean();
-    check(str_contains($fullHtml, 'id="gallery-search"') && str_contains($fullHtml, 'type="month"'), '完整首页包含可直接提交的搜索和月份表单');
-    check(str_contains($fullHtml, 'rel="next"') && str_contains($fullHtml, 'cursor=6.0') && str_contains($fullHtml, 'tag=%E5%9F%8E%E5%B8%82'), '完整首页无需 JS 的分页链接保留同一筛选条件');
-    check(str_contains($fullHtml, 'data-photo-ids=') && str_contains($fullHtml, 'gallery-navigation.js') && str_contains($fullHtml, 'gallery-photo-list'), '完整首页输出稳定 ID、历史导航和无 JS 照片');
+    check((strpos($fullHtml, 'id="gallery-search"') !== false) && (strpos($fullHtml, 'type="month"') !== false), '完整首页包含可直接提交的搜索和月份表单');
+    check((strpos($fullHtml, 'rel="next"') !== false) && (strpos($fullHtml, 'cursor=6.0') !== false) && (strpos($fullHtml, 'tag=%E5%9F%8E%E5%B8%82') !== false), '完整首页无需 JS 的分页链接保留同一筛选条件');
+    check((strpos($fullHtml, 'data-photo-ids=') !== false) && (strpos($fullHtml, 'gallery-navigation.js') !== false) && (strpos($fullHtml, 'gallery-photo-list') !== false), '完整首页输出稳定 ID、历史导航和无 JS 照片');
     check(!preg_match('/gps_lat|GPSLatitude|private\/original|secret/', $fullHtml), '完整首页 HTML 不包含私有图片字段');
     $_GET = [];
     ob_start(); (new GalleryFixture('tag', '城市', 'city'))->render(); $nativeTagHtml = ob_get_clean();
-    check(str_contains($nativeTagHtml, 'name="tag" maxlength="100" value="城市"'), '原生标签归档进入同一标签筛选模型');
+    check((strpos($nativeTagHtml, 'name="tag" maxlength="100" value="城市"') !== false), '原生标签归档进入同一标签筛选模型');
     $deletedCursor = pp_gallery_read(pp_gallery_request(['cursor' => '8.60', 'limit' => 1]), 'https://example.test/');
     check($deletedCursor['albums'][0]['id'] === 7 && count($deletedCursor['albums'][0]['photos']) === 1, '上一页相册删除后不会把旧照片偏移误用到下一相册');
     if (function_exists('shell_exec') && !extension_loaded('wasm_memory_storage')) {

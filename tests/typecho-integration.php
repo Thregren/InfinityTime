@@ -29,22 +29,22 @@ namespace {
 
     $typecho = realpath((string)getenv('TYPECHO_ROOT'));
     if (!$typecho || !is_file($typecho . '/var/Typecho/Db.php')) {
-        fwrite(STDERR, "TYPECHO_ROOT must point to an official Typecho checkout.\n");
+        fwrite(STDERR, "TYPECHO_ROOT 必须指向官方 Typecho 源码目录。\n");
         exit(2);
     }
     $adapter = $argv[1] ?? 'Pdo_SQLite';
     $dialects = ['Pdo_SQLite' => 'SQLite', 'SQLite' => 'SQLite', 'Pdo_Mysql' => 'Mysql',
         'Mysqli' => 'Mysql', 'Pdo_Pgsql' => 'Pgsql', 'Pgsql' => 'Pgsql'];
-    if (!isset($dialects[$adapter])) { throw new \InvalidArgumentException('Unsupported test adapter'); }
+    if (!isset($dialects[$adapter])) { throw new \InvalidArgumentException('不支持的测试适配器'); }
     $dialect = $dialects[$adapter];
     $prefix = 'it_test_' . bin2hex(random_bytes(6)) . '_';
     $tmp = sys_get_temp_dir() . '/' . $prefix;
-    if (!mkdir($tmp, 0700)) { throw new \RuntimeException('Cannot create test directory'); }
+    if (!mkdir($tmp, 0700)) { throw new \RuntimeException('无法创建临时测试目录'); }
     define('__TYPECHO_ROOT_DIR__', $typecho);
     define('__TYPECHO_PLUGIN_DIR__', '/usr/plugins');
     define('__TYPECHO_UPLOAD_ROOT_DIR__', $tmp . '/uploads');
     define('__TYPECHO_UPLOAD_DIR__', '/usr/uploads');
-    // Same compatibility alias as Typecho's Widget\Init, with the real interface.
+    // 采用 Typecho Widget\Init 的兼容别名，并加载真实插件接口。
     define('__TYPECHO_CLASS_ALIASES__', ['Typecho_Plugin_Interface' => '\\Typecho\\Plugin\\PluginInterface']);
     require $typecho . '/var/Typecho/Common.php';
     spl_autoload_register(static function (string $class): void {
@@ -66,7 +66,7 @@ namespace {
         'charset' => $dialect === 'Mysql' ? 'utf8mb4' : 'UTF8',
     ];
     $db->addServer($config, Db::WRITE);
-    // pg_connect reuses identical connection strings; distinct host spelling gives a real reader.
+    // pg_connect 会复用相同连接串；使用不同主机写法确保读写为独立连接。
     if ($adapter === 'Pgsql' && $config['host'] === '127.0.0.1') { $config['host'] = 'localhost'; }
     $db->addServer($config, Db::READ);
 
@@ -80,21 +80,21 @@ namespace {
     function rejected(callable $operation, string $exception, string $message): void
     {
         try { $operation(); } catch (\Throwable $e) {
-            check($e instanceof $exception, $message . ': wrong exception ' . get_class($e) . ': ' . $e->getMessage());
+            check($e instanceof $exception, $message . '：异常类型不符 ' . get_class($e) . ': ' . $e->getMessage());
             return;
         }
-        check(false, $message . ': operation unexpectedly succeeded');
+        check(false, $message . '：本应拒绝的操作意外成功');
     }
     function injectedFailure(callable $operation, string $message, string $expected = 'Integration failure'): void
     {
         try { $operation(); } catch (\Throwable $e) {
-            // Upstream native Pgsql passes false to pg_result_error_field on SQL errors (PHP 8 TypeError).
+            // 上游原生 Pgsql 在 SQL 失败时向 pg_result_error_field 传入 false，PHP 8 会抛 TypeError。
             global $adapter;
             $upstreamPgError = $adapter === 'Pgsql' && strpos($e->getMessage(), 'pg_result_error_field') !== false;
-            check(stripos($e->getMessage(), $expected) !== false || $upstreamPgError, $message . ': unexpected error ' . $e->getMessage());
+            check(stripos($e->getMessage(), $expected) !== false || $upstreamPgError, $message . '：非预期错误 ' . $e->getMessage());
             return;
         }
-        check(false, $message . ': operation unexpectedly succeeded');
+        check(false, $message . '：本应拒绝的操作意外成功');
     }
     function table(string $name): string
     {
@@ -126,7 +126,7 @@ namespace {
             'exif' => ['make' => 'Camera', 'datetime' => '2024:05:06 10:20:30', 'gps' => ['lat' => 1]],
         ], $sort);
     }
-    // Real database errors, after earlier writes in the same operation have succeeded.
+    // 同一操作已有部分写入成功后，通过真实数据库触发器注入错误。
     function failureTrigger(bool $enabled, string $field = 'tags'): void
     {
         global $db, $prefix, $dialect;
@@ -137,7 +137,7 @@ namespace {
             if ($dialect === 'Pgsql') { Database::query('DROP FUNCTION IF EXISTS ' . $fn . '()', Db::WRITE); }
             return;
         }
-        if (!in_array($field, ['tags', 'titles'], true)) { throw new \InvalidArgumentException('Invalid trigger field'); }
+        if (!in_array($field, ['tags', 'titles'], true)) { throw new \InvalidArgumentException('触发器字段无效'); }
         if ($dialect === 'SQLite') {
             $sql = 'CREATE TRIGGER ' . $name . ' BEFORE INSERT ON ' . table('fields')
                 . " WHEN NEW.name = '$field' BEGIN SELECT RAISE(ABORT, 'Integration failure'); END";
@@ -154,157 +154,177 @@ namespace {
 
     $failed = null;
     try {
-        // Use the exact upstream schema, including unique keys and quoted camel-case columns.
+        // 使用官方建表 SQL，包含真实唯一约束及需要引号的驼峰列名。
         $schema = file_get_contents($typecho . '/install/' . $dialect . '.sql');
-        if ($schema === false) { throw new \RuntimeException('Missing upstream install schema'); }
+        if ($schema === false) { throw new \RuntimeException('缺少官方安装 SQL'); }
         $schema = preg_replace('/^\s*--[^\n]*(?:\n|$)/m', '', $schema);
         $schema = str_replace(['typecho_', '%engine%', '%charset%'], [$prefix, 'InnoDB', 'utf8mb4'], $schema);
         foreach (explode(';', $schema) as $statement) {
             if (trim($statement) !== '') { Database::query($statement, Db::WRITE); }
         }
-        // Avoid activation's filesystem/tool/menu side effects, but execute production DDL.
+        // 通过反射调用生产建表代码，避免激活时修改目录、工具和菜单。
         $create = new \ReflectionMethod(Plugin::class, 'createTables');
         $create->setAccessible(true);
         $create->invoke(null);
-        check((int)Plugin::opt('infinitytimeSchemaVersion') === 4, 'Fresh schema migration must finish');
-        check(rowCount('infinitytime_images') === 0, 'Fresh schema must be empty');
+        check((int)Plugin::opt('infinitytimeSchemaVersion') === 4, '首次建表必须完成版本迁移');
+        check(rowCount('infinitytime_images') === 0, '首次建表不得产生图片记录');
         $create->invoke(null);
-        check(rowCount('options') === 1, 'Repeated setup must not duplicate schema options');
-        check($db->selectDb(Db::READ) !== $db->selectDb(Db::WRITE), 'Test must exercise separate Typecho read/write connections');
+        check(rowCount('options') === 1, '重复初始化不得重复插入版本选项');
+        check($db->selectDb(Db::READ) !== $db->selectDb(Db::WRITE), '测试必须使用独立的 Typecho 读写连接');
 
         $resource = Database::query('SELECT 1 AS probe');
         check(Database::query($resource) === $resource, '已执行的真实查询资源必须原样返回');
         unset($resource);
 
-        // Query placeholders are deferred by real Typecho. Include punctuation and Unicode.
+        // 真实 Typecho 延迟展开查询参数，覆盖标点、占位符字面量及 Unicode。
         $text = "图集 ? 50%_! O'Reilly \\ #param:42#";
         $draft = AdminWorkflow::draft(7, ['title' => $text, 'device' => 'Camera ? 日本', 'tags' => 'night', 'address' => '杭州'], 'draft-operation-0001');
         $cid = (int)$draft['cid'];
-        check($cid > 0 && $draft['status'] === 'draft' && !$draft['replayed'], 'Create a persisted draft');
-        check(AdminRepository::album($cid, 7, false)['title'] === $text, 'Real adapters must preserve quoted and Unicode values');
-        check(AdminRepository::field($cid, 'device') === 'Camera ? 日本', 'Draft metadata persisted');
-        check(AdminRepository::field($cid, AdminRepository::MARKER) === '1', 'Empty draft has album marker');
+        check($cid > 0 && $draft['status'] === 'draft' && !$draft['replayed'], '创建持久化草稿');
+        check(AdminRepository::album($cid, 7, false)['title'] === $text, '真实适配器必须保留引号及 Unicode');
+        check(AdminRepository::field($cid, 'device') === 'Camera ? 日本', '草稿元数据成功保存');
+        check(AdminRepository::field($cid, AdminRepository::MARKER) === '1', '空草稿具有图集标记');
         $again = AdminWorkflow::draft(7, ['title' => 'Do not overwrite'], 'draft-operation-0001');
-        check((int)$again['cid'] === $cid && $again['replayed'], 'Retry returns the existing draft');
-        check(rowCount('contents') === 1, 'Retry must not create duplicate posts');
+        check((int)$again['cid'] === $cid && $again['replayed'], '重试返回原有草稿');
+        check(rowCount('contents') === 1, '重试不得创建重复文章');
         $other = AdminWorkflow::draft(8, ['title' => 'Other author'], 'draft-operation-0001');
-        check((int)$other['cid'] !== $cid, 'Operation keys are scoped to their author');
-        check(AdminRepository::album($cid, 8, false) === null, 'Foreign author cannot access an album');
-        check(AdminRepository::album($cid, 8, true) !== null, 'Administrator can access foreign album');
-        check(AdminRepository::album($cid, 0, true) === null, 'Missing user identity is rejected');
-        rejected(static function () use ($cid) { AdminWorkflow::requireAlbum($cid, 8, false); }, \DomainException::class, 'Mutation refuses foreign album');
-        rejected(static function () { AdminWorkflow::draft(7, ['title' => 'bad'], 'short'); }, \InvalidArgumentException::class, 'Invalid operation key rejected');
-        rejected(static function () { AdminWorkflow::draft(7, ['title' => '  '], 'draft-operation-0002'); }, \InvalidArgumentException::class, 'Blank title rejected');
+        check((int)$other['cid'] !== $cid, '操作标识按作者隔离');
+        check(AdminRepository::album($cid, 8, false) === null, '其他作者不得访问图集');
+        check(AdminRepository::album($cid, 8, true) !== null, '管理员可访问其他作者图集');
+        check(AdminRepository::album($cid, 0, true) === null, '缺少用户身份时拒绝访问');
+        rejected(static function () use ($cid) { AdminWorkflow::requireAlbum($cid, 8, false); }, \DomainException::class, '写操作拒绝修改其他作者图集');
+        rejected(static function () { AdminWorkflow::draft(7, ['title' => 'bad'], 'short'); }, \InvalidArgumentException::class, '拒绝无效操作标识');
+        rejected(static function () { AdminWorkflow::draft(7, ['title' => '  '], 'draft-operation-0002'); }, \InvalidArgumentException::class, '拒绝空白标题');
         check(AdminSecurity::validMutation('POST', 'token', 'token') && !AdminSecurity::validMutation('GET', 'token', 'token')
-            && !AdminSecurity::validMutation('POST', '', '') && !AdminSecurity::validMutation('POST', 'token', ['token']), 'Mutation guard fails closed');
+            && !AdminSecurity::validMutation('POST', '', '') && !AdminSecurity::validMutation('POST', 'token', ['token']), '写操作校验缺失时必须拒绝');
 
         $ordinary = post([]);
-        check(AdminRepository::album($ordinary, 7, false) === null, 'Ordinary post is not an album');
+        check(AdminRepository::album($ordinary, 7, false) === null, '普通文章不应被识别为图集');
         foreach (['attachment', 'page'] as $type) {
             $excluded = post(['type' => $type]);
             AdminRepository::setField($excluded, AdminRepository::MARKER, '1');
-            check(AdminRepository::album($excluded, 7, true) === null, 'Wrong content type rejected: ' . $type);
+            check(AdminRepository::album($excluded, 7, true) === null, '拒绝非文章内容类型：' . $type);
         }
         $hidden = post(['status' => 'private']);
         AdminRepository::setField($hidden, AdminRepository::MARKER, '1');
-        check(AdminRepository::album($hidden, 7, true) === null, 'Unsupported post status rejected');
-        rejected(static function () use ($cid) { AdminWorkflow::publish($cid, 7, false, true); }, \InvalidArgumentException::class, 'Empty draft cannot publish');
-        check(AdminRepository::page(7, false, 1, '50%_!')['total'] === 1, 'LIKE wildcard characters searched literally');
-        check(AdminRepository::page(7, false, 1, "' OR 1=1 --")['total'] === 0, 'Search cannot inject SQL');
-        check(AdminRepository::page(8, false)['total'] === 1, 'Pagination respects author scope');
+        check(AdminRepository::album($hidden, 7, true) === null, '拒绝不支持的文章状态');
+        rejected(static function () use ($cid) { AdminWorkflow::publish($cid, 7, false, true); }, \InvalidArgumentException::class, '空图集不能发布');
+        check(AdminRepository::page(7, false, 1, '50%_!')['total'] === 1, '搜索中的 LIKE 通配符按字面处理');
+        check(AdminRepository::page(7, false, 1, "' OR 1=1 --")['total'] === 0, '搜索不得注入 SQL');
+        check(AdminRepository::page(8, false)['total'] === 1, '分页仅返回有权限的作者内容');
 
-        // A Query passed to Db::query(..., WRITE) is silently rerouted to READ by Typecho.
-        // Production helpers must compile it to a string before choosing the writer.
+        // Typecho 会将传给 Db::query(..., WRITE) 的 SELECT Query 对象重新路由到 READ。
+        // 生产辅助函数必须先编译字符串，再选择主库连接。
         AdminRepository::setField($cid, 'device', 'before transaction');
         Database::query('BEGIN', Db::WRITE);
         try {
             AdminRepository::setField($cid, 'device', 'inside transaction');
-            check(AdminRepository::field($cid, 'device', true) === 'inside transaction', 'Writer sees uncommitted metadata');
-            check(AdminRepository::field($cid, 'device') === 'before transaction', 'Reader remains isolated from writer');
+            check(AdminRepository::field($cid, 'device', true) === 'inside transaction', '主库读取可见尚未提交的元数据');
+            check(AdminRepository::field($cid, 'device') === 'before transaction', '读库不能看见主库未提交的数据');
             $query = $db->select('str_value')->from('table.fields')->where('cid = ?', $cid)->where('name = ?', 'device');
-            check(AdminRepository::readAll($query, true)[0]['str_value'] === 'inside transaction', 'readAll compiles and routes to writer');
+            check(AdminRepository::readAll($query, true)[0]['str_value'] === 'inside transaction', 'readAll 编译查询并读取主库');
         } finally { Database::query('ROLLBACK', Db::WRITE); }
-        check(AdminRepository::field($cid, 'device') === 'before transaction', 'Rollback restores existing field');
+        check(AdminRepository::field($cid, 'device') === 'before transaction', '回滚恢复原有字段');
 
         $before = rowCount('contents');
         failureTrigger(true);
         try {
             injectedFailure(static function () { AdminWorkflow::draft(7, ['title' => 'Rollback draft', 'device' => 'first write', 'tags' => 'fail'], 'draft-operation-fail'); },
-                'Draft field failure surfaces database error');
+                '草稿字段失败必须抛出数据库错误');
         } finally { failureTrigger(false); }
-        check(rowCount('contents') === $before, 'Draft and earlier fields rollback together');
-        check(AdminRepository::draftForOperation(7, 'draft-operation-fail') === null, 'Failed draft leaves no operation marker');
+        check(rowCount('contents') === $before, '草稿及此前字段写入必须共同回滚');
+        check(AdminRepository::draftForOperation(7, 'draft-operation-fail') === null, '失败草稿不得残留操作标记');
 
         $a = photo($cid, ['full' => '/usr/uploads/full/late.webp', 'title' => 'Late', 'upload_key' => 'photo-operation-0001'], 20);
         $b = photo($cid, ['full' => '/usr/uploads/full/early.webp', 'title' => "Early ' ?", 'desc' => 'Unicode 雨', 'width' => 800, 'height' => 600], 10);
-        check($a > 0 && $b > $a, 'Image inserts return real generated primary keys');
+        check($a > 0 && $b > $a, '图片插入返回真实自增主键');
         injectedFailure(static function () use ($cid) { photo($cid, ['upload_key' => 'photo-operation-0001']); },
-            'Same-album upload retry key is unique', $dialect === 'SQLite' ? 'UNIQUE' : 'duplicate');
-        check(rowCount('infinitytime_images') === 2, 'Rejected duplicate must not add a row');
-        check(photo((int)$other['cid'], ['upload_key' => 'photo-operation-0001']) > 0, 'Upload keys can repeat in different albums');
-        check(photo((int)$other['cid']) > 0 && photo((int)$other['cid']) > 0, 'Multiple legacy NULL upload keys allowed');
+            '同一图集内上传重试标识必须唯一', $dialect === 'SQLite' ? 'UNIQUE' : 'duplicate');
+        check(rowCount('infinitytime_images') === 2, '拒绝重复上传时不得增加图片记录');
+        check(photo((int)$other['cid'], ['upload_key' => 'photo-operation-0001']) > 0, '不同图集可使用相同上传标识');
+        check(photo((int)$other['cid']) > 0 && photo((int)$other['cid']) > 0, '兼容多条旧记录的 NULL 上传标识');
         ImageRepository::syncPostFields($cid);
-        check(AdminRepository::field($cid, 'img') === "/usr/uploads/full/early.webp\n/usr/uploads/full/late.webp", 'Image paths follow sort order');
-        check(json_decode(AdminRepository::field($cid, 'photo_ids'), true) === [$b, $a], 'Photo IDs aligned with paths');
-        check(json_decode(AdminRepository::field($cid, 'titles'), true) === ["Early ' ?", 'Late'], 'Titles aligned with paths');
-        check(json_decode(AdminRepository::field($cid, 'dims'), true) === ['800x600', '1200x600'], 'Dimensions aligned with paths');
-        check(json_decode(AdminRepository::field($cid, 'panos'), true) === [0, 1], 'Panorama metadata aligned');
+        check(AdminRepository::field($cid, 'img') === "/usr/uploads/full/early.webp\n/usr/uploads/full/late.webp", '图片路径按排序字段排列');
+        check(json_decode(AdminRepository::field($cid, 'photo_ids'), true) === [$b, $a], '图片 ID 与路径逐项对齐');
+        check(json_decode(AdminRepository::field($cid, 'titles'), true) === ["Early ' ?", 'Late'], '标题与路径逐项对齐');
+        check(json_decode(AdminRepository::field($cid, 'dims'), true) === ['800x600', '1200x600'], '尺寸与路径逐项对齐');
+        check(json_decode(AdminRepository::field($cid, 'panos'), true) === [0, 1], '全景标记与图片逐项对齐');
         $exif = json_decode(AdminRepository::field($cid, 'exif'), true);
-        check(!isset($exif[0]['gps']) && !isset($exif[1]['gps']), 'Public EXIF fields omit GPS');
-        check(AdminRepository::counts([$cid, $cid, 0, -1]) === [$cid => 2], 'Managed image counts deduplicate IDs');
-        check(count(ImageRepository::rowsForCids([$cid, (int)$other['cid']])) === 2, 'Batch image lookup groups albums');
+        check(!isset($exif[0]['gps']) && !isset($exif[1]['gps']), '公开 EXIF 字段不含 GPS');
+        check(AdminRepository::counts([$cid, $cid, 0, -1]) === [$cid => 2], '图片计数去重并忽略无效图集 ID');
+        check(count(ImageRepository::rowsForCids([$cid, (int)$other['cid']])) === 2, '批量图片查询按图集分组');
         $legacy = post(['title' => 'Legacy album']);
         AdminRepository::setField($legacy, 'img', "/legacy/a.webp\n/legacy/b.webp");
         ImageRepository::syncPostFields($legacy);
-        check(AdminRepository::counts([$legacy]) === [$legacy => 2], 'Legacy line-count syntax is portable');
-        check(AdminRepository::album($legacy, 7, false) !== null, 'Legacy fields identify an album');
-        check(AdminRepository::field($legacy, 'img') === "/legacy/a.webp\n/legacy/b.webp", 'Sync preserves legacy-only images');
+        check(AdminRepository::counts([$legacy]) === [$legacy => 2], '旧图集按换行计数的 SQL 跨数据库兼容');
+        check(AdminRepository::album($legacy, 7, false) !== null, '旧字段仍可识别图集');
+        check(AdminRepository::field($legacy, 'img') === "/legacy/a.webp\n/legacy/b.webp", '同步保留只有旧字段的图片');
 
-        // Atomic replacement: fail after img/thumb have already been rewritten.
+        // 原子替换：在 img/thumb 已重写之后，令后续字段插入失败。
         $snapshot = fields($cid);
         Database::query($db->update(ImageRepository::table())->rows(['title' => 'Changed'])->where('id = ?', $b));
         failureTrigger(true, 'titles');
         try {
             injectedFailure(static function () use ($cid) { ImageRepository::syncPostFields($cid); },
-                'Field-sync failure surfaces database error');
+                '字段同步失败必须抛出数据库错误');
         } finally { failureTrigger(false); }
-        check(fields($cid) === $snapshot, 'Failed field sync must retain the entire old snapshot');
+        check(fields($cid) === $snapshot, '字段同步失败必须完整保留旧快照');
         ImageRepository::syncPostFields($cid);
-        check(json_decode(AdminRepository::field($cid, 'titles'), true)[0] === 'Changed', 'Retry successfully updates all fields');
-        check(json_decode(AdminRepository::field($cid, 'months'), true) === ['2024-05', '2024-05'], 'EXIF dates are kept aligned');
+        check(json_decode(AdminRepository::field($cid, 'titles'), true)[0] === 'Changed', '重试能够更新全部字段');
+        check(json_decode(AdminRepository::field($cid, 'months'), true) === ['2024-05', '2024-05'], 'EXIF 拍摄月份与图片逐项对齐');
 
-        // Caller-owned transaction: sync must neither commit nor discard unrelated work.
+        // 调用方已有事务时，同步不得提交或丢弃调用方的其他修改。
         $outerSnapshot = fields($cid);
         Database::query('BEGIN', Db::WRITE);
         try {
             AdminRepository::setField($cid, 'device', 'outer successful sync');
             Database::query($db->update(ImageRepository::table())->rows(['title' => 'Uncommitted image'])->where('id = ?', $b));
             ImageRepository::syncPostFields($cid);
-            check(json_decode(AdminRepository::field($cid, 'titles', true), true)[0] === 'Uncommitted image', 'Nested sync reads uncommitted writer image rows');
-            check(AdminRepository::field($cid, 'device') === 'before transaction', 'Nested sync must not commit caller writes');
+            check(json_decode(AdminRepository::field($cid, 'titles', true), true)[0] === 'Uncommitted image', '嵌套同步读取主库未提交图片');
+            check(AdminRepository::field($cid, 'device') === 'before transaction', '嵌套同步不得提交调用方写入');
         } finally { Database::query('ROLLBACK', Db::WRITE); }
-        check(fields($cid) === $outerSnapshot, 'Caller rollback restores successful nested field sync');
+        check(fields($cid) === $outerSnapshot, '调用方回滚可撤销成功的嵌套同步');
 
         failureTrigger(true, 'titles');
         Database::query('BEGIN', Db::WRITE);
         try {
             AdminRepository::setField($cid, 'device', 'outer survives failure');
-            injectedFailure(static function () use ($cid) { ImageRepository::syncPostFields($cid); }, 'Nested sync reports injected error');
-            check(AdminRepository::field($cid, 'device', true) === 'outer survives failure', 'Failed nested sync preserves earlier caller writes');
-            check(json_decode(AdminRepository::field($cid, 'titles', true), true)[0] === 'Changed', 'Failed nested sync restores old title within caller transaction');
+            injectedFailure(static function () use ($cid) { ImageRepository::syncPostFields($cid); }, '嵌套同步正确报告注入错误');
+            check(AdminRepository::field($cid, 'device', true) === 'outer survives failure', '嵌套同步失败保留调用方此前写入');
+            check(json_decode(AdminRepository::field($cid, 'titles', true), true)[0] === 'Changed', '嵌套同步失败后事务内标题恢复旧值');
             AdminRepository::setField($cid, 'device', 'outer remains usable');
-            check(AdminRepository::field($cid, 'device', true) === 'outer remains usable', 'Caller can continue using transaction after failed sync');
+            check(AdminRepository::field($cid, 'device', true) === 'outer remains usable', '同步失败后调用方仍可继续使用事务');
         } finally {
             Database::query('ROLLBACK', Db::WRITE);
             failureTrigger(false);
         }
-        check(fields($cid) === $outerSnapshot, 'Caller rollback after failed sync restores all fields');
+        check(fields($cid) === $outerSnapshot, '同步失败后调用方回滚恢复全部字段');
 
-        rejected(static function () use ($cid) { AdminWorkflow::publish($cid, 7, false, false); }, \DomainException::class, 'Contributor cannot publish');
+        if ($dialect === 'Mysql') {
+            // autocommit=0 的隐式事务也属于调用方，不能被同步函数提交。
+            Database::query('SET autocommit = 0');
+            try {
+                AdminRepository::setField($cid, 'device', 'autocommit-off');
+                ImageRepository::syncPostFields($cid);
+                check(AdminRepository::field($cid, 'device', true) === 'autocommit-off', '同步保留 autocommit=0 事务中的修改');
+                check(AdminRepository::field($cid, 'device') === 'before transaction', '同步不提交 autocommit=0 的调用方事务');
+            } finally {
+                Database::query('ROLLBACK');
+                Database::query('SET autocommit = 1');
+            }
+            check(fields($cid) === $outerSnapshot, '隐式事务回滚后原字段完整保留');
+            Database::query('ALTER TABLE ' . table('fields') . ' ENGINE=MyISAM');
+            try {
+                rejected(static function () use ($cid) { ImageRepository::syncPostFields($cid); }, \RuntimeException::class, '不支持回滚的 MyISAM 必须拒绝同步');
+                check(fields($cid) === $outerSnapshot, '拒绝 MyISAM 时不能改动任何字段');
+            } finally { Database::query('ALTER TABLE ' . table('fields') . ' ENGINE=InnoDB'); }
+        }
+
+        rejected(static function () use ($cid) { AdminWorkflow::publish($cid, 7, false, false); }, \DomainException::class, '贡献者不能发布图集');
         AdminWorkflow::publish($cid, 7, false, true);
-        check(AdminRepository::album($cid, 7, false)['status'] === 'publish', 'Editor publishes nonempty album');
-        rejected(static function () use ($cid) { AdminWorkflow::requireAlbum($cid, 7, false, false); }, \DomainException::class, 'Contributor cannot modify published album');
-        check(AdminWorkflow::requireAlbum($cid, 7, false, true)['status'] === 'publish', 'Editor can modify own published album');
+        check(AdminRepository::album($cid, 7, false)['status'] === 'publish', '编辑可发布非空图集');
+        rejected(static function () use ($cid) { AdminWorkflow::requireAlbum($cid, 7, false, false); }, \DomainException::class, '贡献者不能修改已发布图集');
+        check(AdminWorkflow::requireAlbum($cid, 7, false, true)['status'] === 'publish', '编辑可修改自己已发布的图集');
 
         // 模拟真正滞后的副本：读库完全没有主库的图集、图片和自定义字段。
         $primaryDb = $db;
@@ -355,6 +375,16 @@ namespace {
             check(Database::query($splitDb->update(ImageRepository::table())->rows(['title' => '修改主库图片'])->where('id = ?', $newPhoto)) === 1, '更新返回主库实际影响行数');
             check(Database::query($splitDb->delete(ImageRepository::table())->where('id = ?', $newPhoto)) === 1, '删除返回主库实际影响行数');
             check(count(ImageRepository::rowsFor($newCid)) === 0, '删除确实发生在主库');
+            Plugin::setOption('infinitytimeReplicaProbe', '仅主库');
+            $probeQuery = $splitDb->select('value')->from('table.options')->where('name = ?', 'infinitytimeReplicaProbe');
+            check(AdminRepository::readRow($probeQuery, true)['value'] === '仅主库', '选项写入只发生在主库');
+            check($splitDb->fetchRow($probeQuery) === null, '选项写入没有污染副本');
+            Plugin::setOption('infinitytimeSchemaVersion', '3');
+            Plugin::migrateSchema();
+            $versionQuery = $splitDb->select('value')->from('table.options')->where('name = ?', 'infinitytimeSchemaVersion');
+            check((int)AdminRepository::readRow($versionQuery, true)['value'] === 4, '主库迁移完成后版本正确');
+            check($splitDb->fetchRow($versionQuery) === null, '迁移没有写入副本版本');
+
         } finally {
             Db::set($primaryDb);
             foreach ([$splitDb, $replicaDb] as $connection) {
@@ -371,7 +401,7 @@ namespace {
                     $connection->flushPool();
                 }
             }
-            unset($connection, $splitDb, $replicaDb);
+            unset($connection, $splitDb, $replicaDb, $probeQuery, $versionQuery);
             if ($replicaCreated) {
                 Database::query('DROP DATABASE ' . ($dialect === 'Mysql' ? '`' : '"') . $replicaName . ($dialect === 'Mysql' ? '`' : '"'));
             }
@@ -380,10 +410,10 @@ namespace {
 
         Database::query($db->delete(ImageRepository::table())->where('cid = ?', $cid));
         ImageRepository::syncPostFields($cid, true);
-        check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', 'Explicit clear removes last-image metadata');
-        check(AdminRepository::album($cid, 7, false) !== null, 'Cleared album keeps its marker');
+        check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', '显式清空删除最后一张图的元数据');
+        check(AdminRepository::album($cid, 7, false) !== null, '清空后的图集保留识别标记');
 
-        // Genuine old-install migration: absent metadata/retry columns, existing rows preserved.
+        // 真实旧表迁移：缺少元数据及重试列时，补齐列并保留已有记录。
         Database::query('DROP TABLE ' . table('infinitytime_images'), Db::WRITE);
         $pk = $dialect === 'Mysql' ? 'id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY'
             : ($dialect === 'Pgsql' ? 'id SERIAL PRIMARY KEY' : 'id INTEGER PRIMARY KEY AUTOINCREMENT');
@@ -392,21 +422,34 @@ namespace {
         Plugin::setOption('infinitytimeSchemaVersion', '2');
         Plugin::migrateSchema();
         $preserved = $db->fetchRow($db->select()->from(ImageRepository::table()));
-        check($preserved['full'] === '/preserved.webp' && $preserved['upload_key'] === null, 'Migration preserves existing rows with nullable retry keys');
-        check(array_key_exists('mid_avif', $preserved) && array_key_exists('desc', $preserved), 'Migration repairs every historical missing column');
+        check($preserved['full'] === '/preserved.webp' && $preserved['upload_key'] === null, '迁移保留已有图片，重试标识默认为 NULL');
+        check(array_key_exists('mid_avif', $preserved) && array_key_exists('desc', $preserved), '迁移修复所有历史缺失列');
         Plugin::setOption('infinitytimeSchemaVersion', '3');
         Plugin::migrateSchema();
-        check((int)Plugin::opt('infinitytimeSchemaVersion') === 4, 'Interrupted migration validates existing unique index');
-        check(rowCount('infinitytime_images') === 1, 'Repeated migration never duplicates images');
-        echo 'PASS: ' . $checks . ' real Typecho ' . \Typecho\Common::VERSION . ' / PHP ' . PHP_VERSION . ' / ' . $adapter . " checks\n";
+        check((int)Plugin::opt('infinitytimeSchemaVersion') === 4, '中断后重试正确验证已有唯一索引');
+        check(rowCount('infinitytime_images') === 1, '重复迁移不得增加图片');
+        // 同名但非唯一的索引不能被误认为成功升级。
+        $index = 'it_upload_' . substr(sha1(ImageRepository::table()), 0, 16);
+        $quote = $dialect === 'Mysql' ? '`' : '"';
+        $dropIndex = 'DROP INDEX ' . $quote . $index . $quote . ($dialect === 'Mysql' ? ' ON ' . table('infinitytime_images') : '');
+        Database::query($dropIndex);
+        Database::query('CREATE INDEX ' . $quote . $index . $quote . ' ON ' . table('infinitytime_images') . ' (cid, upload_key)');
+        Plugin::setOption('infinitytimeSchemaVersion', '3');
+        rejected(static function () { Plugin::migrateSchema(); }, \RuntimeException::class, '错误的非唯一索引必须阻止升级');
+        check((int)Plugin::opt('infinitytimeSchemaVersion') === 3, '索引验证失败不能推进版本');
+        check(rowCount('infinitytime_images') === 1, '索引验证失败不能破坏图片');
+        Database::query($dropIndex);
+        Plugin::migrateSchema();
+        check((int)Plugin::opt('infinitytimeSchemaVersion') === 4, '管理员移除错误索引后可以重试升级');
+        echo '通过：' . $checks . ' 项真实 Typecho ' . \Typecho\Common::VERSION . ' / PHP ' . PHP_VERSION . ' / ' . $adapter . " 数据库集成检查\n";
     } catch (\Throwable $e) {
         $failed = $e;
     } finally {
         ImageRepository::unlockMedia();
-        // Only our random-prefixed objects are removed, including after a failing assertion.
+        // 即使断言失败也只清理本次随机前缀的临时数据库对象。
         foreach (['infinitytime_images', 'fields', 'contents', 'comments', 'metas', 'options', 'relationships', 'users'] as $name) {
             try { Database::query('DROP TABLE IF EXISTS ' . table($name) . ($dialect === 'Pgsql' ? ' CASCADE' : ''), Db::WRITE); }
-            catch (\Throwable $cleanup) { fwrite(STDERR, 'Cleanup: ' . $cleanup->getMessage() . "\n"); }
+            catch (\Throwable $cleanup) { fwrite(STDERR, '清理提示：' . $cleanup->getMessage() . "\n"); }
         }
         if ($dialect === 'Pgsql') {
             foreach (['comments', 'contents', 'metas', 'users'] as $name) {
@@ -421,7 +464,7 @@ namespace {
         @rmdir($tmp);
     }
     if ($failed) {
-        fwrite(STDERR, 'FAIL: ' . get_class($failed) . ': ' . $failed->getMessage() . "\n" . $failed->getTraceAsString() . "\n");
+        fwrite(STDERR, '失败：' . get_class($failed) . ': ' . $failed->getMessage() . "\n" . $failed->getTraceAsString() . "\n");
         exit(1);
     }
 }

@@ -7,7 +7,8 @@ namespace Typecho {
         public string $table = '';
         public array $values = [];
         public array $conditions = [];
-        public function __construct(public string $kind) {}
+        public string $kind;
+        public function __construct(string $kind) { $this->kind = $kind; }
         public function from($table): self { $this->table = $table; return $this; }
         public function rows($values): self { $this->values = $values; return $this; }
         public function where($clause, ...$values): self { $this->conditions[$clause] = $values; return $this; }
