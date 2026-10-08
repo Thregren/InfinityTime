@@ -288,6 +288,12 @@ if (!empty($_GET['ajax'])) {
             echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => '安全校验失败，请刷新后台页面后重试'], JSON_UNESCAPED_UNICODE);
             exit;
         }
+        // 原子锁串行化维护状态，并与上传的落盘/入库临界区互斥。
+        try { ImageRepository::lockMedia(); } catch (\Throwable $e) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['finished' => true, 'total' => 0, 'done' => 0, 'current' => '', 'failed' => 0, 'msg' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
         // 简单并发锁：同一时间只允许一个维护任务（不同管理员 90 秒内不能抢跑）
         $__uid = (int)($user->uid ?? 0);
         $__lockFile = pp_data_file() . '/job.lock';
@@ -382,28 +388,7 @@ if (!empty($_GET['ajax'])) {
         $jobFile = pp_data_file() . '/job.json';
         $state = pp_read_json($jobFile);
         if (($state['job'] ?? '') !== 'cleanup' || !file_exists($listFile)) {
-            $rows = $db->fetchAll($db->select()->from(ImageRepository::table()));
-            $ref = [];
-            foreach ($rows as $r) {
-                foreach (['original', 'full', 'mid', 'avif', 'mid_avif', 'thumb'] as $k) {
-                    if (!empty($r[$k])) {
-                        $ref[ImageRepository::toAbs($r[$k])] = true;
-                    }
-                }
-            }
-            $list = [];
-            foreach (ImageRepository::defaultDirs() as $type => $webDir) {
-                $abs = ImageRepository::toAbs($webDir);
-                if (!is_dir($abs)) {
-                    continue;
-                }
-                $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($abs, \FilesystemIterator::SKIP_DOTS));
-                foreach ($it as $file) {
-                    if ($file->isFile() && !isset($ref[$file->getPathname()])) {
-                        $list[] = $file->getPathname();
-                    }
-                }
-            }
+            $list = ImageRepository::orphanCandidates();
             pp_write_json($listFile, $list);
             pp_write_json($jobFile, ['job' => 'cleanup', 'total' => count($list), 'done' => 0, 'current' => '']);
         }
@@ -411,15 +396,15 @@ if (!empty($_GET['ajax'])) {
         $state = pp_read_json($jobFile);
         $idx = (int)($state['done'] ?? 0);
         $batch = 50;
+        ImageRepository::removeOrphanCandidates(array_slice($list, $idx, $batch));
         for ($i = 0; $i < $batch && $idx < count($list); $i++) {
-            @unlink($list[$idx]);
-            $state['current'] = basename($list[$idx]);
+            $state['current'] = basename(is_array($list[$idx]) ? (string)($list[$idx]['path'] ?? '') : (string)$list[$idx]);
             $idx++;
         }
         $state['done'] = $idx;
         $state['finished'] = $idx >= count($list);
         if ($state['finished']) {
-            pp_prune_empty_dirs();
+            @unlink($listFile);
             $state = ['job' => 'cleanup', 'total' => 0, 'done' => 0, 'current' => '', 'finished' => true];
         }
         pp_write_json($jobFile, $state);
@@ -538,7 +523,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'allowComment' => '0', 'allowPing' => '0', 'allowFeed' => '0', 'template' => '', 'password' => '',
         ]));
 
-        $imgs = []; $thumbs = []; $exifs = []; $addrs = []; $titles = []; $descs = []; $panos = [];
+        $imgs = [];
         $firstExif = null; $index = 0; $fail = 0;
         $quality = (int)Plugin::opt('infinitytimeQuality', Plugin::DEFAULT_QUALITY);
         $thumbMax = (int)Plugin::opt('infinitytimeThumbMax', Plugin::DEFAULT_THUMB_MAX);
@@ -588,16 +573,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fail++;
                 continue;
             }
-            $rowId = ImageRepository::insertRow($cid, $meta, $index);
             $imgTitle = isset($postTitles[$i]) ? trim((string)$postTitles[$i]) : '';
             $imgDesc = isset($postDescs[$i]) ? trim((string)$postDescs[$i]) : '';
-            if ($imgTitle !== '' || $imgDesc !== '') {
-                ImageRepository::setImageMeta($rowId, $imgTitle, $imgDesc, (string)$address);
+            $meta['title'] = $imgTitle;
+            $meta['desc'] = $imgDesc;
+            try {
+                $rowId = ImageRepository::insertRow($cid, $meta, $index);
+                if ($rowId <= 0) { throw new \RuntimeException('图片记录写入失败'); }
+            } catch (\Throwable $e) {
+                Plugin::log('create_album insertRow: ' . $e->getMessage());
+                ImageRepository::$lastError = '图片记录写入失败，请稍后重试';
+                $fail++;
+                continue;
             }
-            $imgs[] = $meta['full']; $thumbs[] = $meta['thumb']; $exifs[] = $meta['exif']; $addrs[] = $address;
-            $titles[] = $imgTitle; $descs[] = $imgDesc;
-            $pw = (int)($meta['width'] ?? 0); $ph = (int)($meta['height'] ?? 0);
-            $panos[] = ImageRepository::isPano($pw, $ph) ? 1 : 0;
+            $imgs[] = $meta['full'];
             if ($firstExif === null) {
                 $firstExif = $meta['exif'];
             }
@@ -619,19 +608,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             pp_reply($msg, 'error');
         }
 
-        foreach ([
-            'img' => implode("\n", $imgs),
-            'thumb' => implode("\n", $thumbs),
-            'exif' => json_encode($exifs, JSON_UNESCAPED_UNICODE),
-            'addresses' => json_encode($addrs, JSON_UNESCAPED_UNICODE),
-            'titles' => json_encode($titles, JSON_UNESCAPED_UNICODE),
-            'descs' => json_encode($descs, JSON_UNESCAPED_UNICODE),
-            'panos' => json_encode($panos, JSON_UNESCAPED_UNICODE),
-            'device' => $device !== '' ? $device : trim((string)($firstExif['make'] ?? '') . ' ' . (string)($firstExif['model'] ?? '')),
-            'location' => $address,
-        ] as $name => $val) {
-            pp_set_field($cid, $name, $val);
-        }
+        ImageRepository::syncPostFields($cid);
+        pp_set_field($cid, 'device', $device !== '' ? $device : trim((string)($firstExif['make'] ?? '') . ' ' . (string)($firstExif['model'] ?? '')));
+        pp_set_field($cid, 'location', $address);
         if ($tags !== '') {
             pp_set_field($cid, 'tags', $tags);
         }
@@ -1264,3 +1243,4 @@ include $adminDir . '/menu.php';
     <script src="<?php echo htmlspecialchars($ppPluginWeb . '/assets/admin.js'); ?>"></script>
 </main>
 <?php include $adminDir . '/footer.php'; ?>
+

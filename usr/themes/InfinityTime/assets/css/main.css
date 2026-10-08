@@ -2753,6 +2753,8 @@ span.tag-list a:hover {
 
 /* 灯箱弹窗：EXIF 停靠侧栏（主图外侧，不遮挡） */
 .poptrox-exif-dock {
+  text-align: left;
+  visibility: hidden;
   position: fixed;
   width: 218px;
   max-height: 82vh;
@@ -2771,6 +2773,7 @@ span.tag-list a:hover {
               transform .45s cubic-bezier(0.45, 0, 0.55, 1);
 }
 .poptrox-exif-dock.show {
+  visibility: visible;
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
@@ -2951,6 +2954,7 @@ span.tag-list a:hover {
 /* 底部切图按钮（全端统一）：灯箱打开时淡入，EXIF 抽屉展开时淡出隐藏。
    桌面端也用它替代 poptrox 的左右箭头与右上角关闭叉。 */
 .pp-mobile-nav {
+  visibility: hidden;
   position: fixed;
   left: 0;
   right: 0;
@@ -2967,12 +2971,14 @@ span.tag-list a:hover {
 }
 /* 显示态：灯箱打开且抽屉收起 */
 body.exif-dock-open .pp-mobile-nav {
+  visibility: visible;
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
 }
 /* 抽屉展开（仅移动端会出现）：同速向上移动淡出 */
 body.pp-dock-expanded .pp-mobile-nav {
+  visibility: hidden;
   opacity: 0;
   transform: translateY(-24px);
   pointer-events: none;
@@ -3001,6 +3007,31 @@ body.pp-dock-expanded .pp-mobile-nav {
 .poptrox-popup .nav-previous,
 .poptrox-popup .nav-next { display: none !important; }
 
+/* Keep closing available even while loading or while the EXIF drawer is open. */
+.pp-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 20014;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, .4);
+  border-radius: 50%;
+  background: #191c1e;
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+#main .thumb > a.image:focus-visible,
+.poptrox-overlay button:focus-visible,
+.poptrox-overlay [tabindex]:focus-visible {
+  outline: 3px solid #fff !important;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px #111;
+}
+
 @media (max-width: 900px) {
   /* 移动端等 EXIF 抽屉收起到底后再淡入，避免与抽屉动画打架 */
   body.exif-dock-open .pp-mobile-nav { transition-delay: .45s; }
@@ -3010,6 +3041,7 @@ body.pp-dock-expanded .pp-mobile-nav {
 @media (min-width: 901px) {
   /* 桌面端等定位完成（pp-nav-placed）再淡入，避免先出现在底部中央再跳到 EXIF 列 */
   body.exif-dock-open .pp-mobile-nav:not(.pp-nav-placed) {
+    visibility: hidden;
     opacity: 0;
     pointer-events: none;
   }
@@ -3200,3 +3232,4 @@ body.is-preload #header {
 #header nav>ul>li a:hover {
   border-radius: 999px;
 }
+

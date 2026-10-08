@@ -69,12 +69,24 @@
 php tests/test.php
 php tests/sanitizer-fallback.php
 php tests/repository.php
+php tests/migration.php
 php tests/upload-fallback.php
 php tests/theme-output.php
 node tests/admin-upload.cjs
+node tests/gallery.cjs
+```
+
+浏览器回归（Playwright 1.62.1 + Chromium；页面与资源请求全部由测试拦截，不访问线上站点）：
+
+```sh
+npm install --no-save --package-lock=false playwright@1.62.1
+npx playwright install chromium
+node tests/gallery-browser.cjs
 ```
 
 CI 同时检查 PHP / JS 语法、版本一致性和更新记录。仓库测试使用隔离临时文件及 DB/编码器替身；后台脚本测试模拟 DOM，覆盖预览、拖拽、移除和无 `DataTransfer` 时的提交顺序。这些检查不能替代真实 Typecho 后台及图片编码器的端到端验证。
+
+维护与上传现在通过同一上传根目录内的文件锁互斥，忙时提示稍后重试。孤儿清理只处理至少一小时前的文件，恢复任务时重新核验数据库引用与文件身份；旧版任务快照会安全跳过，重新启动清理即可。文件锁需要底层文件系统支持可靠的 `flock`（多节点部署需共用支持锁的上传卷）。
 
 ### 后端
 - PHP ≥ 7.4（推荐 8.x）+ Typecho 1.3；`php-gd`（WebP/缩放）、`php-exif`、可选 `php-imagick` / ImageMagick / `heif-convert`。
@@ -168,3 +180,4 @@ git tag v1.7.0 && git push origin v1.7.0
 - 本项目未引入任何新的第三方运行时库；灯箱 / EXIF / 瀑布流的动效基于 jQuery 内置缓动与 CSS 缓动实现，不依赖 GSAP、Three.js 等额外库。
 
 > 若你基于本主题二次分发，请同时保留上述第三方项目的许可声明。
+

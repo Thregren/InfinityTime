@@ -22,12 +22,12 @@ if (!headers_sent()) {
 }
 ?>
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 
 <head>
   <title><?php echo htmlspecialchars(pp_opt('infinitytimeSiteName', (string)$this->options->IndexName, $this->options)); ?> - <?php echo htmlspecialchars(pp_opt('infinitytimeSiteTagline', (string)$this->options->Indexdict, $this->options)); ?> </title>
   <meta http-equiv="content-type" content="text/html; charset=<?php $this->options->charset(); ?>" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="keywords" content="<?php $this->options->keywords(); ?>" />
   <meta name="description" content="<?php $this->options->description(); ?>" />
   <link rel="apple-touch-icon" href="<?php $this->options->AppleIcon(); ?>">
@@ -102,8 +102,9 @@ if (!headers_sent()) {
           }, $exifList);
           $exif0 = $exifList[0] ?? [];
           $addr0 = $addrList[0] ?? ($this->fields->location ? $this->fields->location : '');
+          $imageAlt = trim((string)($imgTitles[0] ?? '')) ?: (trim((string)$this->title) ?: '照片');
           ?>
-          <a class="image my-photo" aria-label="<?php echo htmlspecialchars((string)$this->title, ENT_QUOTES); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
+          <a class="image my-photo" aria-label="<?php echo htmlspecialchars(trim((string)$this->title) ?: $imageAlt, ENT_QUOTES); ?>" href="<?php echo htmlspecialchars($firstImage, ENT_QUOTES); ?>"
              data-images='<?php echo json_encode($images, $__jsonFlags); ?>'
              data-previews='<?php echo json_encode($thumbs ?: $images ?: [], $__jsonFlags); ?>'
              data-exif='<?php echo json_encode($exifList, $__jsonFlags); ?>'
@@ -114,7 +115,7 @@ if (!headers_sent()) {
              data-dims='<?php echo json_encode($dimsList, $__jsonFlags); ?>'
              data-variants='<?php echo json_encode($variantsList, $__jsonFlags); ?>'>
             <img class="zmki_px my-photo"
-              alt="<?php echo htmlspecialchars((string)$this->title, ENT_QUOTES); ?>"
+              alt="<?php echo htmlspecialchars($imageAlt, ENT_QUOTES); ?>"
               src="<?php echo htmlspecialchars($firstThumb, ENT_QUOTES); ?>"
               loading="lazy" decoding="async"
               data-fallback="<?php $this->options->themeUrl('assets/img/loading.gif'); ?>"
@@ -249,3 +250,4 @@ if (!headers_sent()) {
 </body>
 
 </html>
+

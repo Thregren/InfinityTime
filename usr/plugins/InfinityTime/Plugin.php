@@ -268,9 +268,13 @@ class Plugin implements \Typecho_Plugin_Interface
 
         // 记录为“未归档”图片（cid=0），清理时不会误删
         try {
-            ImageRepository::insertRow(0, $meta, 0);
+            if (ImageRepository::insertRow(0, $meta, 0) <= 0) {
+                throw new \RuntimeException('图片记录写入失败');
+            }
         } catch (\Throwable $e) {
             self::log('insertRow(cid=0): ' . $e->getMessage());
+            // 不向 Typecho 返回没有数据库引用、将来可能被孤儿清理的产物。
+            return self::defaultUploadHandle($file);
         }
 
         return [
@@ -397,7 +401,7 @@ class Plugin implements \Typecho_Plugin_Interface
     }
 
     /** 当前 schema 版本。新增列时 +1，并在 migrateSchema 里补对应 ALTER。 */
-    private const SCHEMA_VERSION = 2;
+    private const SCHEMA_VERSION = 3;
 
     /** 按版本补齐旧表缺失的列（幂等；每进程/每次激活最多跑一次 DDL）。 */
     public static function migrateSchema(): void
@@ -410,21 +414,26 @@ class Plugin implements \Typecho_Plugin_Interface
         if ($current >= self::SCHEMA_VERSION) {
             return;
         }
-        $cols = [];
-        if ($current < 1) {
-            $cols[] = 'title';
-            $cols[] = 'desc';
-        }
-        if ($current < 2) {
-            $cols[] = 'mid';
-            $cols[] = 'avif';
-            $cols[] = 'mid_avif';
-        }
+        // v3 一次性验证全部旧列，修复曾被 v2 错误标记成功的安装。
+        $cols = ['title', 'desc', 'mid', 'avif', 'mid_avif'];
         foreach ($cols as $col) {
+            // 使用限定列名，避免 SQLite 将不存在的双引号列名当作字符串。
+            $probe = "SELECT {$q}{$table}{$q}.{$q}{$col}{$q} FROM {$q}{$table}{$q} WHERE 1 = 0";
+            try {
+                $db->query($probe);
+                continue;
+            } catch (\Throwable $e) {
+                // 缺列时尝试补齐；其他读取错误也不能冒充成功。
+            }
             try {
                 $db->query("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$col}{$q} text");
             } catch (\Throwable $e) {
-                // 列已存在则忽略
+                // 另一进程可能已加列；下面实际探测成功才允许继续。
+            }
+            try {
+                $db->query($probe);
+            } catch (\Throwable $e) {
+                throw new \RuntimeException('InfinityTime 数据库升级失败，请检查数据库权限后重试（列：' . $col . '）', 0, $e);
             }
         }
         self::setOption('infinitytimeSchemaVersion', (string)self::SCHEMA_VERSION);
@@ -473,3 +482,4 @@ class Plugin implements \Typecho_Plugin_Interface
 
 // 全局上传钩子注册（放在文件顶层，插件加载时执行）
 \Typecho\Plugin::factory('Widget_Upload')->uploadHandle = 'TypechoPlugin\\InfinityTime\\Plugin::uploadHandle';
+

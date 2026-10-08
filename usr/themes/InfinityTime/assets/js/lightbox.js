@@ -37,7 +37,7 @@
             exifDock = document.createElement('div');
             exifDock.className = 'poptrox-exif-dock';
             exifDock.innerHTML =
-              '<div class="exif-dock-handle" role="button" tabindex="0" aria-label="展开或收起拍摄参数">'
+              '<div class="exif-dock-handle" role="button" tabindex="0" aria-expanded="false" aria-label="展开或收起拍摄参数">'
               + '<span class="exif-dock-handle-text">拍摄参数</span>'
               + '<span class="exif-dock-arrow" aria-hidden="true"></span>'
               + '</div>'
@@ -52,18 +52,19 @@
             var setDockExpanded = function (v) {
               exifDock.classList.toggle('expanded', !!v);
               document.body.classList.toggle('pp-dock-expanded', !!v);
+              exifDock.querySelector('.exif-dock-handle').setAttribute('aria-expanded', v ? 'true' : 'false');
             };
             var toggleDock = function (e) {
               var h = e && e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
               if (h) setDockExpanded(!exifDock.classList.contains('expanded'));
             };
-            exifDock.addEventListener('click', toggleDock);
+            exifDock.addEventListener('click', function(e) { e.stopPropagation(); toggleDock(e); });
             exifDock.addEventListener('keydown', function (e) {
               if (e.key !== 'Enter' && e.key !== ' ') return;
               var h = e.target && e.target.closest ? e.target.closest('.exif-dock-handle') : null;
               if (h) { e.preventDefault(); setDockExpanded(!exifDock.classList.contains('expanded')); }
             });
-            document.body.appendChild(exifDock);
+            (document.querySelector('.poptrox-overlay') || document.body).appendChild(exifDock);
           }
           return exifDock;
         }
@@ -712,7 +713,10 @@
             if (document.body.style.overflow !== 'hidden') document.body.style.overflow = 'hidden';
           } else {
             if (document.body.style.overflow !== '') document.body.style.overflow = '';
-            if (exifDock) { exifDock.classList.remove('show'); exifDock.classList.remove('expanded'); }
+            if (exifDock) {
+              exifDock.classList.remove('show'); exifDock.classList.remove('expanded');
+              exifDock.querySelector('.exif-dock-handle').setAttribute('aria-expanded', 'false');
+            }
             document.body.classList.remove('pp-dock-expanded');
             ppDestroyPano();
           }
@@ -762,3 +766,4 @@
         window.ensureExifObserver = ensureExifObserver;
         window.syncDockExif = syncDockExif;
       });
+
