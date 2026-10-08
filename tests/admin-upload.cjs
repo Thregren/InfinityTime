@@ -262,15 +262,16 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 // 可选真实浏览器回归： CHROMIUM_PATH=/usr/bin/chromium node tests/admin-upload.cjs --browser
-// 拦截全部网络请求；无需 PHP 服务器或真实账号。
+// 使用本地隔离 HTTP 服务；无需 PHP 服务器或真实账号。
 async function browserRegression() {
   const { chromium } = require('playwright');
   const path = require('node:path');
   const os = require('node:os');
+  const http = require('node:http');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'infinitytime-admin-'));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
   const paths = ['a.png', 'b.png'].map(name => { const file = path.join(directory, name); fs.writeFileSync(file, png); return file; });
-  let browser;
+  let browser, server;
   const html = `<!doctype html><html lang="zh-CN"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/admin.css"></head>
   <body><div class="container typecho-page-main"><div class="pp-wrap"><div class="pp-tabs"><button class="pp-tab" data-tab="upload">上传</button><button class="pp-tab" data-tab="albums">图集</button></div>
   <div class="pp-panel" data-panel="upload"><div class="pp-card"><form id="pp-upload-form"><input name="action" type="hidden" value="create_album"><input name="operation_key" type="hidden"><input id="pp-upload-cid" name="cid" type="hidden">
@@ -280,8 +281,8 @@ async function browserRegression() {
   <div class="pp-foot"><button type="submit" id="pp-upload-submit" class="pp-btn">保存</button><button type="button" id="pp-upload-retry" class="pp-btn" hidden>重试失败项</button><button type="button" id="pp-upload-publish" class="pp-btn" hidden>发布图集</button><button type="button" id="pp-upload-new" class="pp-btn" hidden>新建草稿</button></div></form></div></div>
   <div class="pp-panel" data-panel="albums"><div id="pp-albums-card" data-page="2" data-query="sky"><a href="?append=90" data-append-cid="90" data-append-title="Existing">追加</a></div></div></div></div>
   <script>window.PP_ADMIN={url:'/admin/endpoint',token:'test-token',userId:7,canPublish:true};</script><script src="/admin.js"></script></body></html>`;
-  const fields = request => {
-    const body = request.postData() || '', result = {};
+  const fields = body => {
+    const result = {};
     const pattern = /Content-Disposition: form-data; name="([^"]+)"(?:; filename="([^"]*)")?\r\n(?:Content-Type:[^\r]+\r\n)?\r\n([\s\S]*?)(?=\r\n--)/g;
     for (const match of body.matchAll(pattern)) result[match[1]] = match[2] || match[3];
     return result;
@@ -294,28 +295,47 @@ async function browserRegression() {
     page.on('dialog', dialog => dialog.accept());
     let draftCount = 0, published = false, failedOnce = false, active = 0, maxActive = 0, releaseFirst;
     const firstGate = new Promise(resolve => { releaseFirst = resolve; });
-    await page.route('**/*', async route => {
-      const request = route.request(), url = new URL(request.url());
-      if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: html });
-      if (url.pathname === '/admin.js') return route.fulfill({ contentType: 'text/javascript', body: source });
-      if (url.pathname === '/admin.css') return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(require.resolve('../usr/plugins/InfinityTime/assets/admin.css'), 'utf8') });
-      if (url.pathname !== '/admin/endpoint') return route.fulfill({ status: 404, body: '' });
-      const data = fields(request); calls.push({ method: request.method(), url: request.url(), data });
-      const json = object => route.fulfill({ contentType: 'application/json', body: JSON.stringify(object) });
-      if (data.action === 'create_draft') { draftCount++; return json({ ok: true, cid: 42, status: 'draft' }); }
-      if (data.action === 'upload_image') {
-        active++; maxActive = Math.max(maxActive, active);
-        if (!rows.size && data.file === 'a.png') await firstGate;
-        active--;
-        if (data.file === 'b.png' && !failedOnce) { failedOnce = true; return json({ ok: false, retryable: true, msg: '媒体处理锁正忙' }); }
-        const replayed = rows.has(data.item_key); rows.set(data.item_key, data.file);
-        return json({ ok: true, rowId: rows.size, cid: 42, replayed });
+    // Playwright 路由拦截会把尚未发出的请求挂起，不能用它等待真实上传完成事件。
+    // 本地服务先读完请求体，仅延迟服务器响应，才能准确观察“上传 → 转换”边界。
+    server = http.createServer(async (request, response) => {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      const reply = (body, contentType = 'text/html', status = 200) => {
+        response.writeHead(status, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
+        response.end(body);
+      };
+      try {
+        if (url.pathname === '/') return reply(html);
+        if (url.pathname === '/admin.js') return reply(source, 'text/javascript');
+        if (url.pathname === '/admin.css') return reply(fs.readFileSync(require.resolve('../usr/plugins/InfinityTime/assets/admin.css'), 'utf8'), 'text/css');
+        if (url.pathname !== '/admin/endpoint') return reply('', 'text/plain', 404);
+        const chunks = [];
+        for await (const chunk of request) chunks.push(chunk);
+        const data = fields(Buffer.concat(chunks).toString('utf8'));
+        calls.push({ method: request.method, url: request.url, data });
+        const json = object => reply(JSON.stringify(object), 'application/json');
+        if (data.action === 'create_draft') { draftCount++; return json({ ok: true, cid: 42, status: 'draft' }); }
+        if (data.action === 'upload_image') {
+          active++; maxActive = Math.max(maxActive, active);
+          if (!rows.size && data.file === 'a.png') await firstGate;
+          active--;
+          if (data.file === 'b.png' && !failedOnce) { failedOnce = true; return json({ ok: false, retryable: true, msg: '媒体处理锁正忙' }); }
+          const replayed = rows.has(data.item_key); rows.set(data.item_key, data.file);
+          return json({ ok: true, rowId: rows.size, cid: 42, replayed });
+        }
+        if (data.action === 'publish_album') { published = true; return json({ ok: true, msg: '已发布' }); }
+        if (url.searchParams.get('job') === 'album_status') return json({ ok: true, cid: 42, title: '浏览器测试图集', status: published ? 'publish' : 'draft', count: rows.size });
+        return reply('<div id="pp-albums-card" data-page="2" data-query="sky"></div>');
+      } catch (error) {
+        errors.push(error.message);
+        if (!response.headersSent) reply('测试服务错误', 'text/plain', 500);
+        else response.destroy(error);
       }
-      if (data.action === 'publish_album') { published = true; return json({ ok: true, msg: '已发布' }); }
-      if (url.searchParams.get('job') === 'album_status') return json({ ok: true, cid: 42, title: '浏览器测试图集', status: published ? 'publish' : 'draft', count: rows.size });
-      return route.fulfill({ contentType: 'text/html', body: '<div id="pp-albums-card" data-page="2" data-query="sky"></div>' });
     });
-    await page.goto('https://admin.test/');
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    await page.goto('http://127.0.0.1:' + server.address().port + '/');
     await page.locator('#pp-files-input').setInputFiles(paths);
     assert.equal(await page.locator('.pp-up-item').count(), 2);
     await page.locator('#pp-upload-submit').click();
@@ -355,6 +375,13 @@ async function browserRegression() {
     assert.equal(await page.locator('#pp-upload-cid').inputValue(), '');
     assert.deepEqual(errors, []);
     console.log('后台 Chromium 回归通过：串行转换、部分重试、刷新后重选、明确发布与移动布局');
-  } finally { if (browser) await browser.close(); fs.rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    if (browser) await browser.close();
+    if (server) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 if (process.argv.includes('--browser')) browserRegression().catch(error => { console.error(error); process.exitCode = 1; });

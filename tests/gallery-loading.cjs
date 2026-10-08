@@ -117,6 +117,36 @@ class Element {
     context.afterClose();
     assert.equal(rebuilds, 1, '重复完成通知不会重复创建灯箱');
   }
+  // 等待关闭期间重建数据后，待打开请求必须转向同一入口的新相册对象。
+  {
+    const source = read('main'), timers = [];
+    let visible = true;
+    const opener = { isConnected: true };
+    const oldAlbum = { opener, images: ['/one.webp', '/two.webp'] };
+    const freshAlbum = { opener, images: ['/one.webp', '/two.webp'] };
+    const popup = { querySelector: () => null };
+    const context = {
+      ALBUMS: [oldAlbum], openRequestSeq: 0, isPopupActive: false,
+      document: { querySelector: selector => selector === '.poptrox-popup' ? popup : {} },
+      getComputedStyle: () => ({ display: visible ? 'block' : 'none' }),
+      setTimeout: fn => timers.push(fn), Promise, Date
+    };
+    opener.click = function() {
+      context.isPopupActive = true;
+      context.activeAlbum = context.pendingPhoto.album;
+      context.lastSelection = { opener, index: context.pendingPhoto.index };
+      context.pendingPhoto = null;
+    };
+    vm.createContext(context); vm.runInContext(helper(source, 'openPhoto', 4), context);
+    const opening = context.openPhoto(oldAlbum, 1);
+    assert.equal(timers.length, 1, '关闭中的打开请求先等待');
+    context.ALBUMS = [freshAlbum];
+    visible = false;
+    timers.shift()();
+    assert.equal(await opening, true);
+    assert.equal(context.activeAlbum, freshAlbum, '重绑后不再保留旧相册对象');
+    assert.equal(context.activePhotoIndex, 1, '重新定位后仍打开原请求照片');
+  }
   // 跨相册导航也必须保留卡片身份，不能被重复图片 URL 混淆。
   {
     const source = read('main');

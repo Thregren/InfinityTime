@@ -856,6 +856,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (!isPopupActive && overlay && getComputedStyle(overlay).display !== 'none') {
                     setTimeout(start, 25); return;
                 }
+                // 等待关闭时可能发生重绑；按仍在页面上的入口取回新条目，
+                // 避免旧对象在 ALBUMS.indexOf 中得到 -1。
+                var currentAlbum = ALBUMS.find(function(candidate) { return candidate.opener === album.opener; });
+                if (!currentAlbum || !currentAlbum.images[index]) { resolve(false); return; }
+                album = currentAlbum;
                 activeAlbum = album;
                 activePhotoIndex = index;
                 pendingPhoto = { album: album, index: index };
