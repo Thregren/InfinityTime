@@ -3,7 +3,7 @@
  * 一款简约的相册主题
  * @package 无限时光
  * @author InfinityTime
- * @version 1.14.2
+ * @version 1.15.0
  * @link https://github.com/InfinityTime/InfinityTime
  */
 ?>

@@ -76,6 +76,7 @@ namespace TypechoPlugin\InfinityTime {
 namespace TypechoPlugin\InfinityTime\Lib {
     function is_uploaded_file($path): bool { return is_file($path); }
     class ImageRepository {
+        public static function uploadRoot(): string { return sys_get_temp_dir(); }
         public static bool $locked = false;
         public static bool $busy = false;
         public static bool $failSync = false;

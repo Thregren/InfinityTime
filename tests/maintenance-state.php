@@ -41,6 +41,47 @@ try {
     State::write($dir . '/job.json', ['job' => 'rebuild', 'total' => 0, 'done' => 0, 'finished' => true]);
     [$fresh, $list] = State::open($dir, 'rebuild', 'start', '', $collect);
     verify($list === [11, 12, 13, 14], '旧版本完成状态不得复用旧清单');
+    // 原子终态保留全部失败原因，分页输出，重试只使用失败身份。
+    $fresh['done'] = $fresh['total']; $fresh['finished'] = true;
+    for ($id = 1; $id <= 123; $id++) { State::failure($fresh, 'rebuild', $id, 10, 'conversion'); }
+    State::failure($fresh, 'resync', 10, 10, 'field_sync');
+    State::failure($fresh, 'resync', 10, 10, 'field_sync');
+    verify($fresh['failed'] === 124, '同一图集的跨批次同步失败只能列出一次');
+    State::save($dir, $fresh);
+    $saved = State::read($dir . '/job.json');
+    verify($saved === $fresh && count($saved['failures']) === 124, '刷新必须能读回完整失败明细');
+    $first = State::response($saved); $second = State::response($saved, 50); $last = State::response($saved, 100);
+    verify(count($first['failures']) === 50 && $first['failure_next'] === 50 && $first['failure_total'] === 124, '首屏输出必须有界并给出总数和下一页');
+    verify(count($second['failures']) === 50 && count($last['failures']) === 24 && $last['failure_next'] === null, '最后一条失败也必须可以翻页查看');
+    verify(count(array_unique(array_column(array_merge($first['failures'], $second['failures'], $last['failures']), 'id'))) === 123, '翻页不得遗漏任何图片身份');
+    $before = file_get_contents($dir . '/job.json');
+    $neverCollect = static function () { throw new RuntimeException('定向重试不得扫描全库'); };
+    rejected(static function () use ($dir, $neverCollect) { State::open($dir, 'rebuild', 'retry', '', $neverCollect); }, '空重试身份必须拒绝');
+    rejected(static function () use ($dir, $neverCollect) { State::open($dir, 'rebuild', 'retry', str_repeat('c', 32), $neverCollect); }, '陈旧重试身份必须拒绝');
+    verify(file_get_contents($dir . '/job.json') === $before, '拒绝重试不能改写原状态');
+    [$retry, $retryList] = State::open($dir, 'rebuild', 'retry', $fresh['job_id'], $neverCollect);
+    verify($retry['job_id'] !== $fresh['job_id'] && $retry['retry_of'] === $fresh['job_id'] && $retry['total'] === 124, '失败重试必须新建独立任务并记住原身份');
+    verify($retryList[0] === ['task' => 'rebuild', 'id' => 1, 'cid' => 10] && $retryList[123] === ['task' => 'resync', 'id' => 10, 'cid' => 10], '编码与字段失败必须分开计划');
+    $retry['done'] = 3; State::save($dir, $retry);
+    [$again, $againList] = State::open($dir, 'rebuild', 'retry', $fresh['job_id'], $neverCollect);
+    verify($again === $retry && $againList === $retryList, '丢失开始重试响应后仍继续同一快照与偏移');
+    $before = file_get_contents($dir . '/job.json');
+    rejected(static function () use ($dir, $retry, $neverCollect) { State::open($dir, 'rebuild', 'retry', $retry['job_id'], $neverCollect); }, '未完成任务不可再开启失败重试');
+    rejected(static function () use ($dir, $neverCollect) { State::open($dir, 'cleanup', 'start', '', $neverCollect); }, '租约过期也不能覆盖异类未完成任务');
+    rejected(static function () use ($dir, $neverCollect) { State::open($dir, 'rebuild', 'resume', '', $neverCollect); }, '有身份的任务不能空身份续跑');
+    verify(file_get_contents($dir . '/job.json') === $before, '拒绝覆盖不能改变未完成快照');
+    $retry['done'] = $retry['total']; $retry['finished'] = true;
+    State::failure($retry, 'resync', 10, 10, 'field_sync');
+    State::clearFailure($retry, 'resync', 10);
+    verify($retry['failed'] === 0 && $retry['failures'] === [], '后续批次成功同步必须消除已恢复的字段失败');
+    State::save($dir, $retry);
+    [$again, $againList] = State::open($dir, 'rebuild', 'retry', $fresh['job_id'], $neverCollect);
+    verify($again === $retry && $againList === [], '首批重试已完成但响应丢失时不得再次新开');
+    rejected(static function () use ($dir, $retry, $neverCollect) { State::open($dir, 'rebuild', 'retry', $retry['job_id'], $neverCollect); }, '没有失败项时拒绝空重试');
+    [$visible] = State::open($dir, 'rebuild', 'errors', $retry['job_id'], $neverCollect);
+    verify($visible === $retry, '查看失败明细不触发候选扫描或处理');
+    $legacyFailures = State::response(['failed' => 2, 'finished' => true]);
+    verify($legacyFailures['unlisted_failed'] === 2 && $legacyFailures['failure_total'] === 0, '旧版没有明细的失败必须明确告知，不能静默遗漏');
     // rename 到目录必失败，不能以成功返回。
     mkdir($dir . '/cannot-replace');
     rejected(static function () use ($dir) { State::write($dir . '/cannot-replace', ['done' => 1]); }, 'rename失败必须可见');

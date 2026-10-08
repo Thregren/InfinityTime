@@ -289,7 +289,8 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
       await page.waitForFunction(() => getComputedStyle(document.querySelector('.poptrox-overlay')).display === 'none');
       await page.goto(origin + '/?album=1&photo=p-5'); await ready('other-month');
-      await page.keyboard.press('Escape');
+      // 关闭直接分享链接会真正重载相册页，不能只等 replaceState 改了地址。
+      await Promise.all([page.waitForEvent('load'), page.keyboard.press('Escape')]);
       await page.waitForFunction(() => !new URL(location.href).searchParams.has('photo'));
       assert.equal(new URL(page.url()).searchParams.get('album'), '1');
       // 省流模式在真实浏览器中禁止自动分页和相邻大图预取，主动操作仍能成功。

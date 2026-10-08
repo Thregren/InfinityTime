@@ -30,20 +30,20 @@ for (const [name, change] of [
   ['workflow ID 不符', f => { f.workflow.id++; }],
 ]) test(`拒绝${name}`, () => { const f = fixture(); change(f); assert.throws(() => check(f)); });
 test('拒绝 main 已移动', () => assert.throws(() => check(fixture(), 'b'.repeat(40))));
-test('允许唯一版本 1.14.2', () => guardVersions('@version 1.14.2', "const VERSION = '1.14.2'", '{"tag_name":"1.14.2"}'));
+test('允许唯一版本 1.15.0', () => guardVersions('@version 1.15.0', "const VERSION = '1.15.0'", '{"tag_name":"1.15.0"}'));
 for (const index of [0, 1, 2]) test(`拒绝版本字段 ${index} 不一致或未来版本`, () => {
-  const values = ['@version 1.14.2', "const VERSION = '1.14.2'", '{"tag_name":"1.14.2"}'];
-  values[index] = values[index].replace('1.14.2', '1.14.3');
+  const values = ['@version 1.15.0', "const VERSION = '1.15.0'", '{"tag_name":"1.15.0"}'];
+  values[index] = values[index].replace('1.15.0', '1.15.1');
   assert.throws(() => guardVersions(...values));
 });
 const digests = Object.fromEntries(ASSETS.map(name => [name, 'f'.repeat(64)]));
-function complete() { return { tag_name: 'v1.14.2', draft: false, prerelease: false, assets: ASSETS.map(name => ({ name, state: 'uploaded', size: 42, digest: `sha256:${digests[name]}` })) }; }
+function complete() { return { tag_name: 'v1.15.0', draft: false, prerelease: false, assets: ASSETS.map(name => ({ name, state: 'uploaded', size: 42, digest: `sha256:${digests[name]}` })) }; }
 test('仅 tag/release 均不存在时允许创建', () => assert.equal(guardExisting(null, null, sha, digests), 'create'));
 test('已有完整一致发布仅幂等成功', () => assert.equal(guardExisting(sha, complete(), sha, digests), 'complete'));
 for (const [name, tag, release] of [
   ['tag SHA 冲突', 'b'.repeat(40), complete()], ['tag-only 部分发布', sha, null], ['release 无 tag', null, complete()],
   ['draft 部分发布', sha, { ...complete(), draft: true }], ['prerelease', sha, { ...complete(), prerelease: true }],
-  ['错误 tag', sha, { ...complete(), tag_name: 'v1.14.3' }], ['缺资产', sha, { ...complete(), assets: complete().assets.slice(1) }],
+  ['错误 tag', sha, { ...complete(), tag_name: 'v1.15.1' }], ['缺资产', sha, { ...complete(), assets: complete().assets.slice(1) }],
   ['额外资产', sha, { ...complete(), assets: [...complete().assets, complete().assets[0]] }],
   ['摘要冲突', sha, { ...complete(), assets: complete().assets.map(a => ({ ...a, digest: 'sha256:wrong' })) }],
   ['空包', sha, { ...complete(), assets: complete().assets.map(a => ({ ...a, size: 0 })) }],

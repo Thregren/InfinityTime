@@ -16,5 +16,10 @@ try {
     if ($missing[0]['status'] !== 'warning' || $missing[1]['status'] !== 'manual') { throw new RuntimeException('缺失目录需清楚报告'); }
     if (strpos(json_encode($missing), '/private/tool') !== false || strpos(json_encode($report), $dir) !== false) { throw new RuntimeException('诊断不得暴露服务器路径'); }
     if (is_dir($dir . '/missing')) { throw new RuntimeException('不能自动创建目录'); }
+    define('__TYPECHO_ADMIN__', true);
+    $user = new class { public function pass($role, $return): bool { return false; } };
+    ob_start();
+    include __DIR__ . '/../usr/plugins/InfinityTime/health-panel.php';
+    if (ob_get_clean() !== '') { throw new RuntimeException('非管理员不得读取健康报告'); }
     echo "只读健康检查：目录/磁盘/工具/手工核验边界及无写入检查通过\n";
 } finally { rmdir($dir); }

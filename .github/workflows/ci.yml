@@ -45,13 +45,14 @@ jobs:
           php tests/schema-sqlite.php
           php tests/field-sync.php
           php tests/image-delete.php
+          php tests/media-version.php
           php tests/media-lifetime.php
           php tests/media-gd.php
           php tests/media-command.php
           php tests/media-temp.php
           php tests/health-diagnostics.php
           php tests/maintenance-state.php
-          for mode in rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
+          for mode in retry-image retry-fields retry-mixed retry-resync retry-repeat retry-finished retry-stale retry-empty retry-unfinished retry-other-job errors-page errors-stale resync-failure rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
             php tests/maintenance-panel.php "$mode"
           done
           php tests/admin-workflow.php
@@ -110,6 +111,9 @@ jobs:
       - name: 后台上传浏览器回归
         if: ${{ !cancelled() }}
         run: node tests/admin-upload.cjs --browser
+      - name: 维护失败恢复浏览器回归
+        if: ${{ !cancelled() }}
+        run: node tests/maintenance-browser.cjs
 
   typecho-integration:
     runs-on: ubuntu-latest

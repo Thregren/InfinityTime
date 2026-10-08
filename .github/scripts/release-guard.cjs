@@ -1,11 +1,11 @@
 'use strict';
-// 仅用于本次已授权的 v1.14.2；失败或部分发布必须人工核查，绝不覆盖资产。
+// 仅用于本次已授权的 v1.15.0；失败或部分发布必须人工核查，绝不覆盖资产。
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const VERSION = '1.14.2';
+const VERSION = '1.15.0';
 const TAG = `v${VERSION}`;
 const ASSETS = ['infinitytime-theme.zip', 'infinitytime-plugin.zip'];
 function insist(ok, message) { if (!ok) throw new Error(message); }
@@ -22,9 +22,9 @@ function guardRun(event, repository, mainSha, run, workflow) {
   return mainSha;
 }
 function guardVersions(theme, plugin, release) {
-  insist(theme.match(/@version\s+([\d.]+)/)?.[1] === VERSION, '主题版本不是 1.14.2');
-  insist(plugin.match(/const VERSION = '([\d.]+)'/)?.[1] === VERSION, '插件版本不是 1.14.2');
-  insist(JSON.parse(release).tag_name === VERSION, '版本清单不是 1.14.2');
+  insist(theme.match(/@version\s+([\d.]+)/)?.[1] === VERSION, '主题版本不是 1.15.0');
+  insist(plugin.match(/const VERSION = '([\d.]+)'/)?.[1] === VERSION, '插件版本不是 1.15.0');
+  insist(JSON.parse(release).tag_name === VERSION, '版本清单不是 1.15.0');
 }
 function guardExisting(tagSha, release, sha, digests) {
   if (!tagSha && !release) return 'create';

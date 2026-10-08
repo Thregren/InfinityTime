@@ -580,25 +580,79 @@
   }
 
   /* ---------- 维护任务 ---------- */
-  var runningJobs = {};
-  function runJob(job, resume) {
-    if (runningJobs[job]) return;
-    runningJobs[job] = true;
+  var runningJob = '';
+  var pendingJobs = {};
+  var loadingFailures = false;
+  function maintenanceBusy(busy) {
+    $$('[data-run]').forEach(function (button) { button.disabled = busy; });
+    var retry = $('#pp-retry-failures');
+    if (retry) retry.disabled = busy || !JOB || !JOB.finished || !JOB.failure_total;
+    var prev = $('#pp-failure-prev'), next = $('#pp-failure-next');
+    if (prev) prev.disabled = busy || loadingFailures || !JOB || !(JOB.failure_offset > 0);
+    if (next) next.disabled = busy || loadingFailures || !JOB || JOB.failure_next == null;
+  }
+  function renderFailures(state) {
+    var panel = $('#pp-maintenance-failures');
+    var list = $('#pp-failure-list');
+    var summary = $('#pp-failure-summary');
+    if (!panel || !list || !summary) return;
+    var failures = state && state.failures || [];
+    var total = state && state.failure_total || 0;
+    var unlisted = state && state.unlisted_failed || 0;
+    panel.hidden = !(total || unlisted);
+    list.textContent = '';
+    list.start = (state && state.failure_offset || 0) + 1;
+    failures.forEach(function (failure) {
+      var row = document.createElement('li');
+      var identity = failure.task === 'resync' ? '相册 ID ' + failure.id : '图片 ID ' + failure.id + (failure.cid > 0 ? ' / 相册 ID ' + failure.cid : '');
+      row.textContent = identity + '：' + failure.reason;
+      list.appendChild(row);
+    });
+    summary.textContent = total ? ('共 ' + total + ' 项失败，显示 ' + (list.start) + '–' + ((state.failure_offset || 0) + failures.length) + ' 项。') : '';
+    if (unlisted) summary.textContent += ' 另有 ' + unlisted + ' 项来自旧版任务，未保存明细，无法单独重试。';
+    var retry = $('#pp-retry-failures');
+    if (retry) retry.textContent = unlisted ? '重试有明细的失败项' : '仅重试失败项';
+    maintenanceBusy(!!runningJob);
+  }
+  function failurePage(offset) {
+    if (runningJob || loadingFailures || !JOB || !JOB.job_id) return;
+    loadingFailures = true;
+    maintenanceBusy(false);
+    var id = JOB.job_id;
+    post('maintenance', { job: JOB.job, mode: 'errors', job_id: id, offset: offset })
+      .then(function (data) {
+        if (!data || data.ok === false) throw new Error((data && data.msg) || '无法读取失败清单');
+        if (JOB && JOB.job_id === id && data.job_id === id) { JOB = data; renderFailures(JOB); }
+      })
+      .catch(function (error) {
+        if (JOB && JOB.job_id === id) { var summary = $('#pp-failure-summary'); if (summary) summary.textContent = error.message; }
+      })
+      .then(function () { loadingFailures = false; maintenanceBusy(!!runningJob); });
+  }
+  function runJob(job, requestedMode) {
+    if (runningJob) return;
+    runningJob = job;
     var bar = $('#pp-bar-' + job);
     var msg = $('#pp-msg-' + job);
-    var btn = document.querySelector('[data-run="' + job + '"]');
-    if (btn) btn.disabled = true;
-    if (bar) bar.style.width = '0%'; // 每次开始先归零，避免上一次的 100% 残留
-    if (msg) msg.textContent = '准备中…';
-    var mode = resume ? 'resume' : 'start';
-    var jobId = resume && JOB ? (JOB.job_id || '') : '';
+    var mode = requestedMode === true ? 'resume' : (requestedMode || 'start');
+    var jobId = mode !== 'start' && JOB ? (JOB.job_id || '') : '';
+    // 请求响应丢失后沿用原始身份，尤其不能把完成的定向重试当作一次全库 start。
+    if (pendingJobs[job]) { mode = pendingJobs[job].mode; jobId = pendingJobs[job].id; }
+    else if (mode === 'start' && JOB && JOB.job === job && !JOB.finished) { mode = 'resume'; jobId = JOB.job_id || ''; }
+    maintenanceBusy(true);
+    if (bar) bar.style.width = '0%';
+    if (msg) msg.textContent = mode === 'retry' ? '准备重试失败项…' : '准备中…';
+    function stop() { runningJob = ''; maintenanceBusy(false); }
     function tick() {
+      pendingJobs[job] = { mode: mode, id: jobId };
       post('maintenance', { job: job, mode: mode, job_id: jobId })
         .then(function (d) {
           if (!d || d.ok === false) throw new Error((d && d.msg) || '出错，请重试');
-          if (d.msg && d.finished) { if (msg) msg.textContent = d.msg; if (btn) btn.disabled = false; runningJobs[job] = false; return; }
+          if (d.msg && d.finished) { if (msg) msg.textContent = d.msg; stop(); return; }
           jobId = d.job_id || jobId;
           mode = 'poll';
+          JOB = d;
+          renderFailures(d);
           var pct = d.total ? Math.round(d.done * 100 / d.total) : 100;
           if (bar) bar.style.width = pct + '%';
           if (d.total > 0) {
@@ -608,14 +662,13 @@
             if (msg) msg.textContent = noJob[job] || '没有需要处理的项目';
           }
           if (!d.finished) { setTimeout(tick, 300); return; }
-          if (msg) msg.textContent += d.failed > 0 ? (' ✓ 完成（' + d.failed + ' 项失败，请查看日志）') : ' ✓ 完成';
-          if (btn) btn.disabled = false;
-          runningJobs[job] = false;
+          if (msg) msg.textContent += d.failed > 0 ? (' ✓ 完成（' + d.failed + ' 项失败，请查看下方清单）') : ' ✓ 完成';
+          delete pendingJobs[job];
+          stop();
         })
         .catch(function (err) {
           if (msg) msg.textContent = err.message || '出错，请重试';
-          if (btn) btn.disabled = false;
-          runningJobs[job] = false;
+          stop();
         });
     }
     tick();
@@ -766,8 +819,17 @@
       }).catch(function () { notice('网络/保存出错，请重试', 'error'); if (btn) btn.disabled = false; form.__ppSaving = false; });
     });
 
-    // 上次维护任务未完成：提示可继续
-    if (JOB && JOB.job && JOB.total > 0 && !JOB.finished) {
+    renderFailures(JOB);
+    var retryFailures = $('#pp-retry-failures');
+    if (retryFailures) retryFailures.addEventListener('click', function () {
+      if (JOB && JOB.finished && JOB.failure_total > 0) runJob(JOB.job, 'retry');
+    });
+    var previousFailures = $('#pp-failure-prev'), nextFailures = $('#pp-failure-next');
+    if (previousFailures) previousFailures.addEventListener('click', function () { if (JOB) failurePage(Math.max(0, (JOB.failure_offset || 0) - 50)); });
+    if (nextFailures) nextFailures.addEventListener('click', function () { if (JOB && JOB.failure_next != null) failurePage(JOB.failure_next); });
+
+    // 上次维护任务未完成：提示可继续（包括总数为零、尚未保存终态的任务）。
+    if (JOB && JOB.job && !JOB.finished) {
       var names = { rebuild: '重建缩略图/全图', cleanup: '清理孤儿文件', resync: '重建尺寸字段' };
       var tip = document.createElement('div');
       tip.className = 'notice success';

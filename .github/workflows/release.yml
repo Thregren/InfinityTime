@@ -64,8 +64,8 @@ jobs:
             dist/infinitytime-plugin.zip
           body_path: dist/RELEASE_NOTES.md
 
-  # 一次性授权范围：只允许目标仓库 main 的完整 CI 发布 1.14.2。
-  release-1-14-2:
+  # 一次性授权范围：只允许目标仓库 main 的完整 CI 发布 1.15.0。
+  release-1-15-0:
     if: >-
       github.event_name == 'workflow_run' &&
       github.repository == 'Thregren/InfinityTime' &&
@@ -77,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: release-v1.14.2
+      group: release-v1.15.0
       cancel-in-progress: false
     steps:
       - name: 在 checkout 前验证可信 main 和 CI 身份

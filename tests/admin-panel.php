@@ -97,6 +97,7 @@ namespace {
             throw new RuntimeException('分页、明确发布或原生上传幂等字段缺失');
         }
         if (strpos($html, 'data-loaded="1"') !== false) { throw new RuntimeException('摘要首屏不应加载图片详情'); }
+        if (strpos($html, '只读健康检查') === false || strpos($html, '在隔离环境做一次恢复演练') === false) { throw new RuntimeException('管理员健康检查与恢复步骤缺失'); }
         echo '后台模板：' . count($forms[1]) . " 个原生表单令牌、分页、草稿与按需详情检查通过\n";
     } finally {
         foreach (['header.php', 'menu.php', 'footer.php'] as $name) { unlink($adminDir . '/' . $name); }
