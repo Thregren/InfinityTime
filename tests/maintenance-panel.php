@@ -49,6 +49,7 @@ namespace Typecho {
         public array $reads = [];
         public array $operations = [];
         public bool $failDelete = false;
+        public bool $failScan = false;
         public string $adapter = 'Pdo_SQLite';
         public function __construct() { $this->pdo = new \PDO('sqlite::memory:', null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]); }
         public static function get(): self { return self::$instance; }
@@ -62,6 +63,7 @@ namespace Typecho {
         public function fetchAll($query): array { if ($query instanceof \PDOStatement) { return $query->fetchAll(\PDO::FETCH_ASSOC); } $this->reads[] = (string)$query; return $this->pdo->query((string)$query)->fetchAll(\PDO::FETCH_ASSOC); }
         public function query($query, $op = self::READ) {
             $this->operations[] = ['sql' => (string)$query, 'op' => $op, 'object' => is_object($query)];
+            if ($this->failScan && strpos((string)$query, 'original <>') !== false) { throw new \RuntimeException('SQL SELECT original FROM private_table /private/server/database.sqlite'); }
             if (preg_match('/^SELECT /i', (string)$query)) { $this->reads[] = (string)$query; return $this->pdo->query((string)$query); }
             if ($this->failDelete && strpos((string)$query, 'DELETE FROM "admin_contents"') === 0) { throw new \RuntimeException('模拟文章删除故障'); }
             $affected = $this->pdo->exec((string)$query);
@@ -139,7 +141,7 @@ namespace {
         rmdir($dir);
     }
     $mode = $argv[1] ?? 'rebuild-sync-failure';
-    $modes = ['rebuild-sync-failure', 'rebuild-success', 'rebuild-batch', 'rebuild-restart', 'rebuild-resume', 'rebuild-start-reuse',
+    $modes = ['scan-failure', 'rebuild-sync-failure', 'rebuild-success', 'rebuild-batch', 'rebuild-restart', 'rebuild-resume', 'rebuild-start-reuse',
         'rebuild-no-original', 'rebuild-missing-original', 'rebuild-conversion-failure', 'stale-poll', 'finished-poll',
         'delete-non-plugin', 'delete-rollback', 'lease-conflict',
         'retry-image', 'retry-fields', 'retry-mixed', 'retry-resync', 'retry-repeat', 'retry-finished',
@@ -225,6 +227,7 @@ namespace {
         if ($mode === 'retry-other-job') { $_POST['job'] = 'cleanup'; $_POST['mode'] = 'start'; unset($_POST['job_id']); }
         if (strpos($mode, 'errors-') === 0) { $_POST['mode'] = 'errors'; $_POST['offset'] = 100; }
     }
+    if ($mode === 'scan-failure') { $db->failScan = true; }
     if ($mode === 'resync-failure') { $_POST['job'] = 'resync'; Images::$failSync = true; }
     $beforeState = is_file($root . '/data/job.json') ? file_get_contents($root . '/data/job.json') : null;
     $beforeLock = is_file($root . '/data/job.lock') ? file_get_contents($root . '/data/job.lock') : null;
@@ -247,6 +250,9 @@ namespace {
                 expect($json['ok'] === false, '不合法重试必须明确拒绝');
                 expect(file_get_contents($root . '/data/job.json') === $beforeState && glob($root . '/data/*') === $beforeFiles, '拒绝不能覆盖或增添检查点');
                 expect(Media::$calls === 0 && Images::$synced === [] && $db->operations === [], '拒绝必须先于任何扫描或媒体操作');
+            } elseif ($mode === 'scan-failure') {
+                expect(http_response_code() === 500 && $json['ok'] === false && strpos($output, 'private') === false && strpos($output, 'SELECT') === false, '候选扫描异常不得泄漏SQL或服务器路径');
+                expect(strpos($json['msg'], '服务器日志') !== false && Media::$calls === 0, '扫描失败应提供安全恢复提示');
             } elseif ($mode === 'errors-page') {
                 expect($json['ok'] === true && $json['failure_total'] === 123 && $json['failure_offset'] === 100 && count($json['failures']) === 23 && $json['failure_next'] === null, '最后一页失败必须完整可达');
                 expect($json['failures'][22]['id'] === 123 && $json['job_id'] === $oldId, '分页必须保留原任务身份且包含最后项目');

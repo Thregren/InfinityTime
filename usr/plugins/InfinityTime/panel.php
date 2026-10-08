@@ -478,7 +478,8 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
 
     } catch (\Throwable $e) {
         Plugin::log('maintenance: ' . $e->getMessage());
-        pp_reply_json(false, $e->getMessage(), ['retryable' => true], 500);
+        $safeMessage = $e instanceof \TypechoPlugin\InfinityTime\Lib\MaintenanceException ? $e->getMessage() : '维护请求未完成，请刷新核对任务状态并检查服务器日志';
+        pp_reply_json(false, $safeMessage, ['retryable' => true], 500);
     }
 
     if ($ppMaintenance && !empty($result['finished'])) { @unlink(pp_data_file() . '/job.lock'); }

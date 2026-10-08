@@ -100,10 +100,20 @@ const pixel = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
         assert.equal(await page.evaluate(target => InfinityGallery.open(target), { albumId, photoId }), true);
       }
       async function ready(name) {
-        await page.waitForFunction(source => {
-          const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
-          return img && img.getAttribute('src') === source && img.complete && img.naturalWidth && !p.classList.contains('loading') && img.style.opacity === '1';
-        }, url(name));
+        try {
+          await page.waitForFunction(source => {
+            const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
+            return img && img.getAttribute('src') === source && img.complete && img.naturalWidth && !p.classList.contains('loading') && img.style.opacity === '1';
+          }, url(name));
+        } catch (error) {
+          console.error('图片就绪超时诊断', await page.evaluate(() => {
+            const p = document.querySelector('.poptrox-popup'), img = p && p.querySelector('.pic img');
+            return { hidden: document.hidden, src: img && img.getAttribute('src'), selected: img && img.currentSrc,
+              complete: img && img.complete, width: img && img.naturalWidth, opacity: img && img.style.opacity,
+              popup: p && p.className, switching: p && p.__switching, events: window.__galleryEvents.slice(-8) };
+          }));
+          throw error;
+        }
         await page.waitForTimeout(500);
       }
       async function close() {

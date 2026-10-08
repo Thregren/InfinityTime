@@ -82,6 +82,17 @@ try {
     verify($visible === $retry, '查看失败明细不触发候选扫描或处理');
     $legacyFailures = State::response(['failed' => 2, 'finished' => true]);
     verify($legacyFailures['unlisted_failed'] === 2 && $legacyFailures['failure_total'] === 0, '旧版没有明细的失败必须明确告知，不能静默遗漏');
+    $mixed = $retry;
+    $mixed['failed'] = 2; $mixed['failures'] = []; unset($mixed['unlisted_failed']);
+    State::failure($mixed, 'resync', 10, 10, 'field_sync');
+    State::save($dir, $mixed);
+    [$child, $childList] = State::open($dir, 'rebuild', 'retry', $mixed['job_id'], $neverCollect);
+    verify($child['failed'] === 2 && $child['unlisted_failed'] === 2 && count($childList) === 1, '定向重试必须继承旧任务无法重试的失败数');
+    State::clearFailure($child, 'resync', 10);
+    $child['finished'] = true; $child['done'] = 1; State::save($dir, $child);
+    verify(State::response($child)['unlisted_failed'] === 2 && $child['failed'] === 2, '有明细项恢复后不能掩盖旧失败');
+    [$full] = State::open($dir, 'rebuild', 'start', '', $collect);
+    verify($full['failed'] === 0, '只有明确全量新任务清空旧失败基线');
     // rename 到目录必失败，不能以成功返回。
     mkdir($dir . '/cannot-replace');
     rejected(static function () use ($dir) { State::write($dir . '/cannot-replace', ['done' => 1]); }, 'rename失败必须可见');
