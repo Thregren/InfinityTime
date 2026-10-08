@@ -188,6 +188,9 @@ jobs:
           extensions: gd, fileinfo
           coverage: none
       - name: Windows 外部进程与临时资源回归
+        shell: pwsh
         run: |
           php tests/media-command.php
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           php tests/media-temp.php
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
