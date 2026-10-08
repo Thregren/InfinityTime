@@ -136,12 +136,23 @@ final class AdminRepository
 
     public static function setField(int $cid, string $name, string $value): void
     {
+        self::setFields($cid, [$name => $value]);
+    }
+
+    /** 多字段替换共享一个保存点，单字段也不会因插入失败丢失旧值。 */
+    public static function setFields(int $cid, array $values): void
+    {
         $db = Db::get();
         $table = $db->getPrefix() . 'fields';
-        Database::query($db->delete($table)->where('cid = ?', $cid)->where('name = ?', $name));
-        if ($value !== '') {
-            Database::query($db->insert($table)->rows(['cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value]));
-        }
+        Database::transaction(static function () use ($db, $table, $cid, $values): void {
+            foreach ($values as $name => $value) {
+                if (!is_string($name) || !is_string($value)) { throw new \InvalidArgumentException('字段名称与值必须是字符串'); }
+                Database::query($db->delete($table)->where('cid = ?', $cid)->where('name = ?', $name));
+                if ($value !== '') {
+                    Database::query($db->insert($table)->rows(['cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value]));
+                }
+            }
+        }, [$table]);
     }
 
     public static function draftForOperation(int $uid, string $key): ?array

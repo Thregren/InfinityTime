@@ -194,14 +194,7 @@ function pp_clear_site_avatar(string $url, ?string $keepAbs = null): void
 
 function pp_set_field(int $cid, string $name, string $value): void
 {
-    $db = Db::get();
-    $prefix = $db->getPrefix();
-    Database::query($db->delete($prefix . 'fields')->where('cid = ?', $cid)->where('name = ?', $name));
-    if ($value !== '') {
-        Database::query($db->insert($prefix . 'fields')->rows([
-            'cid' => $cid, 'name' => $name, 'type' => 'str', 'str_value' => $value,
-        ]));
-    }
+    AdminRepository::setField($cid, $name, $value);
 }
 
 function pp_data_file(): string
@@ -550,17 +543,15 @@ if ($ppMethod === 'POST') {
         $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
         if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
-        if ($cid > 0) {
-            $title = trim((string)($_POST['title'] ?? ''));
-            if ($title !== '') {
-                Database::query($db->update($prefix . 'contents')->rows(['title' => $title])->where('cid = ?', $cid));
-            }
-            pp_set_field($cid, 'device', trim((string)($_POST['device'] ?? '')));
-            pp_set_field($cid, 'tags', trim((string)($_POST['tags'] ?? '')));
-            pp_set_field($cid, 'location', trim((string)($_POST['address'] ?? '')));
-            if ($ajax) { pp_reply_json(true, _t('已更新图集信息')); }
-            pp_reply(_t('已更新图集信息'));
+        try {
+            AdminWorkflow::updateAlbum($cid, (int)$user->uid, pp_is_admin(), pp_can_publish(), $_POST);
+        } catch (\Throwable $e) {
+            Plugin::log('update_album: ' . $e->getMessage());
+            if ($ajax) { pp_reply_json(false, '图集信息暂未确认保存，请刷新核对后重试', ['retryable' => true], 500); }
+            pp_reply('图集信息暂未确认保存，请刷新核对后重试', 'error');
         }
+        if ($ajax) { pp_reply_json(true, _t('已更新图集信息')); }
+        pp_reply(_t('已更新图集信息'));
     }
 
     if ($action === 'set_image_meta') {
@@ -572,9 +563,15 @@ if ($ppMethod === 'POST') {
         if ($rowId > 0) {
             $row = AdminRepository::readRow($db->select('cid')->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限修改该图片'); }
-            ImageRepository::setImageMeta($rowId, $title, $desc, $addr);
-            if ($row && (int)$row['cid'] > 0) {
-                ImageRepository::syncPostFields((int)$row['cid']);
+            try {
+                if (!ImageRepository::editImage($rowId, (int)$row['cid'], $title, $desc, $addr)) {
+                    if ($ajax) { pp_reply_json(false, '图片已变化，请刷新后重试', [], 409); }
+                    pp_reply('图片已变化，请刷新后重试', 'error');
+                }
+            } catch (\Throwable $e) {
+                Plugin::log('set_image_meta: ' . $e->getMessage());
+                if ($ajax) { pp_reply_json(false, '图片信息暂未确认保存，请刷新核对后重试', ['retryable' => true], 500); }
+                pp_reply('图片信息暂未确认保存，请刷新核对后重试', 'error');
             }
         } else {
             pp_deny('没有权限修改该图片');
@@ -587,23 +584,22 @@ if ($ppMethod === 'POST') {
         $ajax = !empty($_POST['ajax']);
         $cid = (int)($_POST['cid'] ?? 0);
         if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
-        $rowIds = array_map('intval', (array)($_POST['rowIds'] ?? []));
-        $existing = array_map(static function ($row) { return (int)$row['id']; }, AdminRepository::readAll($db->select('id')->from(ImageRepository::table())->where('cid = ?', $cid), true));
-        $requested = $rowIds; sort($requested); sort($existing);
-        if ($requested !== $existing || count($rowIds) !== count(array_unique($rowIds))) {
-            pp_deny('图片列表已变化或包含其他图集图片，请刷新后重试');
-        }
-        $order = 0;
-        foreach ($rowIds as $rid) {
-            $rid = (int)$rid;
-            if ($rid <= 0) {
-                continue;
+        $rowIds = [];
+        foreach ((array)($_POST['rowIds'] ?? []) as $value) {
+            if (!(is_int($value) || (is_string($value) && ctype_digit($value))) || (int)$value <= 0) {
+                pp_deny('图片列表包含无效标识，请刷新后重试');
             }
-            Database::query($db->update(ImageRepository::table())->rows(['sort' => $order])->where('id = ?', $rid)->where('cid = ?', $cid));
-            $order++;
+            $rowIds[] = (int)$value;
         }
-        if ($cid > 0) {
-            ImageRepository::syncPostFields($cid);
+        try {
+            ImageRepository::sortImages($cid, $rowIds);
+        } catch (\DomainException $e) {
+            if ($ajax) { pp_reply_json(false, $e->getMessage(), [], 409); }
+            pp_reply($e->getMessage(), 'error');
+        } catch (\Throwable $e) {
+            Plugin::log('sort_images: ' . $e->getMessage());
+            if ($ajax) { pp_reply_json(false, '图片顺序暂未确认保存，请刷新核对后重试', ['retryable' => true], 500); }
+            pp_reply('图片顺序暂未确认保存，请刷新核对后重试', 'error');
         }
         if ($ajax) { pp_reply_json(true, _t('已保存图片顺序')); }
         pp_reply(_t('已保存图片顺序'));

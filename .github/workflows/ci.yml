@@ -47,6 +47,8 @@ jobs:
           php tests/image-delete.php
           php tests/media-lifetime.php
           php tests/media-gd.php
+          php tests/media-command.php
+          php tests/media-temp.php
           php tests/maintenance-state.php
           for mode in rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
             php tests/maintenance-panel.php "$mode"
@@ -170,3 +172,25 @@ jobs:
           for adapter in $adapters; do
             php tests/typecho-integration.php "$adapter"
           done
+
+  process-portability:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: gd, fileinfo
+          coverage: none
+      - name: Windows 外部进程与临时资源回归
+        shell: pwsh
+        run: |
+          php tests/media-command.php
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          php tests/media-temp.php
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

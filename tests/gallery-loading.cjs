@@ -205,21 +205,26 @@ class Element {
     assert.deepEqual(Array.from(result.colors), []);
   }
   // 通过可控网络响应验证真实分页加载器的失败、去重、取消、失效响应、
-  // 月份标题和末尾空批次处理。
-  {
+  // 月份标题和末尾空批次处理；无 AbortController 时也必须能超时和取消。
+  for (const abortSupported of [true, false]) {
     const source = read('init');
     const wf = new Element(), lm = new Element(), nav = new Element();
     const next = nav.appendChild(new Element('a')); next.setAttribute('rel', 'next');
     lm.setAttribute('data-next-url', '/page2');
     const nodes = { waterfall: wf, 'load-more': lm, 'gallery-pagination': nav, 'month-2026-10': new Element('h2') };
-    const pending = [], events = {}, docs = {};
+    const pending = [], events = {}, docs = {}, timers = new Map();
+    let timerId = 0, throwFetch = false;
     let rebinds = 0;
     const context = {
       document: { getElementById: id => nodes[id] || null, createElement: tag => new Element(tag), documentElement: { offsetHeight: 3000 }, dispatchEvent() {} },
       window: { innerHeight: 800, scrollY: 0, addEventListener: (name, fn) => events[name] = fn, __rebindPoptrox: () => rebinds++ },
-      location: { href: 'https://gallery.test/' }, URL, Promise, AbortController,
-      setTimeout, clearTimeout, applyDims() {}, initImageFallback() {},
-      fetch: (url, options) => new Promise(resolve => pending.push({ url, options, resolve })),
+      location: { href: 'https://gallery.test/' }, URL, Promise, AbortController: abortSupported ? AbortController : undefined,
+      setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id),
+      applyDims() {}, initImageFallback() {},
+      fetch: (url, options) => {
+        if (throwFetch) throw new Error('synchronous fetch failure');
+        return new Promise((resolve, reject) => pending.push({ url, options, resolve, reject }));
+      },
       DOMParser: class { parseFromString(body) { return docs[body]; } },
       CustomEvent: class { constructor(name, options) { this.type = name; this.detail = options.detail; } }
     };
@@ -232,11 +237,33 @@ class Element {
     }
     vm.createContext(context); vm.runInContext(helper(source, 'initWaterfall', 2), context); context.initWaterfall();
     const api = context.window.InfinityWaterfall;
+    const tick = () => new Promise(resolve => setImmediate(resolve));
+    async function settled(promise, expected, message) {
+      assert.equal(await Promise.race([promise, tick().then(() => 'still pending')]), expected, message);
+    }
+    const timedOut = api.loadMore(), timedOutRequest = pending.shift();
+    assert.equal(timers.size, 1);
+    [...timers.values()][0]();
+    await settled(timedOut, false, '超时必须结束请求 Promise，即使 fetch 不支持或忽略 abort');
+    assert.equal(lm.getAttribute('aria-busy'), 'false');
+    assert.match(lm.children[0].textContent, /加载失败/);
+    assert.equal(timers.size, 0);
+    if (abortSupported) assert.equal(timedOutRequest.options.signal.aborted, true);
+    const timeoutRetry = api.loadMore(), timeoutRetryRequest = pending.shift();
+    timedOutRequest.resolve(response('late-timeout', '/wrong', 3));
+    await tick();
+    assert.equal(wf.children.length, 0, '超时后旧响应不能追加卡片');
+    assert.equal(lm.getAttribute('aria-busy'), 'true', '旧请求完成不能释放新请求的 busy 状态');
+    timeoutRetryRequest.resolve({ ok: false, status: 503 });
+    await settled(timeoutRetry, false, '超时后可立即重试');
     const failed = api.loadMore();
-    assert.equal(await api.loadMore(), false); assert.equal(pending.length, 1, '并发请求不会重复加载同一页');
+    const joined = api.loadMore();
+    assert.equal(joined, failed, '并发调用应等待同一分页结果，不能将 busy 误报为失败');
+    assert.equal(pending.length, 1, '并发请求不会重复加载同一页');
     assert.equal(lm.getAttribute('aria-busy'), 'true');
     pending.shift().resolve({ ok: false, status: 503 });
     assert.equal(await failed, false);
+    assert.equal(await joined, false);
     assert.equal(lm.getAttribute('aria-busy'), 'false');
     assert.match(lm.children[0].textContent, /加载失败/);
     context.window.scrollY = 4000; events.scroll(); assert.equal(pending.length, 0, '自动加载失败后等待主动重试');
@@ -245,7 +272,11 @@ class Element {
     assert.equal(wf.children[0].getAttribute('id'), null, '追加标题的重复 ID 已移除');
     assert.equal(next.getAttribute('href'), '/page3');
     const stale = api.loadMore(); const staleRequest = pending.shift();
-    api.reset({ nextUrl: '/page4' }); assert.equal(staleRequest.options.signal.aborted, true);
+    const staleJoined = api.loadMore();
+    api.reset({ nextUrl: '/page4' });
+    if (abortSupported) assert.equal(staleRequest.options.signal.aborted, true);
+    await settled(stale, false, 'reset 在底层网络不响应时仍结束旧请求');
+    await settled(staleJoined, false, 'reset 同时结束所有并发等待者');
     staleRequest.resolve(response('stale', '/page5', 3));
     assert.equal(await stale, false); assert.equal(wf.children.length, 2, '重置后旧响应不得追加卡片');
     const fresh = api.loadMore(); pending.shift().resolve(response('fresh', '', 1));
@@ -259,6 +290,34 @@ class Element {
     const invalid = api.loadMore(); pending.shift().resolve({ ok: true, text: () => Promise.resolve('invalid') });
     assert.equal(await invalid, false); assert.match(lm.children[0].textContent, /加载失败/);
     api.cancel();
+    api.reset({ nextUrl: '/body-stall' });
+    const bodyStall = api.loadMore();
+    let finishBody;
+    pending.shift().resolve({ ok: true, text: () => new Promise(resolve => { finishBody = resolve; }) });
+    await tick();
+    [...timers.values()][0]();
+    await settled(bodyStall, false, '响应头已返回但响应体挂起也必须超时');
+    finishBody('fresh'); await tick();
+    assert.equal(wf.children.length, 5, '超时响应体不会追加旧内容');
+    api.reset({ nextUrl: '/cancelled' });
+    const cancelled = api.loadMore(), cancelledRequest = pending.shift();
+    events.pagehide();
+    await settled(cancelled, false, 'pagehide 结束挂起请求');
+    assert.equal(timers.size, 0);
+    assert.equal(lm.getAttribute('aria-busy'), 'false');
+    assert.equal(lm.classes.has('pp-load-error'), false, '取消不冒充网络失败');
+    cancelledRequest.reject(new Error('late cancellation failure'));
+    await tick();
+    assert.equal(lm.classes.has('pp-load-error'), false);
+    throwFetch = true;
+    await settled(api.loadMore(), false, '同步 fetch 异常也释放请求状态');
+    assert.equal(lm.getAttribute('aria-busy'), 'false');
+    assert.equal(timers.size, 0);
+    throwFetch = false;
+    const recovered = api.loadMore(); pending.shift().resolve(response('recovered', '', 1));
+    assert.equal(await recovered, true);
+    assert.equal(lm.classes.has('pp-load-error'), false);
+    assert.equal(timers.size, 0);
   }
   console.log('图册预加载、主题色和分页生命周期回归测试通过');
 })().catch(error => { console.error(error); process.exitCode = 1; });
