@@ -53,9 +53,24 @@
       var article = img.closest('.thumb');
       var sources = Array.from((img.closest('picture') || document.createElement('picture')).querySelectorAll('source'))
         .map(function(source) { return { node: source, srcset: source.getAttribute('srcset') }; });
-      var swapped = false, retry;
+      var swapped = false, avifFallback = false, retry;
       function failed() {
         if (swapped) return;
+        // 浏览器支持 AVIF 但文件损坏/缺失时，先尝试既有 WebP 候选。
+        var avifSources = sources.filter(function(source) {
+          var candidates = source.node.getAttribute('srcset');
+          if (source.node.getAttribute('type') !== 'image/avif' || !candidates) return false;
+          if (!img.currentSrc) return true;
+          return candidates.split(',').some(function(candidate) {
+            try { return new URL(candidate.trim().split(/\s+/)[0], document.baseURI).href === img.currentSrc; }
+            catch (e) { return false; }
+          });
+        });
+        if (!avifFallback && avifSources.length) {
+          avifFallback = true;
+          avifSources.forEach(function(source) { source.node.removeAttribute('srcset'); });
+          return;
+        }
         swapped = true;
         img.removeAttribute('srcset');
         sources.forEach(function(source) { source.node.removeAttribute('srcset'); });
@@ -67,7 +82,7 @@
         retry.textContent = '缩略图加载失败 · 重试';
         retry.addEventListener('click', function(event) {
           event.preventDefault(); event.stopPropagation();
-          swapped = false;
+          swapped = false; avifFallback = false;
           retry.disabled = true;
           retry.textContent = '正在重试…';
           sources.forEach(function(source) { if (source.srcset) source.node.setAttribute('srcset', source.srcset); });

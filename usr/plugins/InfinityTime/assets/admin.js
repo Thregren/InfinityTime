@@ -109,13 +109,14 @@
       var operationInput = form.querySelector('[name="operation_key"]');
       var dropzone = $('#pp-dropzone'), bar = $('#pp-upload-bar'), barOuter = $('#pp-upload-progress');
       var barMsg = barOuter ? barOuter.querySelector('.pp-msg') : null;
+      var summaryEl = $('#pp-upload-summary'), formFields = {};
       var storageKey = 'InfinityTime.upload:' + ENDPOINT + ':' + (CFG.userId || 'current');
       var cid = '', albumTitle = '', albumStatus = 'draft', albumCount = 0, verified = false;
       var operationKey = '', activeProgress = 0;
       var initialTarget = CFG.uploadTarget || null;
       var labels = { queued: '等待上传', uploading: '正在上传', converting: '正在转换并保存', done: '已保存', failed: '失败' };
 
-      function field(name) { return form.querySelector('[name="' + name + '"]'); }
+      function field(name) { return formFields[name] || (formFields[name] = form.querySelector('[name="' + name + '"]')); }
       function value(name) { var el = field(name); return el ? el.value : ''; }
       function key() {
         if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
@@ -149,7 +150,7 @@
           var dt = new DataTransfer();
           Upload.sel.forEach(function (item) { if (item.file && item.state !== 'done') dt.items.add(item.file); });
           input.files = dt.files;
-        } catch (e) {}
+        } catch (e) { input.value = ''; }
       }
       function discard() {
         Upload.sel.forEach(function (item) { if (item.url) URL.revokeObjectURL(item.url); });
@@ -177,50 +178,58 @@
       function summary() {
         var counts = { queued: 0, uploading: 0, converting: 0, done: 0, failed: 0 }, total = 0;
         Upload.sel.forEach(function (it) { counts[it.state]++; total += it.size || 0; });
-        var el = $('#pp-upload-summary');
-        if (el) el.textContent = Upload.sel.length ? '本次 ' + Upload.sel.length + ' 张（' + humanSize(total) + '）：已保存 ' + counts.done + '，待上传 ' + counts.queued + '，失败 ' + counts.failed : '';
+        if (summaryEl) summaryEl.textContent = Upload.sel.length ? '本次 ' + Upload.sel.length + ' 张（' + humanSize(total) + '）：已保存 ' + counts.done + '，待上传 ' + counts.queued + '，失败 ' + counts.failed : '';
         if (barOuter) barOuter.style.display = Upload.sel.length ? 'flex' : 'none';
         var complete = counts.done + counts.failed;
         if (bar) bar.style.width = (Upload.sel.length ? Math.round((complete + activeProgress) * 100 / Upload.sel.length) : 0) + '%';
         if (barMsg) barMsg.textContent = Upload.running ? '已处理 ' + complete + ' / ' + Upload.sel.length : '已保存 ' + counts.done + ' / ' + Upload.sel.length;
         controls();
       }
+      function renderCard(item, idx) {
+        var card = document.createElement('div');
+        card.className = 'pp-up-item pp-up-' + item.state;
+        card.dataset.idx = idx;
+        card.dataset.state = item.state;
+        var thumb = document.createElement(item.state === 'done' && !item.file ? 'div' : 'img');
+        thumb.className = 'pp-up-thumb'; thumb.alt = item.name;
+        if (item.state === 'done' && !item.file) { thumb.classList.add('pp-up-saved'); thumb.textContent = '✓ 图片已保存在图集中'; }
+        if (item.file && !item.url) { try { item.url = URL.createObjectURL(item.file); } catch (e) {} }
+        if (item.url) thumb.src = item.url;
+        else thumb.classList.add('pp-up-missing');
+        var rm = document.createElement('button');
+        rm.type = 'button'; rm.className = 'pp-up-remove'; rm.textContent = '×';
+        rm.title = item.state === 'done' ? '已保存图片请在图集内管理' : '从待上传队列移除';
+        rm.disabled = Upload.running || item.state === 'done';
+        rm.addEventListener('click', function () {
+          if (Upload.running || item.state === 'done') return;
+          if (item.url) URL.revokeObjectURL(item.url);
+          Upload.sel.splice(idx, 1); syncInput(); persist(); render();
+        });
+        var name = document.createElement('div'); name.className = 'pp-up-name'; name.textContent = item.name;
+        var state = document.createElement('div'); state.className = 'pp-up-state'; state.setAttribute('role', 'status');
+        state.textContent = labels[item.state] + (item.error ? '：' + item.error : '');
+        var tit = document.createElement('input');
+        tit.type = 'text'; tit.className = 'pp-up-tit'; tit.placeholder = '图片标题（可选）'; tit.value = item.title;
+        var desc = document.createElement('textarea');
+        desc.rows = 2; desc.className = 'pp-up-desc'; desc.placeholder = '图片描述（可选）'; desc.value = item.desc;
+        tit.disabled = desc.disabled = Upload.running || item.state === 'done' || typeof item.address !== 'undefined';
+        tit.addEventListener('input', function () { item.title = tit.value; persist(); });
+        desc.addEventListener('input', function () { item.desc = desc.value; persist(); });
+        card.appendChild(thumb); card.appendChild(rm); card.appendChild(name); card.appendChild(state); card.appendChild(tit); card.appendChild(desc);
+        Upload.bindDrag(card, idx, function () { syncInput(); persist(); render(); });
+        return card;
+      }
       function render() {
         wrap.innerHTML = '';
-        Upload.sel.forEach(function (item, idx) {
-          var card = document.createElement('div');
-          card.className = 'pp-up-item pp-up-' + item.state;
-          card.dataset.idx = idx;
-          card.dataset.state = item.state;
-          var thumb = document.createElement(item.state === 'done' && !item.file ? 'div' : 'img');
-          thumb.className = 'pp-up-thumb'; thumb.alt = item.name;
-          if (item.state === 'done' && !item.file) { thumb.classList.add('pp-up-saved'); thumb.textContent = '✓ 图片已保存在图集中'; }
-          if (item.file && !item.url) { try { item.url = URL.createObjectURL(item.file); } catch (e) {} }
-          if (item.url) thumb.src = item.url;
-          else thumb.classList.add('pp-up-missing');
-          var rm = document.createElement('button');
-          rm.type = 'button'; rm.className = 'pp-up-remove'; rm.textContent = '×';
-          rm.title = item.state === 'done' ? '已保存图片请在图集内管理' : '从待上传队列移除';
-          rm.disabled = Upload.running || item.state === 'done';
-          rm.addEventListener('click', function () {
-            if (Upload.running || item.state === 'done') return;
-            if (item.url) URL.revokeObjectURL(item.url);
-            Upload.sel.splice(idx, 1); syncInput(); persist(); render();
-          });
-          var name = document.createElement('div'); name.className = 'pp-up-name'; name.textContent = item.name;
-          var state = document.createElement('div'); state.className = 'pp-up-state'; state.setAttribute('role', 'status');
-          state.textContent = labels[item.state] + (item.error ? '：' + item.error : '');
-          var tit = document.createElement('input');
-          tit.type = 'text'; tit.className = 'pp-up-tit'; tit.placeholder = '图片标题（可选）'; tit.value = item.title;
-          var desc = document.createElement('textarea');
-          desc.rows = 2; desc.className = 'pp-up-desc'; desc.placeholder = '图片描述（可选）'; desc.value = item.desc;
-          tit.disabled = desc.disabled = Upload.running || item.state === 'done' || typeof item.address !== 'undefined';
-          tit.addEventListener('input', function () { item.title = tit.value; persist(); });
-          desc.addEventListener('input', function () { item.desc = desc.value; persist(); });
-          card.appendChild(thumb); card.appendChild(rm); card.appendChild(name); card.appendChild(state); card.appendChild(tit); card.appendChild(desc);
-          Upload.bindDrag(card, idx, function () { syncInput(); persist(); render(); });
-          wrap.appendChild(card);
-        });
+        Upload.sel.forEach(function (item, idx) { wrap.appendChild(renderCard(item, idx)); });
+        summary();
+      }
+      // 上传期间队列顺序不变，只替换状态变化的卡片，避免每张图片反复重建整个队列。
+      function renderItem(item) {
+        var idx = Upload.sel.indexOf(item), previous = wrap.children[idx];
+        if (idx < 0 || !previous) { render(); return; }
+        wrap.insertBefore(renderCard(item, idx), previous);
+        wrap.removeChild(previous);
         summary();
       }
       function addFiles(files) {
@@ -261,10 +270,10 @@
       }
       function uploadOne(item) {
         return new Promise(function (resolve) {
-          if (!item.file) { item.state = 'failed'; item.error = '请重新选择此文件，浏览器刷新后不会保留文件内容'; persist(); render(); resolve(); return; }
+          if (!item.file) { item.state = 'failed'; item.error = '请重新选择此文件，浏览器刷新后不会保留文件内容'; persist(); renderItem(item); resolve(); return; }
           item.state = 'uploading'; item.error = ''; activeProgress = 0;
           if (typeof item.address === 'undefined') item.address = value('address');
-          persist(); render();
+          persist(); renderItem(item);
           var fd = new FormData();
           fd.set('action', 'upload_image'); fd.set('ajax', '1'); fd.set('cid', cid); fd.set('item_key', item.itemKey);
           fd.set('title', item.title || ''); fd.set('desc', item.desc || ''); fd.set('address', item.address || '');
@@ -276,22 +285,28 @@
             settled = true;
             if (d && d.ok) {
               item.state = 'done'; item.rowId = d.rowId; item.error = '';
+              // 服务器确认已保存后保留幂等键和元数据，不再占用原图文件/预览资源。
+              if (item.rowId) {
+                if (item.url) URL.revokeObjectURL(item.url);
+                item.url = ''; item.file = null;
+              }
               if (!d.replayed) albumCount++;
             } else {
               item.state = 'failed';
               item.error = (d && d.msg) || '网络或上传出错，请重试；同一图片不会重复保存';
             }
-            activeProgress = 0; persist(); render(); resolve();
+            activeProgress = 0; persist(); renderItem(item); resolve();
           }
           xhr.open('POST', ENDPOINT, true); xhr.withCredentials = true;
           // 超时后的保存结果不确定：重试时保留原幂等键。
           xhr.timeout = 180000;
           xhr.upload.onprogress = function (ev) {
-            if (settled || !ev.lengthComputable) return;
-            activeProgress = Math.min(0.95, ev.loaded / ev.total * 0.95); summary();
-            if (ev.loaded >= ev.total && item.state === 'uploading') { item.state = 'converting'; persist(); render(); }
+            if (settled || !ev.lengthComputable || !ev.total) return;
+            activeProgress = Math.min(0.95, ev.loaded / ev.total * 0.95);
+            if (ev.loaded >= ev.total && item.state === 'uploading') { item.state = 'converting'; persist(); renderItem(item); }
+            else summary();
           };
-          xhr.upload.onload = function () { if (!settled) { item.state = 'converting'; persist(); render(); } };
+          xhr.upload.onload = function () { if (!settled && item.state === 'uploading') { item.state = 'converting'; persist(); renderItem(item); } };
           xhr.onload = function () {
             var d; try { d = JSON.parse(xhr.responseText); } catch (e) { d = { ok: false, msg: '服务器响应异常，请重试此项' }; }
             if (xhr.status < 200 || xhr.status >= 300) d = { ok: false, msg: (d && d.msg) || '上传请求失败，请重试' };
@@ -316,6 +331,8 @@
         if (!queue.length) { notice(onlyFailed ? '没有失败项需要重试。' : '请先选择图片；失败项请使用“重试失败项”。', 'error'); return; }
         if (!cid && !value('title').trim()) { notice('请填写图集标题。', 'error'); return; }
         if (queue.some(function (it) { return !it.file; })) { notice('请重新选择未完成的原文件，再重试失败项。已保存图片仍在图集中。', 'error'); return; }
+        // 文件由队列持有；清空原生 FileList，成功项释放时不会被文件输入框继续引用。
+        input.value = '';
         Upload.running = true; render();
         ensureDraft().then(function () {
           return queue.reduce(function (previous, item) { return previous.then(function () { return uploadOne(item); }); }, Promise.resolve());

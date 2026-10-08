@@ -3,7 +3,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const playwright = require('playwright');
+const browserName = process.env.PLAYWRIGHT_BROWSER || 'chromium';
+assert.ok(['chromium', 'firefox', 'webkit'].includes(browserName), 'valid PLAYWRIGHT_BROWSER');
 const theme = path.resolve(__dirname, '../usr/themes/InfinityTime');
 const origin = 'https://gallery.test';
 const url = name => origin + '/' + name + '.webp';
@@ -20,15 +22,24 @@ const fixture = `<!doctype html><html lang="zh-CN"><head><meta name="viewport" c
 ${card('a', [url('a'), url('plain'), url('pano')], ['Sunrise', 'Plain landscape', 'Panorama'], [{ w: 2400, webp: [url('a')], avif: [origin + '/a.avif'] }], [0, 0, 1])}
 ${card('b', [url('b'), url('b2')], ['', 'Blue sky'])}
 </div></div><div id="preexisting-hidden" inert aria-hidden="true">Hidden</div>
-<script>window.pannellum={viewer:function(){return {destroy:function(){},setSize:function(){}}}};</script>
+<script>window.__viewerCalls=0;window.__viewerDestroys=0;window.pannellum={viewer:function(){window.__viewerCalls++;return {destroy:function(){window.__viewerDestroys++;},setSize:function(){}}}};</script>
 ${['jquery.min', 'jquery.poptrox.min', 'browser.min', 'breakpoints.min', 'lightbox', 'main'].map(name => `<script src="/assets/js/${name}.js"></script>`).join('')}
 </body></html>`;
 const image = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400"><rect width="640" height="400" fill="#567"/></svg>';
 (async () => {
-  const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
+  const browser = await playwright[browserName].launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
   try {
     for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
       const context = await browser.newContext({ viewport });
+      await context.addInitScript(() => {
+        // Isolate optional-API handling from a CI machine's actual GPU support.
+        window.ResizeObserver = undefined;
+        const original = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+          if (/webgl/.test(type)) return { getExtension() { return null; } };
+          return original.call(this, type, ...args);
+        };
+      });
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', err => errors.push(err.message));
@@ -99,7 +110,13 @@ const image = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await page.locator('.pic img').evaluate((el, src) => el.setAttribute('src', src), url('pano'));
       await ready('pano');
       assert.equal(await page.locator('.pic picture').count(), 0, 'AVIF to panorama removes picture');
+      await page.waitForSelector('.pp-pano-viewer');
+      await page.waitForTimeout(500);
+      assert.equal(await page.evaluate(() => window.__viewerCalls), 1, 'missing ResizeObserver must not recreate viewers on each poll');
+      assert.equal(await page.locator('.pp-pano-viewer').count(), 1);
       await page.keyboard.press('ArrowRight'); await ready('b');
+      assert.equal(await page.locator('.pp-pano-viewer').count(), 0, 'optional observer absence does not prevent cleanup');
+      assert.equal(await page.evaluate(() => window.__viewerDestroys), 1);
       assert.match(await page.locator('.pic img').getAttribute('alt'), /Album b/);
       await page.locator('.pp-mnav-next').focus(); await page.keyboard.press('Space'); await ready('b2');
       assert.match(await page.locator('.pic img').getAttribute('alt'), /Blue sky/, 'empty first title preserves per-image alignment');
@@ -152,7 +169,7 @@ const image = '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400">
       await open('new'); await ready('new'); await close();
       assert.deepEqual(errors, [], 'no uncaught script errors');
       await context.close();
-      console.log(`Gallery browser regressions passed at ${viewport.width}px`);
+      console.log(`Gallery browser regressions passed in ${browserName} at ${viewport.width}px`);
     }
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

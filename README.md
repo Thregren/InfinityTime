@@ -84,7 +84,7 @@
 
 ### 开发验证
 
-在仓库根目录运行（测试环境使用 PHP 8.2+、DOM 扩展和 Node.js 20+）：
+在仓库根目录运行（测试环境使用 PHP 7.4+、DOM / GD / EXIF / PDO SQLite 扩展和 Node.js 20+）：
 
 ```sh
 php tests/test.php
@@ -93,6 +93,9 @@ php tests/repository.php
 php tests/migration.php
 php tests/schema-sqlite.php
 php tests/field-sync.php
+php tests/image-delete.php
+php tests/media-lifetime.php
+php tests/media-gd.php
 php tests/maintenance-state.php
 php tests/maintenance-panel.php
 php tests/admin-workflow.php
@@ -107,14 +110,15 @@ node tests/gallery-loading.cjs
 node tests/gallery-navigation.cjs
 ```
 
-浏览器回归（Playwright 1.62.1 + Chromium；页面与资源请求全部由测试拦截，不访问线上站点）：
+浏览器回归（Playwright 1.62.1 + Chromium / Firefox / WebKit；页面与资源请求全部由测试拦截，不访问线上站点）：
 
 ```sh
 npm install --no-save --package-lock=false playwright@1.62.1
-npx playwright install chromium
+npx playwright install chromium firefox webkit
 node tests/gallery-browser.cjs
 node tests/gallery-loading-browser.cjs
 node tests/admin-upload.cjs --browser
+# 将 PLAYWRIGHT_BROWSER 设为 firefox 或 webkit 可运行同一组其他引擎回归
 ```
 
 CI 同时检查 PHP / JS 语法、版本一致性和更新记录，并在 PHP 7.4 / 8.2 / 8.4、Typecho 1.2.1 / 1.3.0、SQLite / MySQL 8 / PostgreSQL 17 矩阵中使用官方数据库层与 PDO/原生适配器执行集成测试。测试 Typecho 源码固定到官方提交，覆盖草稿、权限、重试、字段回滚、外层事务及旧库升级。数据库以外的 options/编码器边界仍使用隔离替身，不能冒充真实网站、生产主从延迟或完整图片编码器的端到端验证。
@@ -124,6 +128,12 @@ CI 同时检查 PHP / JS 语法、版本一致性和更新记录，并在 PHP 7.
 字段聚合同步使用主库保存点：失败保留完整旧字段，不提交或回滚调用方的其他事务。MySQL 的 `fields` 表必须使用 InnoDB；非事务引擎会在写入前明确拒绝，需要管理员先备份并自行迁移，本插件不会自动改动站点表引擎。
 
 维护检查点有独立任务标识。未完成的同类任务继续原清单与进度，完成后再次开始会重新收集候选；迟到轮询不能覆盖新任务。磁盘写入失败会明确报错，重建字段失败计入失败数，可运行「重建尺寸字段」重试。首批已完成但响应丢失后，手动再次开始属于新任务，可能重复处理，但不会复用过期快照。
+
+单图删除将图片行和聚合字段放在同一事务中，确认自行提交后才清理无引用实体；调用方外层事务尚未结束时保留文件，由提交后的安全孤儿清理回收。数据库与文件系统没有跨系统原子提交：提交后崩溃、连接结果未知或清理失败可能留下孤儿，优先避免丢失可恢复文件。历史 URL 的查询参数、编码和点目录会保守纳入引用保护。
+
+上传中只更新当前照片卡片，服务器确认成功且返回图片标识后才释放本地文件资源，失败项保留重试。200 张隔离 DOM/XHR 样本的创建节点数从 1,124,203 降至 8,403，全部成功后的 ObjectURL 从 200 降至 0；这仅是测试样本的 DOM/资源数据，完整队列统计与持久化仍有遍历，不代表全部算法线性或线上耗时承诺。
+
+主图与缩略图使用同目录暂存文件，全部编码并校验后再依次替换；编码失败不会提前覆盖旧图。两个文件的 rename 不能形成跨文件原子事务，发布中途磁盘失败仍可能保留不同代但各自完整的输出，可重建恢复。WebP 编码单边上限为 16383px，超限会明确拒绝，不暗中改变用户的全景尺寸设置。AVIF 读取失败先尝试已有 WebP，仍失败才显示重试。
 
 孤儿引用扫描仅读六个路径列，不缓存旧引用；每批删除前仍在媒体锁内核验。可运行 `php tests/orphan-performance.php` 在隔离 SQLite 中对比返回量和查询中位数，测试不使用机器相关的耗时通过阈值。
 

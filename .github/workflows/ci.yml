@@ -11,13 +11,17 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.2', '8.4']
     steps:
       - uses: actions/checkout@v4
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
-          extensions: pdo_sqlite
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, gd, exif, dom
 
       - uses: actions/setup-node@v4
         with:
@@ -40,6 +44,9 @@ jobs:
           php tests/migration.php
           php tests/schema-sqlite.php
           php tests/field-sync.php
+          php tests/image-delete.php
+          php tests/media-lifetime.php
+          php tests/media-gd.php
           php tests/maintenance-state.php
           for mode in rebuild-sync-failure rebuild-success rebuild-batch rebuild-restart rebuild-resume rebuild-start-reuse rebuild-no-original rebuild-missing-original rebuild-conversion-failure stale-poll finished-poll delete-non-plugin delete-rollback lease-conflict; do
             php tests/maintenance-panel.php "$mode"
@@ -74,7 +81,13 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    env:
+      PLAYWRIGHT_BROWSER: ${{ matrix.engine }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -83,7 +96,7 @@ jobs:
       - name: Install isolated browser test dependencies
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps ${{ matrix.engine }}
       - name: 图库基础浏览器回归
         run: node tests/gallery-browser.cjs
       - name: 图库加载与历史导航回归

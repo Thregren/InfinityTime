@@ -5,8 +5,10 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const source = fs.readFileSync(require.resolve('../usr/plugins/InfinityTime/assets/admin.js'), 'utf8');
 
+let createdNodes = 0;
 class Element {
   constructor(tag = 'div') {
+    createdNodes++;
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
     this.listeners = {}; this.attributes = {}; this.className = ''; this.value = ''; this.disabled = false;
     this.classList = {
@@ -16,6 +18,8 @@ class Element {
       toggle: (name, force) => { const yes = force === undefined ? !this.classList.contains(name) : force; this.classList[yes ? 'add' : 'remove'](name); return yes; }
     };
   }
+  set value(value) { this._value = value; if (value === '' && this.tagName === 'INPUT' && this.type === 'file') this.files = []; }
+  get value() { return this._value; }
   addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
   emit(name, extra = {}) {
     const event = { target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...extra };
@@ -75,7 +79,7 @@ class FormDataMock {
 const flush = async () => { for (let i = 0; i < 15; i++) await new Promise(resolve => setImmediate(resolve)); };
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const response = (data, ok = true) => ({ ok, json: async () => data, text: async () => typeof data === 'string' ? data : JSON.stringify(data) });
-function harness({ storage = new Map(), fetchHandler, initialCid = '', initialTarget = null, canPublish = true } = {}) {
+function harness({ storage = new Map(), fetchHandler, initialCid = '', initialTarget = null, canPublish = true, withDataTransfer = false } = {}) {
   const document = new Element('document');
   const make = (tag, props, parent = document) => { const element = new Element(tag); Object.assign(element, props); parent.appendChild(element); return element; };
   const container = make('div', { className: 'container typecho-page-main' });
@@ -125,6 +129,9 @@ function harness({ storage = new Map(), fetchHandler, initialCid = '', initialTa
       reply(data, status = 200) { if (data.ok && !data.replayed) serverCount++; this.status = status; this.responseText = JSON.stringify(data); this.onload(); }
     }
   };
+  if (withDataTransfer) context.DataTransfer = class {
+    constructor() { this.files = []; this.items = { add: file => this.files.push(file) }; }
+  };
   vm.runInNewContext(source, context); document.emit('DOMContentLoaded');
   return { document, form, input, previews, target, summary, submit, retry, publish, fresh, cid, dropzone, append, details, thumbs, maintenance, maintenanceMsg,
     activeUrls, requests, uploads, storage, window,
@@ -154,6 +161,7 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
   h.previews.children[0].querySelector('.pp-up-tit').value = '首张标题';
   h.previews.children[0].querySelector('.pp-up-tit').emit('input');
   h.submitForm(); h.submitForm();
+  assert.equal(h.input.files.length, 0, '上传队列接管文件后清空原生 FileList，避免成功文件继续被输入框持有');
   assert.equal(h.requests.filter(r => r.body?.get('action') === 'create_draft').length, 1, '重复提交不会创建第二份草稿');
   h.previews.children[0].emit('drop', drop(1)); h.previews.children[0].children[1].emit('click'); h.select([files[0]]);
   assert.deepEqual(h.previews.children.map(c => c.children[0].alt), ['c.jpg', 'b.jpg'], '处理期间不能更改队列');
@@ -168,14 +176,28 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
   assert.equal(h.uploads[0].data.get('title'), '首张标题');
   assert.equal(h.uploads[0].data.get('_'), 'secret-csrf');
   assert.deepEqual(h.states(), ['uploading', 'queued']);
+  const beforeEmptyProgress = createdNodes;
+  h.uploads[0].upload.onprogress({ lengthComputable: true, loaded: 0, total: 0 });
+  assert.equal(createdNodes, beforeEmptyProgress);
+  assert.equal(h.document.querySelector('#pp-upload-bar').style.width, '0%', '零字节进度不会产生 NaN%');
+  const untouchedCard = h.previews.children[1];
   h.uploads[0].upload.onprogress({ lengthComputable: true, loaded: 10, total: 10 });
+  assert.equal(h.previews.children[1], untouchedCard, '当前项状态改变不会重建其他卡片');
+  const convertedCard = h.previews.children[0], afterConversionNodes = createdNodes;
+  h.uploads[0].upload.onload(); h.uploads[0].upload.onload();
+  assert.equal(h.previews.children[0], convertedCard, '上传完成事件不会重复刷新转换状态');
+  assert.equal(createdNodes, afterConversionNodes);
   assert.deepEqual(h.states(), ['converting', 'queued'], '转换阶段具有独立状态');
   h.uploads[0].reply({ ok: true, rowId: 100, cid: 42 }); await flush();
   assert.equal(h.uploads.length, 2);
   assert.deepEqual(h.states(), ['done', 'uploading']);
+  assert.equal(h.activeUrls.size, 1, '已保存原图的 ObjectURL 立即释放，未完成项保留');
+  assert.equal(h.previews.children[0].children[0].tagName, 'DIV', '成功项释放 File 引用后使用已保存占位卡片');
+  assert.ok(h.previews.children[0].querySelector('.pp-up-saved'));
   const failedKey = h.uploads[1].data.get('item_key');
   h.uploads[1].reply({ ok: false, retryable: true, msg: '正忙' }); await flush();
   assert.deepEqual(h.states(), ['done', 'failed']);
+  assert.equal(h.activeUrls.size, 1, '失败项保留原文件预览以便直接重试');
   assert.equal(h.publish.disabled, true, '部分失败时不能误发布');
   assert.equal(h.requests.some(r => r.body?.get('action') === 'publish_album'), false, '保存不会隐式发布图集');
   const listRead = h.requests.find(r => r.url.includes('job=albums_html'));
@@ -186,6 +208,11 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
   assert.equal(h.uploads[2].data.get('item_key'), failedKey, '重试保留原幂等键');
   h.uploads[2].reply({ ok: true, rowId: 101, cid: 42 }); await flush();
   assert.deepEqual(h.states(), ['done', 'done']);
+  assert.equal(h.activeUrls.size, 0, '重试成功后释放最后一份原图预览');
+  h.select([files[1], files[2]]);
+  assert.equal(h.activeUrls.size, 0, '重选已保存文件不重新分配预览资源');
+  assert.equal(h.previews.children.length, 2);
+  assert.equal(h.input.files.length, 0, '无 DataTransfer 的浏览器也不持有被忽略的已保存文件');
   assert.equal(h.publish.disabled, false);
   h.publish.click(); h.publish.click(); await flush();
   assert.equal(h.requests.filter(r => r.body?.get('action') === 'publish_album').length, 1);
@@ -246,6 +273,67 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
   assert.equal(contributor.fresh.disabled, false, '只读图集不会阻止用户新建草稿');
   contributor.fresh.click(); assert.equal(contributor.input.disabled, false);
 
+  // 大队列只允许线性创建 DOM 节点；每个原文件仅上传一次。
+  // 时间值受 DOM/XHR 替身和运行环境影响，不作为浏览器性能门槛。
+  const costs = [];
+  for (const count of [10, 50, 100, 200]) {
+    const batch = harness(), baseline = createdNodes;
+    const batchFiles = Array.from({ length: count }, (_, i) => ({ name: 'photo-' + i + '.jpg', size: 20 * 1024 * 1024, lastModified: 1 }));
+    batch.select(batchFiles); batch.submitForm(); await flush();
+    for (let i = 0; i < count; i++) {
+      assert.equal(batch.uploads.length, i + 1, '前一个请求结束前不会上传下一项');
+      const xhr = batch.uploads[i];
+      assert.equal(xhr.data.get('file'), batchFiles[i]);
+      xhr.upload.onprogress({ lengthComputable: true, loaded: 20, total: 20 });
+      const convertedNodes = createdNodes;
+      xhr.upload.onload();
+      assert.equal(createdNodes, convertedNodes, '100% progress 与 onload 不重复创建节点');
+      xhr.reply({ ok: true, rowId: i + 1 }); await flush();
+      assert.equal(batch.activeUrls.size, count - i - 1, '逐项释放资源，待上传文件保持可用');
+      const settledNodes = createdNodes;
+      xhr.upload.onload(); xhr.onerror(); xhr.ontimeout();
+      assert.equal(createdNodes, settledNodes, '已结算请求的迟到事件不改变队列或重复释放资源');
+    }
+    assert.equal(batch.uploads.length, count);
+    assert.equal(new Set(batch.uploads.map(xhr => xhr.data.get('item_key'))).size, count, '每项保留独立幂等键');
+    assert.equal(batch.states().filter(state => state === 'done').length, count);
+    assert.equal(batch.previews.querySelectorAll('.pp-up-saved').length, count);
+    assert.equal(batch.activeUrls.size, 0);
+    const nodes = createdNodes - baseline;
+    assert.ok(nodes <= 50 * count + 10, '节点数必须随队列线性增长：' + count + ' 张创建了 ' + nodes + ' 个节点');
+    costs.push({ count, nodes });
+    batch.fresh.click(); assert.equal(batch.activeUrls.size, 0, '清空成功队列不会再次回收 URL');
+  }
+  assert.ok(costs[3].nodes <= costs[2].nodes * 2 + 10, '队列翻倍不能导致节点数平方增长');
+
+  // 支持 DataTransfer 的浏览器：重排/移除会同步 FileList，上传后清空但失败项仍能重试。
+  const nativeInput = harness({ withDataTransfer: true });
+  nativeInput.select(files); nativeInput.previews.children[0].emit('drop', drop(2));
+  assert.deepEqual(Array.from(nativeInput.input.files, file => file.name), ['c.jpg', 'a.jpg', 'b.jpg']);
+  nativeInput.previews.children[1].children[1].click();
+  assert.deepEqual(Array.from(nativeInput.input.files, file => file.name), ['c.jpg', 'b.jpg']);
+  nativeInput.submitForm(); await flush(); assert.equal(nativeInput.input.files.length, 0);
+  nativeInput.uploads[0].reply({ ok: true, rowId: 1 }); await flush();
+  nativeInput.uploads[1].onerror(); await flush();
+  assert.equal(nativeInput.activeUrls.size, 1);
+  const nativeFailedKey = nativeInput.uploads[1].data.get('item_key');
+  nativeInput.retry.click(); await flush();
+  assert.equal(nativeInput.uploads.length, 3);
+  assert.equal(nativeInput.uploads[2].data.get('file'), files[1]);
+  assert.equal(nativeInput.uploads[2].data.get('item_key'), nativeFailedKey);
+  nativeInput.uploads[2].reply({ ok: true, rowId: 2 }); await flush();
+  assert.equal(nativeInput.activeUrls.size, 0);
+  nativeInput.select(files.slice(1));
+  assert.equal(nativeInput.input.files.length, 0, '重选全部已保存文件也不会保留原生文件引用');
+  assert.equal(nativeInput.activeUrls.size, 0);
+
+  // 兼容旧响应：未提供 rowId 时，不激进释放无法确认为服务器记录的原文件。
+  const legacyResponse = harness(); legacyResponse.select([files[0]]); legacyResponse.submitForm(); await flush();
+  legacyResponse.uploads[0].reply({ ok: true }); await flush();
+  assert.equal(legacyResponse.activeUrls.size, 1);
+  assert.equal(legacyResponse.previews.children[0].children[0].tagName, 'IMG');
+  legacyResponse.fresh.click(); assert.equal(legacyResponse.activeUrls.size, 0);
+
   // 图片详情加载失败可重试；维护操作仅使用带鉴权信息的 POST 请求。
   let detailAttempts = 0;
   const lazy = harness({ fetchHandler(url) { if (url.includes('job=album_images')) return response('detail', ++detailAttempts > 1); } });
@@ -261,10 +349,13 @@ const drop = index => ({ dataTransfer: { getData() { return String(index); } } }
   console.log('后台串行队列、部分重试、幂等、恢复、追加、发布、分页、懒加载重试和 POST 维护测试通过');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
-// 可选真实浏览器回归： CHROMIUM_PATH=/usr/bin/chromium node tests/admin-upload.cjs --browser
+// 可选真实浏览器回归： PLAYWRIGHT_BROWSER=chromium|firefox|webkit node tests/admin-upload.cjs --browser
+// 系统 Chromium 可额外指定 CHROMIUM_PATH=/usr/bin/chromium。
 // 使用本地隔离 HTTP 服务；无需 PHP 服务器或真实账号。
 async function browserRegression() {
-  const { chromium } = require('playwright');
+  const browserName = process.env.PLAYWRIGHT_BROWSER || 'chromium';
+  assert.ok(['chromium', 'firefox', 'webkit'].includes(browserName), '不支持的 PLAYWRIGHT_BROWSER: ' + browserName);
+  const browserType = require('playwright')[browserName];
   const path = require('node:path');
   const os = require('node:os');
   const http = require('node:http');
@@ -288,8 +379,14 @@ async function browserRegression() {
     return result;
   };
   try {
-    browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
+    browser = await browserType.launch({ headless: true, ...(browserName === 'chromium' && process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
     const page = await browser.newPage({ viewport: { width: 1100, height: 850 } });
+    await page.addInitScript(() => {
+      const active = new Set(), create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);
+      window.uploadPreviewResources = active;
+      URL.createObjectURL = file => { const url = create(file); active.add(url); return url; };
+      URL.revokeObjectURL = url => { active.delete(url); revoke(url); };
+    });
     const errors = [], calls = [], rows = new Map();
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.accept());
@@ -348,6 +445,9 @@ async function browserRegression() {
     releaseFirst();
     await page.waitForFunction(() => !document.querySelector('#pp-upload-submit').disabled && document.querySelector('.pp-up-failed'));
     assert.equal(rows.size, 1); assert.equal(maxActive, 1);
+    assert.equal(await page.evaluate(() => window.uploadPreviewResources.size), 1, '真实浏览器只保留失败项预览');
+    assert.equal(await page.locator('.pp-up-done .pp-up-saved').count(), 1);
+    assert.equal(await page.locator('#pp-files-input').evaluate(input => input.files.length), 0, '原生 FileList 已清空');
     assert.equal(published, false);
     assert.equal(await page.locator('#pp-upload-publish').isDisabled(), true);
     const failedKey = calls.find(call => call.data.file === 'b.png').data.item_key;
@@ -359,6 +459,8 @@ async function browserRegression() {
     await page.locator('#pp-upload-retry').click();
     await page.waitForFunction(() => document.querySelectorAll('.pp-up-done').length === 2 && !document.querySelector('#pp-upload-submit').disabled);
     assert.equal(rows.size, 2);
+    assert.equal(await page.evaluate(() => window.uploadPreviewResources.size), 0, '真实浏览器全部保存后无活跃 ObjectURL');
+    assert.equal(await page.locator('.pp-up-done .pp-up-saved').count(), 2);
     const imageCalls = calls.filter(call => call.data.action === 'upload_image');
     assert.deepEqual(imageCalls.map(call => call.data.file), ['a.png', 'b.png', 'b.png']);
     assert.equal(imageCalls[2].data.item_key, failedKey);
@@ -374,7 +476,7 @@ async function browserRegression() {
     assert.equal(await page.locator('.pp-up-item').count(), 0);
     assert.equal(await page.locator('#pp-upload-cid').inputValue(), '');
     assert.deepEqual(errors, []);
-    console.log('后台 Chromium 回归通过：串行转换、部分重试、刷新后重选、明确发布与移动布局');
+    console.log('后台 ' + browserName + ' 回归通过：串行转换、部分重试、刷新后重选、明确发布与移动布局');
   } finally {
     if (browser) await browser.close();
     if (server) {

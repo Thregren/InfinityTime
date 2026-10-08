@@ -615,9 +615,17 @@ if ($ppMethod === 'POST') {
         if ($rowId > 0) {
             $row = AdminRepository::readRow($db->select()->from(ImageRepository::table())->where('id = ?', $rowId)->limit(1), true);
             if (!$row || !pp_can_edit_cid((int)($row['cid'] ?? 0))) { pp_deny('没有权限删除该图片'); }
-            ImageRepository::unlinkFiles($row['original'], $row['full'], $row['mid'] ?? null, $row['avif'] ?? null, $row['mid_avif'] ?? null, $row['thumb']);
-            Database::query($db->delete(ImageRepository::table())->where('id = ?', $rowId));
-            ImageRepository::syncPostFields((int)$row['cid'], true);
+            try {
+                if (!ImageRepository::deleteImage($rowId, (int)$row['cid'])) {
+                    if ($ajax) { pp_reply_json(false, '图片已变化，请刷新后重试', [], 409); }
+                    pp_reply('图片已变化，请刷新后重试', 'error');
+                }
+            } catch (\Throwable $e) {
+                Plugin::log('delete_image: ' . $e->getMessage());
+                // 提交结果未知时不能声称数据库已回滚；实体文件仍保留供核对与重试。
+                if ($ajax) { pp_reply_json(false, '删除暂未确认，请刷新核对后重试', ['retryable' => true], 500); }
+                pp_reply('删除暂未确认，请刷新核对后重试', 'error');
+            }
         } else {
             pp_deny('没有权限删除该图片');
         }

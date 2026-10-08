@@ -548,6 +548,21 @@ document.addEventListener('DOMContentLoaded', function() {
             picture.remove();
         }
     }
+    function fallbackAvif(img, src) {
+        var picture = img.parentNode;
+        if (img.__ppAvifFallbackSource === src || !picture || picture.tagName !== 'PICTURE' ||
+            !picture.classList.contains('pp-picture') || !picture.querySelector('source[type="image/avif"]')) return false;
+        var source = picture.querySelector('source[type="image/avif"]');
+        if (img.currentSrc && !(source.getAttribute('srcset') || '').split(',').some(function(candidate) {
+            try { return new URL(candidate.trim().split(/\s+/)[0], document.baseURI).href === img.currentSrc; }
+            catch (e) { return false; }
+        })) return false; // AVIF 未被选中：不能吞掉真正的 WebP 错误。
+        // <picture> 不会在 AVIF 请求或解码失败时自动尝试 WebP。
+        // 保留同一主图和 WebP srcset，让原有 load/尺寸回调完成这次加载。
+        img.__ppAvifFallbackSource = src;
+        removeResponsivePicture(img);
+        return true;
+    }
     function applyResponsive(popup, img, requestedSrc) {
         if (!popup || !img) return;
         var src = requestedSrc || img.getAttribute('src') || '';
@@ -571,7 +586,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         var webp = v.webp || [];
-        var avif = v.avif || [];
+        var avif = img.__ppAvifFallbackSource === src ? [] : (v.avif || []);
         var w = parseInt(v.w, 10) || img.naturalWidth || 0;
         var midW = Math.min(1600, w);
         var sizes = '(max-width: 900px) 100vw, min(1400px, calc(100vw - 100px))';
@@ -661,7 +676,7 @@ document.addEventListener('DOMContentLoaded', function() {
         function later(fn, delay) { timers.push(setTimeout(fn, delay)); }
         function cleanup() {
             img.removeEventListener('load', whenDecoded);
-            img.removeEventListener('error', failed);
+            img.removeEventListener('error', failed, true);
             if (observer) observer.disconnect();
             timers.forEach(clearTimeout);
             if (popup.__imageCleanup === cleanup) popup.__imageCleanup = null;
@@ -706,13 +721,19 @@ document.addEventListener('DOMContentLoaded', function() {
             if (img.decode) img.decode().then(gate, function() { if (img.naturalWidth > 0) gate(); else failed(); });
             else gate();
         }
-        function failed() {
+        function failed(event) {
             if (!isCurrent()) return;
+            if (fallbackAvif(img, full)) {
+                // 先于 Poptrox 的普通 error 处理器运行，避免它移除 load
+                // 回调并把一次可恢复的格式失败变成终态加载错误。
+                if (event) event.stopImmediatePropagation();
+                return;
+            }
             showImageError(popup, img);
             if (observer) observer.disconnect();
         }
         img.addEventListener('load', whenDecoded);
-        img.addEventListener('error', failed);
+        img.addEventListener('error', failed, true);
         if (img.complete && img.naturalWidth > 0) whenDecoded();
         // 错误可能早于 MutationObserver 绑定监听，因此补查一次。
         else if (img.complete) later(function() { if (isCurrent() && img.complete && !img.naturalWidth) failed(); }, 0);

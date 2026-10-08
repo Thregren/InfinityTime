@@ -153,6 +153,7 @@ namespace {
     }
 
     $failed = null;
+    $fixtureFiles = [];
     try {
         // 使用官方建表 SQL，包含真实唯一约束及需要引号的驼峰列名。
         $schema = file_get_contents($typecho . '/install/' . $dialect . '.sql');
@@ -408,6 +409,95 @@ namespace {
             foreach (glob($tmp . '/replica.sqlite*') ?: [] as $file) { @unlink($file); }
         }
 
+        // 真实删除事务：数据库字段失败、外层回滚都不能提前移除实体文件。
+        $deleteDraft = AdminWorkflow::draft(7, ['title' => '删除事务验证', 'device' => '删除前设备'], 'draft-delete-tests');
+        $deleteCid = (int)$deleteDraft['cid'];
+        $makeFiles = static function (string $name) use (&$fixtureFiles): array {
+            $paths = [];
+            foreach (['original' => 'original', 'full' => 'full', 'thumb' => 'thumb', 'mid' => 'full', 'avif' => 'full', 'mid_avif' => 'full'] as $variant => $directory) {
+                $relative = '/usr/uploads/' . $directory . '/' . $name . '-' . $variant . '.webp';
+                $absolute = ImageRepository::toAbs($relative);
+                if (!is_dir(dirname($absolute)) && !mkdir(dirname($absolute), 0700, true)) {
+                    throw new \RuntimeException('无法创建删除测试图片目录');
+                }
+                if (file_put_contents($absolute, 'integration-image-' . $name . '-' . $variant) === false) {
+                    throw new \RuntimeException('无法创建删除测试图片');
+                }
+                $fixtureFiles[] = $absolute;
+                $paths[$variant] = $relative;
+            }
+            return $paths;
+        };
+        $targetPaths = $makeFiles('delete-target');
+        $keeperPaths = $makeFiles('delete-keeper');
+        $allFilesExist = static function (array $paths): bool {
+            foreach ($paths as $relative) {
+                $absolute = ImageRepository::toAbs($relative);
+                clearstatcache(true, $absolute);
+                if (!is_file($absolute)) { return false; }
+            }
+            return true;
+        };
+        $allFilesGone = static function (array $paths): bool {
+            foreach ($paths as $relative) {
+                $absolute = ImageRepository::toAbs($relative);
+                clearstatcache(true, $absolute);
+                if (file_exists($absolute)) { return false; }
+            }
+            return true;
+        };
+        $deleteId = photo($deleteCid, $targetPaths + ['title' => '待删除图片'], 0);
+        $keeperId = photo($deleteCid, $keeperPaths + ['title' => '保留图片'], 1);
+        ImageRepository::syncPostFields($deleteCid);
+        $deleteSnapshot = fields($deleteCid);
+        check(!ImageRepository::deleteImage($deleteId, $deleteCid + 1000000), '删除必须同时匹配图片 ID 与图集 ID');
+        check(count(ImageRepository::rowsFor($deleteCid)) === 2 && fields($deleteCid) === $deleteSnapshot, '图集 ID 不匹配时不改动图片或字段');
+        check($allFilesExist($targetPaths), '图集 ID 不匹配时保留全部实体变体');
+        failureTrigger(true, 'titles');
+        try {
+            injectedFailure(static function () use ($deleteId, $deleteCid) { ImageRepository::deleteImage($deleteId, $deleteCid); }, '删除图片时字段失败必须抛出错误');
+        } finally { failureTrigger(false); }
+        check(count(ImageRepository::rowsFor($deleteCid)) === 2, '删除后字段失败必须回滚图片行');
+        check(fields($deleteCid) === $deleteSnapshot, '删除后字段失败必须恢复全部字段快照');
+        check($allFilesExist($targetPaths) && $allFilesExist($keeperPaths), '删除失败必须保留全部实体变体');
+        Database::query('BEGIN');
+        try {
+            AdminRepository::setField($deleteCid, 'device', '调用方未提交设备');
+            check(ImageRepository::deleteImage($deleteId, $deleteCid), '外层事务内允许删除图片记录');
+            check(count(ImageRepository::rowsFor($deleteCid)) === 1, '外层事务内可见图片已删除');
+            check(AdminRepository::field($deleteCid, 'img', true) === $keeperPaths['full'], '外层事务内字段同步保留剩余图片');
+            check(AdminRepository::field($deleteCid, 'device', true) === '调用方未提交设备', '删除操作保留外层事务此前写入');
+            check(AdminRepository::field($deleteCid, 'device') === '删除前设备', '删除操作不得提交外层事务');
+            check($allFilesExist($targetPaths), '外层事务未结束前不能清理已删除图片的文件');
+        } finally { Database::query('ROLLBACK'); }
+        check(count(ImageRepository::rowsFor($deleteCid)) === 2, '调用方回滚恢复被删除的图片行');
+        check(fields($deleteCid) === $deleteSnapshot, '调用方回滚恢复删除前全部字段');
+        check($allFilesExist($targetPaths), '调用方回滚后全部图片变体仍存在');
+        if ($dialect === 'Mysql') {
+            Database::query('ALTER TABLE ' . table('infinitytime_images') . ' ENGINE=MyISAM');
+            try {
+                rejected(static function () use ($deleteId, $deleteCid) { ImageRepository::deleteImage($deleteId, $deleteCid); }, \RuntimeException::class, '图片表为 MyISAM 时必须拒绝删除');
+                check(count(ImageRepository::rowsFor($deleteCid)) === 2 && fields($deleteCid) === $deleteSnapshot, '拒绝 MyISAM 图片表时不改动数据库记录');
+                check($allFilesExist($targetPaths), '拒绝 MyISAM 图片表时保留全部实体变体');
+            } finally { Database::query('ALTER TABLE ' . table('infinitytime_images') . ' ENGINE=InnoDB'); }
+        }
+        check(ImageRepository::deleteImage($deleteId, $deleteCid), '独立删除事务成功提交');
+        check(count(ImageRepository::rowsFor($deleteCid)) === 1, '提交后只删除目标图片行');
+        check(AdminRepository::field($deleteCid, 'img') === $keeperPaths['full'], '提交后字段只保留剩余图片');
+        check(json_decode(AdminRepository::field($deleteCid, 'photo_ids'), true) === [$keeperId], '删除后图片 ID 与路径保持对齐');
+        check($allFilesGone($targetPaths), '独立事务提交后清理全部无引用图片变体');
+        check($allFilesExist($keeperPaths), '删除目标图片不能清理其他图片变体');
+        check(!ImageRepository::deleteImage($deleteId, $deleteCid), '重复删除返回未找到而不重复修改');
+        $sharedId = photo($deleteCid, $keeperPaths + ['title' => '共用实体文件'], 2);
+        ImageRepository::syncPostFields($deleteCid);
+        check(ImageRepository::deleteImage($sharedId, $deleteCid), '允许删除引用共用文件的图片行');
+        check($allFilesExist($keeperPaths), '仍被其他图片引用的全部变体必须保留');
+        check(ImageRepository::deleteImage($keeperId, $deleteCid), '允许删除图集最后一张图片');
+        check(ImageRepository::rowsFor($deleteCid) === [], '删除最后一张图片后图集无图片记录');
+        check(AdminRepository::field($deleteCid, 'img') === '' && AdminRepository::field($deleteCid, 'photo_ids') === '', '删除最后一张图片清空路径及对齐元数据');
+        check(AdminRepository::album($deleteCid, 7, false) !== null, '删除最后一张图片后仍保留图集身份');
+        check($allFilesGone($keeperPaths), '最后一个引用删除后才清理共用变体文件');
+
         Database::query($db->delete(ImageRepository::table())->where('cid = ?', $cid));
         ImageRepository::syncPostFields($cid, true);
         check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', '显式清空删除最后一张图的元数据');
@@ -459,6 +549,8 @@ namespace {
         }
         $db->flushPool();
         foreach (glob($tmp . '/database.sqlite*') ?: [] as $file) { @unlink($file); }
+        foreach ($fixtureFiles as $file) { @unlink($file); }
+        foreach (['original', 'full', 'thumb'] as $directory) { @rmdir($tmp . '/uploads/' . $directory); }
         @unlink($tmp . '/uploads/.infinitytime-media.lock');
         @rmdir($tmp . '/uploads');
         @rmdir($tmp);

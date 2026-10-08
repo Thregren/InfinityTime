@@ -20,6 +20,7 @@ class Element {
   appendChild(el) { el.remove(); el.parent = this; this.children.push(el); return el; }
   insertBefore(el, before) { el.remove(); el.parent = this; this.children.splice(this.children.indexOf(before), 0, el); }
   remove() { if (this.parent) { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; } }
+  removeChild(el) { el.remove(); return el; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k] ?? null; }
   hasAttribute(k) { return k in this.attrs; }
@@ -28,7 +29,7 @@ class Element {
   querySelectorAll(selector) {
     const matches = e => selector === 'picture.pp-picture' ? e.tagName === 'PICTURE' && e.classList.contains('pp-picture')
       : selector === 'source[type="image/avif"]' ? e.tagName === 'SOURCE' && e.type === 'image/avif'
-      : selector === '.pic img' ? e.tagName === 'IMG'
+      : selector === '.pic img' || selector === 'img' ? e.tagName === 'IMG'
       : selector.startsWith('.') ? e.classList.contains(selector.slice(1)) : false;
     return this.children.flatMap(child => [...(matches(child) ? [child] : []), ...child.querySelectorAll(selector)]);
   }
@@ -50,7 +51,7 @@ const context = {
   albumForSrc: () => ({ album: { images: ['/a.webp', '/b.webp', '/c.webp'] }, idx: 0 })
 };
 vm.createContext(context);
-vm.runInContext(['removeResponsivePicture', 'applyResponsive', 'inAlbumNav'].map(helper).join('\n'), context);
+vm.runInContext(['removeResponsivePicture', 'fallbackAvif', 'applyResponsive', 'inAlbumNav'].map(helper).join('\n'), context);
 function show(src) { img.setAttribute('src', src); context.applyResponsive(popup, img); }
 show('/a.webp');
 assert.equal(img.parentNode.tagName, 'PICTURE');
@@ -125,6 +126,167 @@ key('Tab', button, true); assert.equal(focus, last, 'Shift+Tab wraps inside the 
 context.stops = []; key('Tab'); assert.equal(focus, overlay, 'empty dialog is a safe focus fallback');
 key('Escape'); assert.equal(clicks.at(-1), 'poptrox_close');
 console.log('Gallery responsive fallback, navigation cancellation, and keyboard regressions passed');
+
+// Fault injection uses the actual load handler: recover before the vendor's
+// terminal error handler, retain WebP candidates, and ignore superseded errors.
+{
+  const p = new Element('div', 'poptrox-popup');
+  const box = p.appendChild(new Element('div', 'pic'));
+  const image = box.appendChild(new Element('img'));
+  image.setAttribute('src', '/a.webp');
+  image.complete = false;
+  image.naturalWidth = 0;
+  const listeners = {};
+  image.addEventListener = (type, fn, capture) => { listeners[type] = { fn, capture }; };
+  image.removeEventListener = (type, fn, capture) => {
+    if (listeners[type]?.fn === fn && listeners[type].capture === capture) delete listeners[type];
+  };
+  let terminalErrors = 0, loaded = 0;
+  const c = {
+    document: { createElement: tag => new Element(tag) }, variantMap: context.variantMap,
+    isPopupActive: true, isPanoUrl: () => false, normUrl: src => src,
+    albumForSrc: () => null, lqipFor: src => src, clearImageError() {}, clearLqip() {},
+    captionFadeInAfterImage() {}, showImageError() { terminalErrors++; },
+    galleryEvent(name) { if (name === 'loaded') loaded++; }, lastSelection: null,
+    setTimeout() {}, clearTimeout() {}
+  };
+  vm.createContext(c);
+  vm.runInContext(['removeResponsivePicture', 'fallbackAvif', 'applyResponsive', 'applyLqip'].map(helper).join('\n'), c);
+  c.applyLqip(p);
+  assert.equal(listeners.error.capture, true, 'fallback runs before vendor bubbling listeners');
+  let stopped = false;
+  listeners.error.fn({ stopImmediatePropagation() { stopped = true; } });
+  assert.equal(stopped, true, 'recoverable AVIF failure preserves vendor load handlers');
+  assert.equal(image.parentNode, box);
+  assert.equal(image.getAttribute('srcset'), '/a.webp 2400w, /a-small.webp 1600w');
+  assert.equal(terminalErrors, 0);
+  c.applyLqip(p);
+  assert.equal(image.parentNode, box, 'repeat setup cannot restore a failed AVIF source');
+  image.complete = true; image.naturalWidth = 640;
+  listeners.load.fn();
+  assert.equal(image.style.opacity, '1');
+  assert.equal(loaded, 1, 'WebP recovery reveals the existing image');
+  listeners.error.fn({ stopImmediatePropagation() { throw new Error('WebP error must reach vendor'); } });
+  assert.equal(terminalErrors, 1, 'WebP failure remains terminal and retryable');
+  const staleFailure = listeners.error.fn;
+  image.complete = false; image.naturalWidth = 0; image.setAttribute('src', '/b.webp');
+  c.applyLqip(p);
+  staleFailure({ stopImmediatePropagation() { throw new Error('stale error'); } });
+  assert.equal(image.parentNode.tagName, 'PICTURE', 'old errors cannot downgrade the new selection');
+  assert.match(image.parentNode.querySelector('source[type="image/avif"]').getAttribute('srcset'), /b\.avif/);
+  c.isPopupActive = false;
+  listeners.error.fn({ stopImmediatePropagation() { throw new Error('closed error'); } });
+  assert.equal(image.parentNode.tagName, 'PICTURE', 'closed lightbox ignores late errors');
+  c.isPopupActive = true;
+  c.URL = URL; c.document.baseURI = 'https://gallery.test/';
+  image.currentSrc = 'https://gallery.test/b.webp';
+  listeners.error.fn({ stopImmediatePropagation() { throw new Error('unselected AVIF must not swallow WebP error'); } });
+  assert.equal(terminalErrors, 2, 'unselected AVIF source does not hide a terminal WebP failure');
+  console.log('AVIF failure, WebP recovery, terminal failure, and stale-event regressions passed');
+}
+
+// Thumbnail recovery tries the fallback image before exposing the retry button.
+{
+  const init = fs.readFileSync(require.resolve('../usr/themes/InfinityTime/assets/js/init.js'), 'utf8');
+  const start = init.indexOf('  function initImageFallback(');
+  const code = init.slice(start, init.indexOf('\n  }', start) + 4);
+  const article = new Element('article', 'thumb');
+  const picture = article.appendChild(new Element('picture'));
+  const avif = picture.appendChild(new Element('source'));
+  avif.setAttribute('type', 'image/avif'); avif.setAttribute('srcset', '/thumb.avif');
+  const image = picture.appendChild(new Element('img'));
+  image.setAttribute('src', '/thumb.webp'); image.setAttribute('srcset', '/thumb-small.webp 640w');
+  image.setAttribute('data-fallback', '/placeholder.svg');
+  image.closest = selector => selector === '.thumb' ? article : picture;
+  picture.querySelectorAll = selector => selector === 'source' ? [avif] : [];
+  const events = {};
+  image.addEventListener = (type, fn) => { events[type] = fn; };
+  const buttons = [];
+  const c = { document: {
+    querySelectorAll: () => [image],
+    createElement(tag) {
+      const el = new Element(tag);
+      el.addEventListener = (type, fn) => { el[type] = fn; };
+      if (tag === 'button') buttons.push(el);
+      return el;
+    }
+  } };
+  vm.createContext(c); vm.runInContext(code, c); c.initImageFallback();
+  events.error();
+  assert.equal(avif.getAttribute('srcset'), null);
+  assert.equal(image.getAttribute('srcset'), '/thumb-small.webp 640w');
+  assert.equal(buttons.length, 0, 'AVIF-only failure does not show a premature error');
+  events.error(); events.error();
+  assert.equal(buttons.length, 1, 'all formats failing yields one retry control');
+  assert.equal(image.src, '/placeholder.svg');
+  buttons[0].click({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(avif.getAttribute('srcset'), '/thumb.avif', 'manual retry restores format candidates once');
+  events.error();
+  assert.equal(avif.getAttribute('srcset'), null);
+  events.load();
+  assert.equal(buttons[0].parentNode, null, 'successful WebP retry removes the error control');
+  avif.setAttribute('srcset', '/thumb.avif');
+  image.currentSrc = 'https://gallery.test/thumb-small.webp';
+  c.URL = URL; c.document.baseURI = 'https://gallery.test/';
+  events.error();
+  assert.equal(buttons.length, 2, 'unselected AVIF must expose the WebP retry control immediately');
+  console.log('Thumbnail AVIF fallback and retry regressions passed');
+}
+
+// Missing or unusable ResizeObserver must not interrupt panorama registration.
+// Execute production mount/destroy helpers with a lightweight viewer double.
+{
+  const lightbox = fs.readFileSync(require.resolve('../usr/themes/InfinityTime/assets/js/lightbox.js'), 'utf8');
+  function panoHelper(name) {
+    const start = lightbox.indexOf('        function ' + name + '(');
+    return lightbox.slice(start, lightbox.indexOf('\n        }', start) + 10);
+  }
+  for (const mode of ['missing', 'throws', 'available']) {
+    const p = new Element('div', 'poptrox-popup');
+    const box = p.appendChild(new Element('div', 'pic'));
+    box.clientWidth = 640; box.clientHeight = 400;
+    const image = box.appendChild(new Element('img'));
+    image.setAttribute('src', '/pano.webp');
+    let viewers = 0, destroyed = 0, resized = 0, observed = 0, disconnected = 0;
+    const pending = [];
+    const c = {
+      document: {
+        createElement(tag) { const el = new Element(tag); el.addEventListener = () => {}; return el; },
+        querySelectorAll: () => [p], documentElement: {},
+        addEventListener() {}, removeEventListener() {}
+      },
+      window: { pannellum: { viewer() { viewers++; return {
+        destroy() { destroyed++; }, setSize() { resized++; }
+      }; } } },
+      ppPanoState: null, ppCanUseWebgl: () => true,
+      ppBindPanoGuard() {}, ppUnbindPanoGuard() {},
+      ppFlatPano() { throw new Error('optional observer must not degrade panorama'); },
+      setTimeout(fn) { pending.push(fn); }
+    };
+    if (mode !== 'missing') c.ResizeObserver = class {
+      constructor() { if (mode === 'throws') throw new Error('unsupported'); }
+      observe() { observed++; }
+      disconnect() { disconnected++; }
+    };
+    vm.createContext(c);
+    vm.runInContext(['ppSetPanoActive', 'ppDestroyPano', 'ppMountPano'].map(panoHelper).join('\n'), c);
+    for (let tick = 0; tick < 10; tick++) c.ppMountPano(p, '/pano.webp');
+    assert.equal(viewers, 1, mode + ': polling reuses one registered viewer');
+    assert.equal(box.querySelectorAll('.pp-pano-viewer').length, 1);
+    assert.equal(p.__panoActive, true);
+    assert.equal(image.style.visibility, 'hidden');
+    pending.shift()();
+    assert.equal(resized, 1, 'initial deferred sizing remains available');
+    assert.equal(observed, mode === 'available' ? 1 : 0);
+    c.ppDestroyPano();
+    assert.equal(destroyed, 1);
+    assert.equal(disconnected, mode === 'available' ? 1 : 0);
+    assert.equal(box.querySelectorAll('.pp-pano-viewer').length, 0);
+    assert.equal(image.style.visibility, '');
+    assert.equal(c.ppPanoState, null);
+  }
+  console.log('Panorama optional ResizeObserver registration and cleanup regressions passed');
+}
 
 // Execute the actual vendor integration with queued-animation/event doubles.
 // This covers the close-before-open / late-load races and per-instance cleanup.

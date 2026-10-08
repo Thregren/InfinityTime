@@ -537,12 +537,19 @@
             return;
           }
           // 跟随容器尺寸（poptrox 弹窗有放大动画，叠加 ResizeObserver 保证 Pannellum 画布尺寸正确）
-          const ro = new ResizeObserver(function () {
-            if (viewer && typeof viewer.setSize === 'function') {
-              try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
-            }
-          });
-          try { ro.observe(pic); } catch (e) {}
+          // 此 API 是增强项：缺失时仍须保存 viewer 状态，以便轮询复用
+          // 和关闭时销毁，不能在已隐藏原图之后中断挂载并反复创建画布。
+          let ro = null;
+          if (typeof ResizeObserver === 'function') {
+            try {
+              ro = new ResizeObserver(function () {
+                if (viewer && typeof viewer.setSize === 'function') {
+                  try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
+                }
+              });
+              ro.observe(pic);
+            } catch (e) { if (ro) { try { ro.disconnect(); } catch (ignored) {} } ro = null; }
+          }
           setTimeout(function () {
             if (viewer && typeof viewer.setSize === 'function') {
               try { viewer.setSize(pic.clientWidth || 0, pic.clientHeight || 0); } catch (e) {}
