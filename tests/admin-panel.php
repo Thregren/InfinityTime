@@ -58,6 +58,12 @@ namespace {
             elseif ($mode === 'post-non-album') { $_POST['cid'] = 500; }
             elseif ($mode === 'post-foreign-album') { \Widget\User::$administrator = false; $_POST['cid'] = (int)$other['cid']; }
             elseif ($mode === 'post-contributor-published') { \Widget\User::$administrator = false; }
+            elseif (in_array($mode, ['post-batch-foreign', 'post-cover-foreign', 'post-batch-published', 'post-cover-published'], true)) {
+                \Widget\User::$administrator = false;
+                $_POST['action'] = strpos($mode, 'batch') !== false ? 'batch_image_meta' : 'set_album_cover';
+                $_POST['rowId'] = 1; $_POST['rowIds'] = [1]; $_POST['apply_desc'] = '1'; $_POST['desc'] = '不可写';
+                if (strpos($mode, 'foreign') !== false) { $_POST['cid'] = (int)$other['cid']; }
+            }
             else { throw new RuntimeException('未知请求测试'); }
         }
         $before = \Typecho\Db::get()->fetchAll('SELECT * FROM admin_contents ORDER BY cid');

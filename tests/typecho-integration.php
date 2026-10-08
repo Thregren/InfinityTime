@@ -578,6 +578,31 @@ namespace {
         check(AdminRepository::field($cid, 'img') === '' && AdminRepository::field($cid, 'photo_ids') === '', '显式清空删除最后一张图的元数据');
         check(AdminRepository::album($cid, 7, false) !== null, '清空后的图集保留识别标记');
 
+        // 大相册后台分页、缺字段筛选、批量写入和独立封面。
+        $batchDraft = AdminWorkflow::draft(7, ['title' => '批量整理'], 'batch-operation-001');
+        $batchCid = (int)$batchDraft['cid']; $batchIds = [];
+        for ($i = 0; $i < 45; $i++) { $batchIds[] = photo($batchCid, ['title' => $i % 2 ? '有标题' : '', 'desc' => $i % 2 ? '有说明' : '', 'address' => ''], $i); }
+        $firstPage = ImageRepository::pageFor($batchCid);
+        $secondPage = ImageRepository::pageFor($batchCid, 2);
+        check($firstPage['total'] === 45 && count($firstPage['rows']) === 40 && count($secondPage['rows']) === 5 && !$firstPage['sortable'], '后台详情默认40张分页且不允许残缺排序');
+        check(!array_key_exists('original', $firstPage['rows'][0]) && !array_key_exists('upload_key', $firstPage['rows'][0]), '分页读取不搬运私有原图或上传标识');
+        check(ImageRepository::pageFor($batchCid, 1, 'desc')['total'] === 23, '缺说明筛选兼容保留字字段');
+        check(count(ImageRepository::pageFor($batchCid, 1, '', true)['rows']) === 45, '用户明确全部排序时可加载完整相册');
+        check(AdminWorkflow::batchEdit($batchCid, 7, false, false, array_slice($batchIds, 0, 3), ['desc' => '统一说明']) === 3, '贡献者可批量整理自己草稿');
+        $batchRowsBefore = ImageRepository::rowsFor($batchCid); $batchFieldsBefore = fields($batchCid);
+        rejected(static function () use ($batchCid, $batchIds) { AdminWorkflow::batchEdit($batchCid, 8, false, false, [$batchIds[0]], ['address' => '越权']); }, \DomainException::class, '批量编辑拒绝他人相册');
+        rejected(static function () use ($batchCid, $batchIds) { ImageRepository::editImages($batchCid, [$batchIds[0], $batchIds[0]], ['desc' => '重复']); }, \DomainException::class, '批量编辑拒绝重复标识');
+        rejected(static function () use ($batchCid, $batchIds) { ImageRepository::editImages($batchCid, [$batchIds[0], 2147483647], ['desc' => '缺失']); }, \DomainException::class, '批量编辑拒绝部分失效标识');
+        failureTrigger(true, 'titles');
+        try { injectedFailure(static function () use ($batchCid, $batchIds) { ImageRepository::editImages($batchCid, array_slice($batchIds, 0, 3), ['desc' => '应回滚']); }, '批量聚合失败必须回滚图片修改'); }
+        finally { failureTrigger(false); }
+        check(ImageRepository::rowsFor($batchCid) === $batchRowsBefore && fields($batchCid) === $batchFieldsBefore, '批量失败保留所有照片与全部旧字段');
+        AdminWorkflow::setCover($batchCid, 7, false, false, $batchIds[20]);
+        check(AdminRepository::field($batchCid, 'cover_id', true) === (string)$batchIds[20] && ImageRepository::rowsFor($batchCid) === $batchRowsBefore, '封面独立设置且不重排照片');
+        rejected(static function () use ($batchCid) { AdminWorkflow::setCover($batchCid, 7, false, false, 2147483647); }, \DomainException::class, '封面必须属于当前相册');
+        AdminWorkflow::publish($batchCid, 7, false, true);
+        rejected(static function () use ($batchCid, $batchIds) { AdminWorkflow::batchEdit($batchCid, 7, false, false, [$batchIds[0]], ['desc' => '越权']); }, \DomainException::class, '已发布相册批量编辑需编辑者权限');
+        rejected(static function () use ($batchCid, $batchIds) { AdminWorkflow::setCover($batchCid, 7, false, false, $batchIds[1]); }, \DomainException::class, '已发布相册改封面需编辑者权限');
         // 重建改变公开资源版本而不改数据库路径；重复同秒重建也产生新版本。
         $versionCid = post([]);
         $versionPhoto = photo($versionCid);

@@ -144,8 +144,11 @@ namespace {
     $tmp = tempnam(sys_get_temp_dir(), 'infinity-admin-'); file_put_contents($tmp, 'test image bytes');
     $file = ['name' => 'good.jpg', 'tmp_name' => $tmp, 'error' => UPLOAD_ERR_OK, 'size' => 16];
     try {
+        $readsBeforeUpload = count($db->reads);
         $row = Workflow::upload($cid, 7, false, $file, ['title' => 'A'], str_repeat('1', 32));
         check($row['rowId'] > 0 && !$row['replayed'], '单张上传持久化图片行');
+        $uploadQueries = array_slice($db->reads, $readsBeforeUpload);
+        check(count(array_filter($uploadQueries, static function ($sql) { return strpos(str_replace('"', '', $sql), 'SELECT id FROM admin_infinitytime_images') !== false && strpos($sql, 'LIMIT 1') !== false; })) > 0, '上传历史保护仅查询有无记录，不统计整相册');
         check(Images::$lastOptions['keep_original'] === true && Images::$lastOptions['pano_quality'] === 92 && Images::$lastOptions['pano_width'] === 0, '保留原图与全景设置');
         check(Repository::field($cid, 'device') === 'Camera Test', '保留 EXIF 设备回填');
         $replay = Workflow::upload($cid, 7, false, $file, ['title' => 'A'], str_repeat('1', 32));

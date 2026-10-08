@@ -448,6 +448,28 @@
 
   /* ---------- 已发布图集 ---------- */
   var Albums = {
+    loadPage: function (box, query) {
+      if (!box || box.__ppLoading) return Promise.resolve(false);
+      box.__ppLoading = true;
+      box.setAttribute('aria-busy', 'true');
+      query = query || box.__ppQuery || {};
+      return fetch(readURL('album_images', Object.assign({ cid: box.getAttribute('data-cid') }, query)), { credentials: 'same-origin' })
+        .then(function (r) { if (!r.ok) throw new Error('detail'); return r.text(); })
+        .then(function (html) {
+          if (box.isConnected === false) return false;
+          box.innerHTML = html; box.__ppQuery = query; box.setAttribute('data-loaded', '1'); box.__ppSortBound = false; Albums.bind();
+          return true;
+        })
+        .catch(function () {
+          if (box.isConnected === false) return false;
+          box.setAttribute('data-loaded', '0');
+          var old = box.querySelector('.pp-detail-retry'); if (old) old.remove();
+          var retry = document.createElement('button');
+          retry.type = 'button'; retry.className = 'pp-btn gray pp-small pp-detail-retry'; retry.textContent = '加载失败，点击重试';
+          retry.addEventListener('click', function () { Albums.loadPage(box, query); }); box.appendChild(retry);
+          return false;
+        }).then(function (result) { box.__ppLoading = false; box.setAttribute('aria-busy', 'false'); return result; });
+    },
     bind: function () {
       // 详情请求失败时保持可重试状态，不将图集标记为已加载。
       $$('details.pp-album').forEach(function (d) {
@@ -457,20 +479,19 @@
           if (!d.open) return;
           var box = d.querySelector('.pp-thumbs[data-cid]');
           if (!box || box.getAttribute('data-loaded') === '1' || box.__ppLoading) return;
-          box.__ppLoading = true;
-          box.setAttribute('aria-busy', 'true');
-          fetch(readURL('album_images', { cid: box.getAttribute('data-cid') }), { credentials: 'same-origin' })
-            .then(function (r) { if (!r.ok) throw new Error('detail'); return r.text(); })
-            .then(function (html) { box.innerHTML = html; box.setAttribute('data-loaded', '1'); box.__ppSortBound = false; Albums.bind(); })
-            .catch(function () {
-              box.setAttribute('data-loaded', '0'); box.innerHTML = '';
-              var retry = document.createElement('button');
-              retry.type = 'button'; retry.className = 'pp-btn gray pp-small'; retry.textContent = '加载失败，点击重试';
-              retry.addEventListener('click', load); box.appendChild(retry);
-            }).then(function () { box.__ppLoading = false; box.setAttribute('aria-busy', 'false'); });
+          Albums.loadPage(box);
         }
         d.addEventListener('toggle', load);
         if (d.open) load();
+      });
+      $$('[data-image-page]').forEach(function (link) {
+        if (link.__ppPageBound) return;
+        link.__ppPageBound = true;
+        link.addEventListener('click', function (event) {
+          event.preventDefault();
+          var box = link.closest('.pp-thumbs');
+          Albums.loadPage(box, { image_page: link.getAttribute('data-image-page'), image_missing: link.getAttribute('data-image-missing') || '', image_all: link.getAttribute('data-image-all') || '0' });
+        });
       });
       $$('[data-append-cid]').forEach(function (button) {
         if (button.__ppAppendBound) return;
@@ -486,6 +507,7 @@
       });
     },
     bindSort: function (box) {
+      if (box.querySelector('[data-album-sortable="0"]')) return;
       var dragging = null;
       $$('.pp-img', box).forEach(function (card) {
         card.draggable = false;
@@ -788,7 +810,7 @@
       if (!form || form.id === 'pp-upload-form' || form.classList.contains('pp-delete-album')) return;
       var actEl = form.querySelector('input[name="action"]');
       var act = actEl ? actEl.value : '';
-      var actions = ['save_site', 'save_contacts', 'save_settings', 'update_album', 'set_image_meta', 'delete_image', 'publish_album'];
+      var actions = ['save_site', 'save_contacts', 'save_settings', 'update_album', 'set_image_meta', 'delete_image', 'publish_album', 'batch_image_meta', 'set_album_cover'];
       if (actions.indexOf(act) === -1) return;
       if (act === 'publish_album' && !CAN_PUBLISH) { e.preventDefault(); notice('发布图集需编辑或管理员权限。', 'error'); return; }
       if (act === 'publish_album' && Upload.running) { e.preventDefault(); notice('请等待当前上传完成后再发布。', 'error'); return; }
@@ -801,7 +823,9 @@
       var fd = new FormData(form);
       post('', fd).then(function (d) {
         if (d && d.ok) {
-          if (act === 'publish_album') {
+          if (act === 'batch_image_meta' || act === 'set_album_cover') {
+            Albums.loadPage(form.closest('.pp-thumbs'));
+          } else if (act === 'publish_album') {
             refreshAlbums();
           } else if (act === 'delete_image') {
             var pic = form.closest('.pp-img');

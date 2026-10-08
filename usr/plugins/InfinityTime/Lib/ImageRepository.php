@@ -292,6 +292,36 @@ class ImageRepository
         }, $rows);
     }
 
+    /** 后台详情默认分页；仅用户明确要求全部排序时读完整列表。 */
+    public static function pageFor(int $cid, int $page = 1, string $missing = '', bool $all = false): array
+    {
+        self::ensureSchema();
+        $db = \Typecho\Db::get();
+        if (!in_array($missing, ['', 'title', 'desc', 'address'], true)) { $missing = ''; }
+        $filter = static function ($query) use ($cid, $missing, $db) {
+            $query->where('cid = ?', $cid);
+            if ($missing !== '') {
+                $quote = stripos($db->getAdapterName(), 'mysql') !== false ? '`' : '"';
+                $query->where('TRIM(COALESCE(' . $quote . $missing . $quote . ", '')) = ?", '');
+            }
+            return $query;
+        };
+        $counts = self::fetchRows($db, $filter($db->select('COUNT(*) AS total')->from(self::table())));
+        $total = (int)($counts[0]['total'] ?? 0);
+        $size = 40;
+        $pages = max(1, (int)ceil($total / $size));
+        $page = max(1, min($page, $pages));
+        $all = $all && $missing === '';
+        $query = $filter($db->select('id', 'cid', 'sort', 'full', 'thumb', 'width', 'height', 'exif', 'title', 'desc', 'address', 'created')->from(self::table()))
+            ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC);
+        if (!$all) { $query->limit($size)->offset(($page - 1) * $size); }
+        $rows = self::fetchRows($db, $query);
+        foreach ($rows as &$row) { $exif = json_decode($row['exif'] ?? '{}', true); $row['exif'] = is_array($exif) ? $exif : []; }
+        unset($row);
+        return ['rows' => $rows, 'total' => $total, 'page' => $page, 'pages' => $pages, 'missing' => $missing,
+            'all' => $all, 'sortable' => $missing === '' && ($all || $total <= $size)];
+    }
+
     /** 一次性取多个图集的图片，按 cid 分组，避免后台图集列表 N+1。 */
     public static function rowsForCids(array $cids): array
     {
@@ -358,6 +388,24 @@ class ImageRepository
             $changed = true;
         }, true);
         return $changed;
+    }
+
+    /** 批量元数据与聚合字段一起提交；任何越界/缺失照片均拒绝整批。 */
+    public static function editImages(int $cid, array $ids, array $changes): int
+    {
+        if (!$ids || count($ids) > 100 || count(array_unique($ids)) !== count($ids)) { throw new \DomainException('请勾选1至100张不同照片'); }
+        foreach ($ids as $id) { if (!is_int($id) || $id <= 0) { throw new \DomainException('图片标识无效'); } }
+        if (!$changes || array_diff(array_keys($changes), ['desc', 'address'])) { throw new \DomainException('请选择需要统一修改的字段'); }
+        foreach ($changes as $value) { if (!is_string($value) || strlen($value) > 8000) { throw new \DomainException('字段内容过长或无效'); } }
+        self::fieldTransaction(static function (callable $write) use ($cid, $ids, $changes): void {
+            $db = \Typecho\Db::get();
+            $marks = implode(',', array_fill(0, count($ids), '?'));
+            $rows = $db->fetchAll($write($db->select('id')->from(self::table())->where('cid = ?', $cid)->where('id IN (' . $marks . ')', ...$ids)));
+            if (count($rows) !== count($ids)) { throw new \DomainException('照片已变化或不属于当前相册，请刷新后重试'); }
+            $write($db->update(self::table())->rows($changes)->where('cid = ?', $cid)->where('id IN (' . $marks . ')', ...$ids));
+            self::writePostFields($cid, false, $write);
+        }, true);
+        return count($ids);
     }
 
     /** 校验完整当前清单后原子排序；中途失败不会留下半套顺序。 */

@@ -4,6 +4,7 @@
 const PP_GALLERY_CHUNK = 60;
 const PP_GALLERY_SCAN_CHUNKS = 16;
 const PP_GALLERY_FIELD_NAMES = ['img', 'thumb', 'exif', 'addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'photo_ids', 'months', 'tags', 'device', 'location'];
+const PP_GALLERY_ALBUM_FIELD_NAMES = ['tags', 'device', 'location'];
 
 function pp_gallery_text($value, int $limit = 2000): string
 {
@@ -156,13 +157,20 @@ function pp_gallery_photo(array $row, int $cid, int $albumCreated, bool $legacy 
     ];
 }
 
-function pp_gallery_legacy_photos(array $album, array $fields, int $offset, int $take, string $target = ''): array
+function pp_gallery_legacy_source(array $fields): array
 {
     // 保留原始索引及空行，避免元数据错位到其他照片。
     $urls = preg_split('/\r?\n/', (string)($fields['img'] ?? '')) ?: [];
     $thumbs = preg_split('/\r?\n/', (string)($fields['thumb'] ?? '')) ?: [];
     $lists = [];
     foreach (['exif', 'addresses', 'titles', 'descs', 'panos', 'dims', 'variants', 'photo_ids', 'months'] as $name) { $lists[$name] = pp_gallery_json_array($fields[$name] ?? ''); }
+    return ['urls' => $urls, 'thumbs' => $thumbs, 'lists' => $lists];
+}
+
+function pp_gallery_legacy_photos(array $album, array $fields, int $offset, int $take, string $target = '', ?array $source = null): array
+{
+    $source = $source ?? pp_gallery_legacy_source($fields);
+    $urls = $source['urls']; $thumbs = $source['thumbs']; $lists = $source['lists'];
     $out = [];
     $end = min(count($urls), $offset + $take);
     // 历史照片的稳定哈希支持直接打开首批以外的照片。
@@ -254,7 +262,7 @@ function pp_gallery_page(array $request, callable $loadAlbums, callable $loadPho
     return $result;
 }
 
-/** 批量读取选定图集、白名单自定义字段和原生分类标签。 */
+/** 图集阶段只读三个小型相册字段；大相册的旧聚合字段在回退时按需读取。 */
 function pp_gallery_db_albums($db, int $upper, int $take, array $request): array
 {
     $prefix = $db->getPrefix();
@@ -268,9 +276,9 @@ function pp_gallery_db_albums($db, int $upper, int $take, array $request): array
     if (!$rows) { return []; }
     $cids = array_map('intval', array_column($rows, 'cid'));
     $ph = implode(',', array_fill(0, count($cids), '?'));
-    $names = implode(',', array_fill(0, count(PP_GALLERY_FIELD_NAMES), '?'));
+    $names = implode(',', array_fill(0, count(PP_GALLERY_ALBUM_FIELD_NAMES), '?'));
     $fields = $db->fetchAll($db->select('cid', 'name', 'str_value')->from($prefix . 'fields')
-        ->where('cid IN (' . $ph . ')', ...$cids)->where('name IN (' . $names . ')', ...PP_GALLERY_FIELD_NAMES));
+        ->where('cid IN (' . $ph . ')', ...$cids)->where('name IN (' . $names . ')', ...PP_GALLERY_ALBUM_FIELD_NAMES));
     $metas = $db->fetchAll($db->select($prefix . 'relationships.cid', $prefix . 'metas.name', $prefix . 'metas.slug', $prefix . 'metas.type')
         ->from($prefix . 'relationships')->join($prefix . 'metas', $prefix . 'relationships.mid = ' . $prefix . 'metas.mid')
         ->where($prefix . 'relationships.cid IN (' . $ph . ')', ...$cids)->where($prefix . 'metas.type IN (?, ?)', 'tag', 'category'));
@@ -288,58 +296,103 @@ function pp_gallery_db_albums($db, int $upper, int $take, array $request): array
     return $rows;
 }
 
-/** 不查询或序列化私有原图、GPS 及哈希列。 */
-function pp_gallery_db_photos($db, array $album, int $offset, int $take, string $target = ''): array
+/** 仅在确需兼容旧字段时读取，缓存限于本次请求的当前相册。 */
+function pp_gallery_db_legacy_fields($db, array $album, array &$state): array
 {
-    static $repositoryAvailable = null;
-    $fields = $album['fields'] ?? [];
-    if ($repositoryAvailable !== false) {
+    $cid = (int)$album['cid'];
+    if (($state['legacy_cid'] ?? 0) !== $cid) {
+        $names = implode(',', array_fill(0, count(PP_GALLERY_FIELD_NAMES), '?'));
+        $rows = $db->fetchAll($db->select('name', 'str_value')->from($db->getPrefix() . 'fields')
+            ->where('cid = ?', $cid)->where('name IN (' . $names . ')', ...PP_GALLERY_FIELD_NAMES));
+        $fields = $album['fields'] ?? [];
+        foreach ($rows as $row) { $fields[$row['name']] = $row['str_value']; }
+        $state['legacy_cid'] = $cid;
+        $state['legacy_fields'] = $fields;
+        unset($state['legacy_source'], $state['variant_ids'], $state['variant_urls']);
+    }
+    return $state['legacy_fields'];
+}
+
+/** 不查询或序列化私有原图、GPS 及哈希列，也不执行旧库迁移。 */
+function pp_gallery_db_photos($db, array $album, int $offset, int $take, string $target = '', ?array &$state = null): array
+{
+    // 独立调用同样检查可见性，数据库暂时失败也不会放宽公开条件。
+    if (!pp_gallery_visible($album)) { return ['photos' => [], 'has_more' => false, 'consumed' => 0]; }
+    if ($state === null) { $state = []; }
+    $columns = ['id', 'cid', 'full', 'thumb', 'width', 'height', 'exif', 'title', 'desc', 'address', 'created'];
+    $load = static function (bool $modern) use ($db, $album, $offset, $take, $target, $columns): array {
+        $table = $db->getPrefix() . 'infinitytime_images';
+        // SQLite 会将未限定的缺失双引号列当作字符串；限定表名才能可靠检测旧表。
+        $projection = array_map(static function ($name) use ($table) { return $table . '.' . $name; },
+            $modern ? array_merge($columns, ['mid', 'avif', 'mid_avif']) : $columns);
+        $query = $db->select(...$projection)
+            ->from($table)->where('cid = ?', (int)$album['cid'])
+            ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC)->limit($take + 1)->offset($offset);
+        if (strpos($target, 'p-') === 0) { $query->where('id = ?', (int)substr($target, 2))->offset(0); }
+        // 原生 SQLite/Pgsql 适配器可能先发 warning 再抛异常；兼容探测不向页面输出诊断。
+        return @$db->fetchAll($query);
+    };
+    $rows = [];
+    if (($state['repository'] ?? '') !== 'absent') {
         try {
-            $query = $db->select('id', 'cid', 'full', 'thumb', 'width', 'height', 'exif', 'title', 'desc', 'address', 'created')
-                ->from($db->getPrefix() . 'infinitytime_images')->where('cid = ?', (int)$album['cid'])
-                ->order('sort', \Typecho\Db::SORT_ASC)->order('id', \Typecho\Db::SORT_ASC)->limit($take + 1)->offset($offset);
-            if (strpos($target, 'p-') === 0) { $query->where('id = ?', (int)substr($target, 2))->offset(0); }
-            $rows = $db->fetchAll($query);
-            $repositoryAvailable = true;
+            $modern = ($state['repository'] ?? '') !== 'legacy';
+            try { $rows = $load($modern); }
+            catch (\Throwable $e) {
+                if (!$modern) { throw $e; }
+                // 老表可能没有变体列；保留原白名单投影和按照片 ID/URL 匹配的旧字段。
+                $modern = false;
+                $rows = $load(false);
+            }
+            $state['repository'] = $modern ? 'modern' : 'legacy';
             $hasRepository = (bool)$rows;
             if (!$rows && ($offset > 0 || $target !== '')) {
-                $hasRepository = (bool)$db->fetchAll($db->select('id')->from($db->getPrefix() . 'infinitytime_images')
+                $hasRepository = (bool)@$db->fetchAll($db->select('id')->from($db->getPrefix() . 'infinitytime_images')
                     ->where('cid = ?', (int)$album['cid'])->limit(1));
             }
-            if ($hasRepository) {
-                $variants = pp_gallery_json_array($fields['variants'] ?? '');
-                $ids = pp_gallery_json_array($fields['photo_ids'] ?? '');
-                $variantById = [];
-                $variantByUrl = [];
-                foreach ($ids as $index => $id) { $variantById[(int)$id] = $variants[$index] ?? []; }
-                // 升级前的图集已有变体，但尚未同步 photo_ids。
-                // 使用精确 URL 匹配，避免编辑后记录顺序变化造成错位。
-                foreach (preg_split('/\r?\n/', (string)($fields['img'] ?? '')) ?: [] as $index => $url) {
-                    $url = pp_gallery_media_url(trim($url));
-                    if ($url !== '') { $variantByUrl[$url] = $variants[$index] ?? []; }
-                }
-                $out = [];
-                foreach (array_slice($rows, 0, $take) as $row) {
-                    $row['variants'] = $variantById[(int)$row['id']] ?? $variantByUrl[(string)$row['full']] ?? [];
-                    $photo = pp_gallery_photo($row, (int)$album['cid'], (int)$album['created']);
-                    if ($photo) { $out[] = $photo; }
-                }
-                return ['photos' => $out, 'has_more' => $target === '' && count($rows) > $take, 'consumed' => min($take, count($rows))];
-            }
         } catch (\Throwable $e) {
-            // 仅有字段的历史安装无需插件表；不向外暴露数据库诊断信息。
-            $repositoryAvailable = false;
+            // 无插件表的历史安装继续读公开字段；状态只保留至本次请求结束。
+            $state['repository'] = 'absent';
+            $hasRepository = false;
+        }
+        if ($hasRepository) {
+            if (!$modern) {
+                $fields = pp_gallery_db_legacy_fields($db, $album, $state);
+                if (!isset($state['variant_ids'])) {
+                    $variants = pp_gallery_json_array($fields['variants'] ?? '');
+                    $ids = pp_gallery_json_array($fields['photo_ids'] ?? '');
+                    $state['variant_ids'] = []; $state['variant_urls'] = [];
+                    foreach ($ids as $index => $id) { $state['variant_ids'][(int)$id] = $variants[$index] ?? []; }
+                    // 未同步 photo_ids 的旧图集用精确 URL，避免排序变化导致错配。
+                    foreach (preg_split('/\r?\n/', (string)($fields['img'] ?? '')) ?: [] as $index => $url) {
+                        $url = pp_gallery_media_url(trim($url));
+                        if ($url !== '') { $state['variant_urls'][$url] = $variants[$index] ?? []; }
+                    }
+                }
+            }
+            $out = [];
+            foreach (array_slice($rows, 0, $take) as $row) {
+                $row['variants'] = $modern ? ['w' => (int)($row['width'] ?? 0),
+                    'webp' => array_values(array_filter([(string)($row['full'] ?? ''), (string)($row['mid'] ?? '')])),
+                    'avif' => array_values(array_filter([(string)($row['avif'] ?? ''), (string)($row['mid_avif'] ?? '')]))]
+                    : ($state['variant_ids'][(int)$row['id']] ?? $state['variant_urls'][(string)$row['full']] ?? []);
+                $photo = pp_gallery_photo($row, (int)$album['cid'], (int)$album['created']);
+                if ($photo) { $out[] = $photo; }
+            }
+            return ['photos' => $out, 'has_more' => $target === '' && count($rows) > $take, 'consumed' => min($take, count($rows))];
         }
     }
-    return pp_gallery_legacy_photos($album, $fields, $offset, $take, $target);
+    $fields = pp_gallery_db_legacy_fields($db, $album, $state);
+    if (!isset($state['legacy_source'])) { $state['legacy_source'] = pp_gallery_legacy_source($fields); }
+    return pp_gallery_legacy_photos($album, $fields, $offset, $take, $target, $state['legacy_source']);
 }
 
 function pp_gallery_read(array $request, string $base): array
 {
     $db = \Typecho\Db::get();
+    $state = [];
     return pp_gallery_page($request,
         static function ($upper, $take, $r) use ($db) { return pp_gallery_db_albums($db, $upper, $take, $r); },
-        static function ($album, $offset, $take, $target) use ($db) { return pp_gallery_db_photos($db, $album, $offset, $take, $target); }, $base);
+        static function ($album, $offset, $take, $target) use ($db, &$state) { return pp_gallery_db_photos($db, $album, $offset, $take, $target, $state); }, $base);
 }
 
 function pp_gallery_groups(array $albums): array

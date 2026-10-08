@@ -19,11 +19,19 @@ namespace Typecho {
         public const SORT_ASC = 'ASC', SORT_DESC = 'DESC';
         public static self $instance;
         public array $queries = [], $albums = [], $images = [], $fields = [], $metas = [];
+        public bool $modernSchema = true, $repositoryAvailable = true;
+        public int $photoFailures = 0;
         public static function get(): self { return self::$instance; }
         public function getPrefix(): string { return 'test_'; }
         public function select(...$columns): Query { return new Query($columns); }
         public function fetchAll(Query $query): array {
             $this->queries[] = $query;
+            $columns = array_map(static function ($name) { $parts = explode('.', $name); return end($parts); }, $query->columns);
+            if ($query->table === 'test_infinitytime_images') {
+                if (!$this->repositoryAvailable) { throw new \RuntimeException('插件表不存在'); }
+                if (!$this->modernSchema && array_intersect(['mid', 'avif', 'mid_avif'], $columns)) { throw new \RuntimeException('旧表没有变体列'); }
+                if ($this->photoFailures > 0) { $this->photoFailures--; throw new \RuntimeException('临时查询失败：内部私有诊断'); }
+            }
             $tables = ['test_contents' => $this->albums, 'test_infinitytime_images' => $this->images,
                 'test_fields' => $this->fields, 'test_relationships' => $this->metas];
             if (!isset($tables[$query->table])) { throw new \RuntimeException('未预期的数据表：' . $query->table); }
@@ -44,7 +52,9 @@ namespace Typecho {
                 }));
             }
             if ($query->table === 'test_contents') { usort($rows, static fn($a, $b) => $b['cid'] <=> $a['cid']); }
-            return array_slice($rows, $query->start, $query->maximum ?: null);
+            $rows = array_slice($rows, $query->start, $query->maximum ?: null);
+            $columns = array_map(static function ($name) { $parts = explode('.', $name); return end($parts); }, $query->columns);
+            return array_map(static function ($row) use ($columns) { return array_intersect_key($row, array_flip($columns)); }, $rows);
         }
     }
 }
@@ -59,7 +69,7 @@ namespace {
     }
     function photo(int $id, array $extra = []): array {
         return array_merge(['id' => $id, 'cid' => 7, 'full' => '/uploads/full/' . $id . '.webp', 'thumb' => '/uploads/thumb/' . $id . '.webp', 'width' => 2000, 'height' => 1000,
-            'title' => '照片 ' . $id, 'desc' => '日落风景', 'created' => strtotime('2026-09-01 UTC'), 'exif' => '{"datetime":"2026:04:30 12:00:00","iso":100,"gps":{"lat":51.5},"GPSLatitude":"private","original":"secret"}',
+            'mid' => null, 'avif' => null, 'mid_avif' => null, 'title' => '照片 ' . $id, 'desc' => '日落风景', 'created' => strtotime('2026-09-01 UTC'), 'exif' => '{"datetime":"2026:04:30 12:00:00","iso":100,"gps":{"lat":51.5},"GPSLatitude":"private","original":"secret"}',
             'original' => '/private/original.jpg', 'gps_lat' => 51.5, 'gps_lng' => -0.1, 'hash' => 'private'], $extra);
     }
     class GalleryFixtureOptions {
@@ -133,7 +143,8 @@ namespace {
     check($page['albums'][0]['photos'][0]['url_link'] === 'https://example.test/sub/?album=7&photo=p-1', '稳定照片链接支持子目录安装');
     foreach ($db->queries as $query) {
         if ($query->table === 'test_contents') { check($query->maximum === 17 && isset($query->conditions['status = ?'], $query->conditions['(password IS NULL OR password = ?)']), '图集查询有上限并执行发布状态和密码过滤'); }
-        if ($query->table === 'test_infinitytime_images') { check($query->maximum <= 61 && !array_intersect(['*', 'original', 'gps_lat', 'gps_lng', 'hash'], $query->columns), '照片查询有上限且不读取私有列'); }
+        if ($query->table === 'test_fields') { check($query->conditions['name IN (?,?,?)'] === ['tags', 'device', 'location'], '现代仓库相册阶段仅读三个小型字段'); }
+        if ($query->table === 'test_infinitytime_images') { check($query->maximum <= 61 && !preg_match('/(?:^|\.)(?:\*|original|gps_lat|gps_lng|hash)$/m', implode("\n", $query->columns)), '照片查询有上限且不读取私有列'); }
     }
     // 直接定位仓库中首批以外的照片。
     $db->images = []; for ($i = 1; $i <= 150; $i++) { $db->images[] = photo($i); }
@@ -147,19 +158,69 @@ namespace {
     } while ($cursor !== null && $rounds < 10);
     check(count($all) === 150 && count(array_unique($all)) === 150 && $rounds === 3, '大图集分页不遗漏、不重复照片');
 
-    // 旧版本尚未同步 photo_ids 的图集仍保留响应式变体，按 URL 对应而非位置。
+    // 旧表没有变体列且尚未同步 photo_ids 时，仍按 URL 对应而非位置。
+    $db->modernSchema = false;
     $db->fields = [
         ['cid' => 7, 'name' => 'img', 'str_value' => "/uploads/full/2.webp\n/uploads/full/1.webp"],
         ['cid' => 7, 'name' => 'variants', 'str_value' => '[{"w":2000,"webp":["/uploads/full/2.webp","/uploads/full/2-mid.webp"]},{"w":2000,"webp":["/uploads/full/1.webp","/uploads/full/1-mid.webp"]}]'],
     ];
     $variantPage = pp_gallery_read(pp_gallery_request(['album' => 7, 'photo' => 'p-1']), 'https://example.test/');
     check($variantPage['albums'][0]['photos'][0]['variants']['webp'][1] === '/uploads/full/1-mid.webp', '旧图集变体按 URL 关联且无需先执行重建');
+    $db->modernSchema = true;
     // 插件表存在但没有对应记录时，历史字段相册仍可继续分页。
     $db->images = [];
     $urls = []; for ($i = 1; $i <= 130; $i++) { $urls[] = '/legacy/' . $i . '.webp'; }
     $db->fields = [['cid' => 7, 'name' => 'img', 'str_value' => implode("\n", $urls)]];
     $second = pp_gallery_read(pp_gallery_request(['cursor' => '7.60', 'limit' => 1]), 'https://example.test/');
     check(count($second['albums'][0]['photos']) === 60 && $second['albums'][0]['photos'][0]['url'] === '/legacy/61.webp', '插件表存在时字段相册仍可进入第二批');
+
+    // 现代仓库直接投影变体，忽略陈旧聚合字段；缓存版本与 URL/EXIF 白名单仍生效。
+    $db->images = [photo(501, ['full' => '/fresh.webp', 'mid' => '/fresh-mid.webp', 'avif' => '/fresh.avif', 'mid_avif' => '/fresh-mid.avif',
+        'exif' => json_encode(['make' => 'Camera', '_infinity_media_version' => str_repeat('a', 32), 'gps' => ['lat' => 1]])])];
+    $db->fields = [['cid' => 7, 'name' => 'img', 'str_value' => '/stale.webp'], ['cid' => 7, 'name' => 'variants', 'str_value' => str_repeat('stale', 10000)]];
+    $db->queries = [];
+    $fresh = pp_gallery_read(pp_gallery_request(['album' => 7]), 'https://example.test/');
+    $freshPhoto = $fresh['albums'][0]['photos'][0];
+    $versionSuffix = '?itv=' . str_repeat('a', 32);
+    check($freshPhoto['variants'] === ['w' => 2000, 'webp' => ['/fresh.webp' . $versionSuffix, '/fresh-mid.webp' . $versionSuffix],
+        'avif' => ['/fresh.avif' . $versionSuffix, '/fresh-mid.avif' . $versionSuffix]], '现代投影保留完整 WebP/AVIF 变体及缓存版本');
+    check($freshPhoto['exif'] === ['make' => 'Camera'] && count($db->queries) === 4, '现代查询不解析历史聚合字段且仍只公开 EXIF 白名单');
+    $db->images[0]['mid'] = '/uploads/original/private.jpg'; $db->images[0]['avif'] = 'javascript:alert(1)';
+    $unsafe = pp_gallery_read(pp_gallery_request(['album' => 7]), 'https://example.test/');
+    check(count($unsafe['albums'][0]['photos'][0]['variants']['webp']) === 1 && !preg_match('/private|javascript|gps/', json_encode($unsafe)), '直接投影同样拒绝变体中的原图和脚本 URL');
+
+    // 老表按稳定 ID 取变体，即便字段与图片顺序不同；同一请求只探测一次缺列并读取一次旧字段。
+    $db->modernSchema = false; $db->images = []; $urls = []; $variants = []; $ids = [];
+    for ($i = 1; $i <= 130; $i++) { $db->images[] = photo($i); $urls[] = '/different/' . $i . '.webp'; $ids[] = $i; $variants[] = ['w' => 2000, 'webp' => ['/stable/' . $i . '.webp']]; }
+    $db->fields = [['cid' => 7, 'name' => 'img', 'str_value' => implode("\n", array_reverse($urls))],
+        ['cid' => 7, 'name' => 'photo_ids', 'str_value' => json_encode($ids)], ['cid' => 7, 'name' => 'variants', 'str_value' => json_encode($variants)]];
+    $db->queries = [];
+    $oldSchema = pp_gallery_read(pp_gallery_request(['album' => 7]), 'https://example.test/');
+    check(count($oldSchema['albums']) === 3 && $oldSchema['albums'][1]['photos'][0]['variants']['webp'] === ['/stable/61.webp'], '旧表多分片仍按稳定 ID 关联变体');
+    $modernAttempts = array_filter($db->queries, static function ($q) { return $q->table === 'test_infinitytime_images' && in_array('test_infinitytime_images.mid', $q->columns, true); });
+    $legacyReads = array_filter($db->queries, static function ($q) { return $q->table === 'test_fields' && isset($q->conditions['cid = ?']); });
+    check(count($modernAttempts) === 1 && count($legacyReads) === 1, '旧表缺列探测及聚合字段读取均限制为每请求每相册一次');
+
+    // 无插件安装继续读字段相册，深链接和多分片不需要迁移。
+    $db->repositoryAvailable = false; $db->fields = [['cid' => 7, 'name' => 'img', 'str_value' => implode("\n", $urls)]];
+    $db->queries = [];
+    $noPlugin = pp_gallery_read(pp_gallery_request(['album' => 7]), 'https://example.test/');
+    check(count($noPlugin['albums']) === 3 && count($noPlugin['albums'][2]['photos']) === 10, '无插件表仍完整分页读取历史字段');
+    $legacyReads = array_filter($db->queries, static function ($q) { return $q->table === 'test_fields' && isset($q->conditions['cid = ?']); });
+    check(count($legacyReads) === 1, '字段相册多个分片复用请求内解析和读取');
+    $lastLegacy = $noPlugin['albums'][2]['photos'][9]['id'];
+    $deepLegacy = pp_gallery_read(pp_gallery_request(['album' => 7, 'photo' => $lastLegacy]), 'https://example.test/');
+    check(array_column($deepLegacy['albums'][0]['photos'], 'id') === [$lastLegacy], '无插件表仍可打开首批之外的历史照片深链接');
+    $db->queries = [];
+    $privateState = [];
+    check(pp_gallery_db_photos($db, album(7, ['password' => 'secret']), 0, 60, '', $privateState)['photos'] === [] && !$db->queries, '回退读取在查询前仍拒绝密码相册');
+
+    // 可用性状态不跨请求保存；暂时失败不得留下永久回退或泄漏内部错误。
+    $db->repositoryAvailable = true; $db->modernSchema = true; $db->images = [photo(91)]; $db->photoFailures = 2;
+    $temporaryFailure = pp_gallery_read(pp_gallery_request(['album' => 7, 'limit' => 1]), 'https://example.test/');
+    check(!preg_match('/内部|private|secret|gps/', json_encode($temporaryFailure)), '暂时查询失败的公开字段回退不暴露诊断或私有记录');
+    $recovered = pp_gallery_read(pp_gallery_request(['album' => 7]), 'https://example.test/');
+    check($recovered['albums'][0]['photos'][0]['id'] === 'p-91', '下一请求恢复现代仓库读取，不复用旧失败状态');
 
     // 稀疏匹配超出扫描额度：空批次不代表已经遍历完毕。
     $db->albums = []; $db->images = []; $db->fields = [];

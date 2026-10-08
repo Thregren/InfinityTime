@@ -62,6 +62,23 @@ final class AdminWorkflow
         }, [$db->getPrefix() . 'contents', $db->getPrefix() . 'fields']);
     }
 
+    public static function batchEdit(int $cid, int $uid, bool $admin, bool $canPublish, array $ids, array $changes): int
+    {
+        ImageRepository::lockMedia();
+        self::requireAlbum($cid, $uid, $admin, $canPublish);
+        return ImageRepository::editImages($cid, $ids, $changes);
+    }
+
+    public static function setCover(int $cid, int $uid, bool $admin, bool $canPublish, int $rowId): void
+    {
+        ImageRepository::lockMedia();
+        self::requireAlbum($cid, $uid, $admin, $canPublish);
+        $db = Db::get();
+        $row = AdminRepository::readRow($db->select('id')->from(ImageRepository::table())->where('cid = ?', $cid)->where('id = ?', $rowId)->limit(1), true);
+        if (!$row) { throw new \DomainException('封面照片不存在或不属于当前相册'); }
+        AdminRepository::setField($cid, 'cover_id', (string)$rowId);
+    }
+
     /** 上传标识绑定文件内容与逐图元数据，不受转换设置变化影响。 */
     public static function fingerprint(array $file, array $data): string
     {
@@ -77,8 +94,8 @@ final class AdminWorkflow
         ImageRepository::lockMedia();
         self::requireAlbum($cid, $uid, $admin, $canPublish);
         ImageRepository::ensureSchema();
-        $managed = AdminRepository::readRow(Db::get()->select('COUNT(*) AS total')->from(ImageRepository::table())->where('cid = ?', $cid), true);
-        if ((int)($managed['total'] ?? 0) === 0 && AdminRepository::field($cid, 'img', true) !== '') {
+        $managed = AdminRepository::readRow(Db::get()->select('id')->from(ImageRepository::table())->where('cid = ?', $cid)->limit(1), true);
+        if (!$managed && AdminRepository::field($cid, 'img', true) !== '') {
             throw new \DomainException('此历史图集只有旧图片字段，暂不支持追加。请新建图集上传；原图集未改动');
         }
         $error = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);

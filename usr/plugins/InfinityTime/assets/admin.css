@@ -463,3 +463,8 @@ summary { cursor: pointer; }
 .pp-pagination [aria-current="page"] { background: var(--pp-brand); color: #fff; }
 
 .pp-album-search input[type="search"] { min-width: 0; max-width: 100%; padding: 7px 10px; border: 1px solid #d6dbe0; border-radius: 8px; }
+
+.pp-album-tools { grid-column: 1 / -1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; }
+.pp-album-tools nav { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0; }
+.pp-batch-form { display: grid; gap: 8px; max-width: 640px; }
+.pp-batch-form textarea, .pp-batch-form input[type="text"] { width: 100%; box-sizing: border-box; }

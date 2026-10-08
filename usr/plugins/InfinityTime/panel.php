@@ -472,7 +472,7 @@ if (!empty($_GET['ajax']) || $ppMaintenance) {
             echo '<div class="pp-meta">图集不存在或没有权限查看</div>';
             exit;
         }
-        echo pp_render_album_thumbs($cid > 0 ? ImageRepository::rowsFor($cid) : [], pp_can_edit_cid($cid));
+        echo pp_render_album_page($cid, pp_can_edit_cid($cid));
         exit;
     }
 
@@ -565,6 +565,42 @@ if ($ppMethod === 'POST') {
         }
         if ($ajax) { pp_reply_json(true, _t('已更新图集信息')); }
         pp_reply(_t('已更新图集信息'));
+    }
+
+    if (in_array($action, ['batch_image_meta', 'set_album_cover'], true)) {
+        $ajax = !empty($_POST['ajax']);
+        $cid = (int)($_POST['cid'] ?? 0);
+        if (!pp_can_edit_cid($cid)) { pp_deny('没有权限修改该图集'); }
+        try {
+            if ($action === 'set_album_cover') {
+                AdminWorkflow::setCover($cid, (int)$user->uid, pp_is_admin(), pp_can_publish(), (int)($_POST['rowId'] ?? 0));
+                $message = '封面已保存，照片顺序未改变';
+            } else {
+                $ids = [];
+                foreach ((array)($_POST['rowIds'] ?? []) as $id) {
+                    if (!(is_int($id) || (is_string($id) && ctype_digit($id))) || (int)$id <= 0) { throw new \DomainException('图片标识无效'); }
+                    $ids[] = (int)$id;
+                }
+                $changes = [];
+                foreach (['desc', 'address'] as $field) {
+                    if (($_POST['apply_' . $field] ?? '') === '1') {
+                        if (!is_string($_POST[$field] ?? null)) { throw new \DomainException('字段内容无效'); }
+                        $changes[$field] = trim($_POST[$field]);
+                    }
+                }
+                $count = AdminWorkflow::batchEdit($cid, (int)$user->uid, pp_is_admin(), pp_can_publish(), $ids, $changes);
+                $message = '已更新 ' . $count . ' 张勾选照片';
+            }
+        } catch (\DomainException $e) {
+            if ($ajax) { pp_reply_json(false, $e->getMessage(), [], 409); }
+            pp_reply($e->getMessage(), 'error', $cid);
+        } catch (\Throwable $e) {
+            Plugin::log('batch/cover: ' . $e->getMessage());
+            if ($ajax) { pp_reply_json(false, '保存暂未确认，请刷新核对后重试', ['retryable' => true], 500); }
+            pp_reply('保存暂未确认，请刷新核对后重试', 'error', $cid);
+        }
+        if ($ajax) { pp_reply_json(true, $message); }
+        pp_reply($message, 'success', $cid);
     }
 
     if ($action === 'set_image_meta') {
@@ -885,7 +921,7 @@ function pp_render_albums_card(array $result, $options): string
           </details>
           <?php endif; ?>
           <div class="pp-thumbs" data-cid="<?php echo $cid; ?>" data-loaded="<?php echo $open ? '1' : '0'; ?>"><?php
-            if ($open) { echo pp_render_album_thumbs(ImageRepository::rowsFor($cid), $canMutate); }
+            if ($open) { echo pp_render_album_page($cid, $canMutate); }
             else { echo '<div class="pp-meta">展开后加载图片…</div>'; }
           ?></div>
         </details>
@@ -900,17 +936,33 @@ function pp_render_albums_card(array $result, $options): string
     return (string)ob_get_clean();
 }
 
+/** 相册照片按页读取；支持全库缺字段筛选和显式全部排序。 */
+function pp_render_album_page(int $cid, bool $canEdit): string
+{
+    $missing = is_string($_GET['image_missing'] ?? null) ? $_GET['image_missing'] : '';
+    $result = ImageRepository::pageFor($cid, max(1, (int)($_GET['image_page'] ?? 1)), $missing, ($_GET['image_all'] ?? '') === '1');
+    $cover = (int)AdminRepository::field($cid, 'cover_id');
+    ob_start();
+    include __DIR__ . '/album-tools.php';
+    echo pp_render_album_thumbs($result['rows'], $canEdit, $cid, $cover);
+    return (string)ob_get_clean();
+}
+
 /** 渲染单个图集的图片列表（展开时 AJAX 按需加载）。 */
-function pp_render_album_thumbs(array $images, bool $canEdit = true): string
+function pp_render_album_thumbs(array $images, bool $canEdit = true, int $cid = 0, int $cover = 0): string
 {
     ob_start();
     ?>
     <?php foreach ($images as $img): ?>
       <div class="pp-img">
+        <?php if ($canEdit && $cid > 0): ?><label><input type="checkbox" name="rowIds[]" value="<?php echo (int)$img['id']; ?>" form="pp-batch-<?php echo $cid; ?>"> 勾选整理<?php if ($cover === (int)$img['id']) echo ' · 当前封面'; ?></label><?php endif; ?>
         <img src="<?php echo htmlspecialchars(ImageRepository::versionUrl(ImageRepository::toWeb(ImageRepository::toAbs($img['thumb'])), (array)($img['exif'] ?? []))); ?>" alt="" loading="lazy" decoding="async">
         <div class="cap"><?php echo htmlspecialchars(pp_exif_summary((array)($img['exif'] ?? []))); ?></div>
         <div class="dims"><?php echo $img['width']; ?>×<?php echo $img['height']; ?></div>
         <?php if ($canEdit): ?>
+        <?php if ($cid > 0): ?><form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
+          <?php echo pp_csrf_input(); ?><input type="hidden" name="action" value="set_album_cover"><input type="hidden" name="cid" value="<?php echo $cid; ?>"><input type="hidden" name="rowId" value="<?php echo (int)$img['id']; ?>"><button class="pp-btn gray pp-small" type="submit">设为相册封面</button>
+        </form><?php endif; ?>
         <form method="post" action="<?php echo htmlspecialchars(Helper::url('InfinityTime/panel.php')); ?>">
           <?php echo pp_csrf_input(); ?>
           <input type="hidden" name="action" value="set_image_meta">
