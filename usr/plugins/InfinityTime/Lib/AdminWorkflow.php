@@ -17,8 +17,8 @@ final class AdminWorkflow
         if ($title === '') { throw new \InvalidArgumentException('请填写图集标题'); }
         $db = Db::get();
         $now = time();
-        Database::query('BEGIN');
-        try {
+        $cid = 0;
+        Database::transaction(static function () use ($db, $title, $now, $uid, $key, $data, &$cid): void {
             $cid = (int)Database::query($db->insert($db->getPrefix() . 'contents')->rows([
                 'title' => $title, 'slug' => 'album-' . date('YmdHis', $now) . '-' . bin2hex(random_bytes(6)),
                 'created' => $now, 'modified' => $now, 'text' => '', 'authorId' => $uid,
@@ -26,16 +26,12 @@ final class AdminWorkflow
                 'allowFeed' => '0', 'template' => '', 'password' => '',
             ]));
             if ($cid <= 0) { throw new \RuntimeException('图集创建失败'); }
-            AdminRepository::setField($cid, AdminRepository::MARKER, '1');
-            AdminRepository::setField($cid, AdminRepository::OPERATION, $key);
+            $fields = [AdminRepository::MARKER => '1', AdminRepository::OPERATION => $key];
             foreach (['device' => 'device', 'tags' => 'tags', 'location' => 'address'] as $name => $input) {
-                AdminRepository::setField($cid, $name, trim((string)($data[$input] ?? '')));
+                $fields[$name] = trim((string)($data[$input] ?? ''));
             }
-            Database::query('COMMIT');
-        } catch (\Throwable $e) {
-            Database::query('ROLLBACK');
-            throw $e;
-        }
+            AdminRepository::setFields($cid, $fields);
+        }, [$db->getPrefix() . 'contents', $db->getPrefix() . 'fields']);
         return ['cid' => $cid, 'title' => $title, 'status' => 'draft', 'replayed' => false];
     }
 
@@ -45,6 +41,25 @@ final class AdminWorkflow
         if (!$album) { throw new \DomainException('图集不存在或没有权限'); }
         if ($album['status'] === 'publish' && !$canPublish) { throw new \DomainException('已发布图集需要编辑或管理员权限才能修改'); }
         return $album;
+    }
+
+    /** 图集标题及全部手动字段同事务更新；权限在持锁后重新检查。 */
+    public static function updateAlbum(int $cid, int $uid, bool $admin, bool $canPublish, array $data): void
+    {
+        ImageRepository::lockMedia();
+        self::requireAlbum($cid, $uid, $admin, $canPublish);
+        $db = Db::get();
+        $title = trim((string)($data['title'] ?? ''));
+        $fields = [];
+        foreach (['device' => 'device', 'tags' => 'tags', 'location' => 'address'] as $name => $input) {
+            $fields[$name] = trim((string)($data[$input] ?? ''));
+        }
+        Database::transaction(static function () use ($db, $cid, $title, $fields): void {
+            $values = ['modified' => time()];
+            if ($title !== '') { $values['title'] = $title; }
+            Database::query($db->update($db->getPrefix() . 'contents')->rows($values)->where('cid = ?', $cid));
+            AdminRepository::setFields($cid, $fields);
+        }, [$db->getPrefix() . 'contents', $db->getPrefix() . 'fields']);
     }
 
     /** 上传标识绑定文件内容与逐图元数据，不受转换设置变化影响。 */

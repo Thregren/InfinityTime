@@ -344,6 +344,43 @@ class ImageRepository
         ])->where('id = ?', $rowId));
     }
 
+    /** 图片元数据与公开聚合字段一并保存，失败保持两者的旧版本。 */
+    public static function editImage(int $rowId, int $cid, string $title, string $desc, string $address): bool
+    {
+        $changed = false;
+        self::fieldTransaction(static function (callable $write) use ($rowId, $cid, $title, $desc, $address, &$changed): void {
+            $db = \Typecho\Db::get();
+            $row = $db->fetchRow($write($db->select('id')->from(self::table())->where('id = ?', $rowId)->where('cid = ?', $cid)->limit(1)));
+            if (!$row) { return; }
+            $write($db->update(self::table())->rows(['title' => $title, 'desc' => $desc, 'address' => $address])
+                ->where('id = ?', $rowId)->where('cid = ?', $cid));
+            self::writePostFields($cid, false, $write);
+            $changed = true;
+        }, true);
+        return $changed;
+    }
+
+    /** 校验完整当前清单后原子排序；中途失败不会留下半套顺序。 */
+    public static function sortImages(int $cid, array $rowIds): void
+    {
+        self::fieldTransaction(static function (callable $write) use ($cid, $rowIds): void {
+            $db = \Typecho\Db::get();
+            foreach ($rowIds as $id) {
+                if (!is_int($id) || $id <= 0) { throw new \DomainException('图片列表包含无效标识，请刷新后重试'); }
+            }
+            $rows = $db->fetchAll($write($db->select('id')->from(self::table())->where('cid = ?', $cid)));
+            $existing = array_map(static function ($row) { return (int)$row['id']; }, $rows);
+            $requested = $rowIds; sort($requested); sort($existing);
+            if ($requested !== $existing || count($rowIds) !== count(array_unique($rowIds))) {
+                throw new \DomainException('图片列表已变化或包含其他图集图片，请刷新后重试');
+            }
+            foreach ($rowIds as $order => $rowId) {
+                $write($db->update(self::table())->rows(['sort' => $order])->where('id = ?', $rowId)->where('cid = ?', $cid));
+            }
+            self::writePostFields($cid, false, $write);
+        }, true);
+    }
+
     /** 重建后同步实际输出尺寸、大小与响应式变体路径。 */
     public static function updateVariants(int $rowId, array $result): void
     {
@@ -368,96 +405,15 @@ class ImageRepository
         });
     }
 
-    /** 共用字段同步事务协议；返回 true 仅表示本方法已提交自己开启的事务。 */
+    /** 共用事务协议；返回 true 仅表示本方法已提交自己开启的事务。 */
     private static function fieldTransaction(callable $operation, bool $mutatesImages = false, bool $mutatesContents = false): bool
     {
         self::lockMedia();
         $db = \Typecho\Db::get();
-        $adapter = strtolower($db->getAdapterName());
-        $handle = $db->selectDb(\Typecho\Db::WRITE);
-        $write = static function ($query) {
-            // 所有同步语句编译后固定走主库；不需要 INSERT 的生成主键。
-            return Database::query(is_string($query) ? $query : $query->prepare((string)$query));
-        };
-        $savepoint = 'infinitytime_fields_' . bin2hex(random_bytes(8));
-        $owned = false;
-        $mysql = strpos($adapter, 'mysql') !== false;
-        if ($mysql) {
-            // MyISAM 等表忽略回滚，不能宣称字段替换是原子的；不自动 ALTER 用户表。
-            $tables = [$db->getPrefix() . 'fields'];
-            if ($mutatesImages) { $tables[] = self::table(); }
-            if ($mutatesContents) { $tables[] = $db->getPrefix() . 'contents'; }
-            foreach ($tables as $name) {
-                $query = $db->select();
-                $sql = $query->prepare('SHOW TABLE STATUS WHERE Name = ' . $query->quoteValue($name));
-                $table = $db->fetchRow($write($sql));
-                if (strcasecmp((string)($table['Engine'] ?? ''), 'InnoDB') !== 0) {
-                    throw new \RuntimeException('图片字段同步需要相关表使用 InnoDB 事务引擎，请先备份并由管理员迁移表引擎');
-                }
-            }
-            // MySQL 在 autocommit 下静默忽略 SAVEPOINT；必须在写入前验证它实际存在。
-            // 不用 BEGIN 探测：它会隐式提交已有事务。也兼容调用方 SET autocommit=0。
-            $write('SAVEPOINT ' . $savepoint);
-            try {
-                // 直接检查驱动错误码，避免 Typecho PDO 包装丢失 MySQL errno。
-                $result = $handle->query('ROLLBACK TO SAVEPOINT ' . $savepoint);
-                if ($result === false) {
-                    $code = $handle instanceof \PDO ? (int)($handle->errorInfo()[1] ?? 0) : (int)$handle->errno;
-                    throw new \RuntimeException('无法验证字段同步保存点', $code);
-                }
-            } catch (\Throwable $e) {
-                $code = $e instanceof \PDOException ? (int)($e->errorInfo[1] ?? 0) : (int)$e->getCode();
-                if ($code !== 1305) { throw $e; }
-                $write('BEGIN');
-                $owned = true;
-            }
-        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
-            if ($handle instanceof \PDO) {
-                $active = $handle->inTransaction();
-            } elseif (function_exists('pg_transaction_status')) {
-                $status = pg_transaction_status($handle);
-                if (!in_array($status, [PGSQL_TRANSACTION_IDLE, PGSQL_TRANSACTION_INTRANS], true)) {
-                    throw new \RuntimeException('数据库事务不可用，请先结束当前失败的事务');
-                }
-                $active = $status === PGSQL_TRANSACTION_INTRANS;
-            } else {
-                throw new \RuntimeException('无法安全检测数据库事务状态');
-            }
-            if (!$active) { $write('BEGIN'); $owned = true; }
-        } elseif (strpos($adapter, 'sqlite') !== false) {
-            // SQLite BEGIN 不会隐式提交已有事务。PDO 可直接检测；原生 SQLite3
-            // 没有跨版本可用的状态 API，只接受明确的“已有事务”错误，其余错误上抛。
-            if (!($handle instanceof \PDO) || !$handle->inTransaction()) {
-                try { @$write('BEGIN'); $owned = true; }
-                catch (\Throwable $e) {
-                    if (strpos($e->getMessage(), 'cannot start a transaction within a transaction') === false) { throw $e; }
-                }
-            }
-        } else {
-            throw new \RuntimeException('当前数据库适配器不支持安全的字段同步事务');
-        }
-        // 嵌套 RELEASE 不会提交外层 BEGIN/SAVEPOINT；只有 owned 才能删除实体文件。
-        $started = false;
-        try {
-            $write('SAVEPOINT ' . $savepoint);
-            $started = true;
-            $operation($write);
-            $write('RELEASE SAVEPOINT ' . $savepoint);
-            if ($owned) { $write('COMMIT'); }
-        } catch (\Throwable $e) {
-            try {
-                if ($owned) { $write('ROLLBACK'); }
-                elseif ($started) {
-                    $write('ROLLBACK TO SAVEPOINT ' . $savepoint);
-                    $write('RELEASE SAVEPOINT ' . $savepoint);
-                }
-            } catch (\Throwable $rollbackError) {
-                // 保留最初的错误，同时明确记录连接丢失等导致无法确认回滚的情况。
-                Plugin::log('field sync rollback failed: ' . $rollbackError->getMessage());
-            }
-            throw $e;
-        }
-        return $owned;
+        $tables = [$db->getPrefix() . 'fields'];
+        if ($mutatesImages) { $tables[] = self::table(); }
+        if ($mutatesContents) { $tables[] = $db->getPrefix() . 'contents'; }
+        return Database::transaction($operation, $tables);
     }
 
     /**

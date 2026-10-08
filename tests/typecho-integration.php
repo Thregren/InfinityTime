@@ -409,6 +409,9 @@ namespace {
             foreach (glob($tmp . '/replica.sqlite*') ?: [] as $file) { @unlink($file); }
         }
 
+        // 原子编辑、嵌套事务、故障注入与非事务引擎回归。
+        require __DIR__ . '/edit-workflow.php';
+
         // 真实删除事务：数据库字段失败、外层回滚都不能提前移除实体文件。
         $deleteDraft = AdminWorkflow::draft(7, ['title' => '删除事务验证', 'device' => '删除前设备'], 'draft-delete-tests');
         $deleteCid = (int)$deleteDraft['cid'];

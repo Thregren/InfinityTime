@@ -51,6 +51,7 @@ namespace Typecho {
         public static function get(): self { return self::$instance; }
         public function getPrefix(): string { return 'admin_'; }
         public function getAdapterName(): string { return $this->adapter; }
+        public function selectDb($op) { return $this->pdo; }
         public function select(...$fields): Query { return new Query('select', '', $fields); }
         public function insert($table): Query { return new Query('insert', $table); }
         public function update($table): Query { return new Query('update', $table); }
