@@ -141,7 +141,7 @@ console.log('Gallery responsive fallback, navigation cancellation, and keyboard 
     css(key, value) { if (typeof key === 'object') this.forEach(n => Object.assign(n.style, key)); else if (value !== undefined) this.forEach(n => n.style[key] = value); return this; }
     attr(key, value) { if (value === undefined) return this[0]?.getAttribute(key); this.forEach(n => n.setAttribute(key, value)); return this; }
     removeAttr(key) { this.forEach(n => n.removeAttribute(key)); return this; }
-    prop(key, value) { if (value === undefined) return this[0]?.[key]; this.forEach(n => n[key] = value); return this; }
+    prop(key, value) { if (value === undefined) return this[0]?.[key]; this.forEach((n, i) => n[key] = typeof value === 'function' ? value.call(n, i, n[key]) : value); return this; }
     data(key, value) { this.forEach(n => n.data ||= {}); if (value === undefined) return this[0]?.data[key]; this.forEach(n => n.data[key] = value); return this; }
     find(selector) { return new Collection(this.flatMap(n => descendants(n).filter(c => matches(c, selector)))); }
     children() { return new Collection(this.flatMap(n => n.children)); }
